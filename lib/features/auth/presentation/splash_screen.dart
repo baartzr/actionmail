@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:io' show Platform;
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -13,7 +12,6 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen> {
   List<GoogleAccount> _accounts = [];
-  bool _loading = true;
   bool _signingIn = false;
   bool _forceAdd = false;
   bool _dialogShown = false;
@@ -40,7 +38,6 @@ class _SplashScreenState extends State<SplashScreen> {
     final accs = await svc.loadAccounts();
     setState(() {
       _accounts = accs;
-      _loading = false;
     });
     if (_accounts.isNotEmpty && mounted && !_forceAdd) {
       // Get last active account from preferences
@@ -58,11 +55,11 @@ class _SplashScreenState extends State<SplashScreen> {
       }
       
       // Save the selected account as last active
-      if (accountToUse != null) {
-        await _saveLastActiveAccount(accountToUse.id);
-      }
+      // accountToUse can never be null here since _accounts.isNotEmpty is checked above
+      await _saveLastActiveAccount(accountToUse.id);
       
       // Auto-route to home using the selected account
+      if (!mounted) return;
       Navigator.of(context, rootNavigator: true)
           .pushNamedAndRemoveUntil('/home', (route) => false, arguments: accountToUse.id);
       return;
@@ -97,13 +94,13 @@ class _SplashScreenState extends State<SplashScreen> {
                     end: Alignment.bottomRight,
                     colors: [
                       theme.colorScheme.primary,
-                      theme.colorScheme.primary.withOpacity(0.7),
+                      theme.colorScheme.primary.withValues(alpha: 0.7),
                     ],
                   ),
                   borderRadius: BorderRadius.circular(24),
                   boxShadow: [
                     BoxShadow(
-                      color: theme.colorScheme.primary.withOpacity(0.3),
+                      color: theme.colorScheme.primary.withValues(alpha: 0.3),
                       blurRadius: 20,
                       offset: const Offset(0, 10),
                     ),
@@ -157,6 +154,8 @@ class _SplashScreenState extends State<SplashScreen> {
                       ? null
                       : () async {
                           setState(() => _signingIn = true);
+                          final navigator = Navigator.of(context, rootNavigator: true);
+                          final scaffoldMessenger = ScaffoldMessenger.of(context);
                           final svc = GoogleAuthService();
                           final acc = await svc.signIn();
                           if (!mounted) return;
@@ -165,10 +164,10 @@ class _SplashScreenState extends State<SplashScreen> {
                             if (!mounted) return;
                             // Save as last active account
                             await _saveLastActiveAccount(stored.id);
-                            Navigator.of(context, rootNavigator: true)
-                                .pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                            if (!mounted) return;
+                            navigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
                           } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            scaffoldMessenger.showSnackBar(
                               const SnackBar(content: Text('Google sign-in not supported on this platform.')),
                             );
                             setState(() => _signingIn = false);
@@ -226,7 +225,7 @@ class _SplashScreenState extends State<SplashScreen> {
                     end: Alignment.bottomRight,
                     colors: [
                       theme.colorScheme.primary,
-                      theme.colorScheme.primary.withOpacity(0.7),
+                      theme.colorScheme.primary.withValues(alpha: 0.7),
                     ],
                   ),
                   borderRadius: BorderRadius.circular(20),

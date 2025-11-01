@@ -40,13 +40,13 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
                 end: Alignment.bottomRight,
                 colors: [
                   theme.colorScheme.primary,
-                  theme.colorScheme.primary.withOpacity(0.7),
+                  theme.colorScheme.primary.withValues(alpha: 0.7),
                 ],
               ),
               borderRadius: BorderRadius.circular(24),
               boxShadow: [
                 BoxShadow(
-                  color: theme.colorScheme.primary.withOpacity(0.3),
+                  color: theme.colorScheme.primary.withValues(alpha: 0.3),
                   blurRadius: 20,
                   offset: const Offset(0, 10),
                 ),
@@ -80,17 +80,20 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
                 ? null
                 : () async {
                     setState(() => _signingIn = true);
+                    final navigator = Navigator.of(context);
+                    final scaffoldMessenger = ScaffoldMessenger.of(context);
                     final svc = GoogleAuthService();
                     final acc = await svc.signIn();
+                    if (!mounted) return;
                     if (acc != null) {
                       final stored = await svc.upsertAccount(acc);
                       if (!mounted) return;
                       // Save as last active account
                       await _saveLastActiveAccount(stored.id);
-                      Navigator.of(context).pop(stored.id);
-                    } else {
                       if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
+                      navigator.pop(stored.id);
+                    } else {
+                      scaffoldMessenger.showSnackBar(
                         const SnackBar(content: Text('Google sign-in not supported on this platform.')),
                       );
                       setState(() => _signingIn = false);

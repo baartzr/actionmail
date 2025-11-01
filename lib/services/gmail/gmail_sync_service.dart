@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
@@ -102,8 +103,27 @@ class GmailSyncService {
         // Action fields: prefer local when set
         final actDate = existing.actionDate ?? m.actionDate;
         final actText = existing.actionInsightText ?? m.actionInsightText;
-        if (actDate != m.actionDate || actText != m.actionInsightText) {
-          return m.copyWith(actionDate: actDate, actionInsightText: actText);
+        // Local classification fields: preserve existing values (subscription, shopping)
+        // Note: unsubLink is preserved separately in upsertMessages method
+        final subs = existing.subsLocal || m.subsLocal; // Preserve if either is true
+        final shopping = existing.shoppingLocal || m.shoppingLocal; // Preserve if either is true
+        final unsubscribed = existing.unsubscribedLocal || m.unsubscribedLocal; // Preserve if either is true
+        
+        // Check if any local fields need to be preserved
+        bool needsUpdate = false;
+        if (actDate != m.actionDate || actText != m.actionInsightText) needsUpdate = true;
+        if (subs != m.subsLocal) needsUpdate = true;
+        if (shopping != m.shoppingLocal) needsUpdate = true;
+        if (unsubscribed != m.unsubscribedLocal) needsUpdate = true;
+        
+        if (needsUpdate) {
+          return m.copyWith(
+            actionDate: actDate,
+            actionInsightText: actText,
+            subsLocal: subs,
+            shoppingLocal: shopping,
+            unsubscribedLocal: unsubscribed,
+          );
         }
       }
       return m;
@@ -158,7 +178,7 @@ class GmailSyncService {
     do {
       final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/history').replace(queryParameters: {
         'startHistoryId': lastHistoryId,
-        if (pageToken != null) 'pageToken': pageToken!,
+        if (pageToken != null) 'pageToken': pageToken,
         'historyTypes': 'messageAdded,labelAdded,labelRemoved',
         'maxResults': '100',
       });
@@ -185,7 +205,7 @@ class GmailSyncService {
             gmailMessagesToTag.add(GmailMessage.fromJson(msgMap));
           }
         }
-        // For labels added/removed, refresh the message to get current labels and update
+        // For labels added/removed, update only the changed fields instead of replacing entire message
         final ids = <String>{};
         for (final la in (hist['labelsAdded'] as List<dynamic>?) ?? []) {
           final msg = (la as Map<String, dynamic>)['message'] as Map<String, dynamic>;
@@ -196,15 +216,41 @@ class GmailSyncService {
           ids.add(msg['id'] as String);
         }
         for (final id in ids) {
-          final fullResp = await http.get(
-            Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$id?format=full'),
+          // Fetch only metadata (not full message) to get current labels
+          final metadataResp = await http.get(
+            Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$id?format=metadata'),
             headers: {'Authorization': 'Bearer $accessToken'},
           );
-          if (fullResp.statusCode == 200) {
-            final msgMap = jsonDecode(fullResp.body) as Map<String, dynamic>;
-            final gi = GmailMessage.fromJson(msgMap).toMessageIndex(accountId);
-            await _repo.upsertMessages([gi]);
-            // DO NOT add to gmailMessagesToTag - these are existing messages with label changes, not new messages
+          if (metadataResp.statusCode == 200) {
+            final msgMap = jsonDecode(metadataResp.body) as Map<String, dynamic>;
+            final labelIds = (msgMap['labelIds'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [];
+            
+            // Extract categories and derive flags/folder from labelIds (same logic as toMessageIndex)
+            final gmailCategories = labelIds.where((label) => 
+              AppConstants.allGmailCategories.contains(label)
+            ).toList();
+            
+            // Derive flags from label IDs
+            final isRead = !labelIds.contains('UNREAD');
+            final isStarred = labelIds.contains('STARRED');
+            final isImportant = labelIds.contains('IMPORTANT');
+            
+            // Determine folder from label IDs
+            String folder = 'INBOX';
+            if (labelIds.contains('TRASH')) {
+              folder = 'TRASH';
+            } else if (labelIds.contains('SPAM')) {
+              folder = 'SPAM';
+            } else if (labelIds.contains('SENT')) {
+              folder = 'SENT';
+            } else if (labelIds.contains('INBOX')) {
+              folder = 'INBOX';
+            } else {
+              folder = 'ARCHIVE';
+            }
+            
+            // Update only the changed fields (labels, flags, folder) without replacing entire message
+            await _repo.updateMessageLabelsAndFlags(id, gmailCategories, [], isRead, isStarred, isImportant, folder);
           }
         }
       }
@@ -351,12 +397,49 @@ class GmailSyncService {
         walkPart(p);
       }
     }
-    // Regex for unsubscribe-like links (normal string with escapes)
-    final regex = RegExp("href=[\\\"']([^\\\"']*(?:unsubscribe|opt-?out|preferences)[^\\\"']*)[\\\"']", caseSensitive: false);
+    // Regex for unsubscribe-like links - multiple patterns to catch various formats
+    final patterns = [
+      // Standard href links
+      RegExp(r'''href=["']([^"']*(?:unsubscribe|opt[-_]?out|preferences|manage\s*(?:subscription|email)|email\s*preferences)[^"']*)["']''', caseSensitive: false),
+      // mailto: links
+      RegExp(r'''mailto:[^\s"\'<>]*unsubscribe[^\s"\'<>]*''', caseSensitive: false),
+      // Plain URL with unsubscribe
+      RegExp(r'''https?://[^\s"\'<>]*(?:unsubscribe|opt[-_]?out)[^\s"\'<>]*''', caseSensitive: false),
+      // List-Unsubscribe header style (often in headers, but check body too)
+      RegExp(r'''<(https?://[^\s<>]*unsubscribe[^\s<>]*)>''', caseSensitive: false),
+    ];
+    
     for (final body in bodies) {
-      final match = regex.firstMatch(body);
-      if (match != null) return match.group(1);
+      for (final pattern in patterns) {
+        final match = pattern.firstMatch(body);
+        if (match != null) {
+          // Use group(1) if it exists (capturing group), otherwise use group(0) (full match)
+          // Some patterns have capturing groups, others don't
+          String? link;
+          if (match.groupCount >= 1) {
+            try {
+              link = match.group(1);
+            } catch (e) {
+              // group(1) doesn't exist, fall back to full match
+              link = match.group(0);
+            }
+          } else {
+            link = match.group(0);
+          }
+          if (link != null && link.isNotEmpty) {
+            debugPrint('[Phase2] Found unsubscribe link: $link');
+            // Decode HTML entities if needed
+            return link
+                .replaceAll('&amp;', '&')
+                .replaceAll('&lt;', '<')
+                .replaceAll('&gt;', '>')
+                .replaceAll('&quot;', '"')
+                .replaceAll('&#39;', "'");
+          }
+        }
+      }
     }
+    debugPrint('[Phase2] No unsubscribe link found in email body');
     return null;
   }
 
@@ -378,7 +461,7 @@ class GmailSyncService {
     }
   }
   
-  Future<void> _phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages) async {
+  Future<void> _phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages, {VoidCallback? onComplete}) async {
     // Phase 2 tagging: performs extra checks on emails that DO NOT have the subs tag already set
     // Also performs action detection with deeper body-based analysis
     debugPrint('[Phase2] Starting Phase 2 tagging for ${gmailMessages.length} messages');
@@ -392,14 +475,14 @@ class GmailSyncService {
       final existing = existingMessages[gm.id];
       
       final headers = gm.payload?.headers ?? [];
-      final subj = (headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value ?? '').toLowerCase();
-      final from = (headers.firstWhere((h) => h.name.toLowerCase() == 'from', orElse: () => const MessageHeader(name: '', value: '')).value ?? '').toLowerCase();
+      final subj = headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value.toLowerCase();
+      final from = headers.firstWhere((h) => h.name.toLowerCase() == 'from', orElse: () => const MessageHeader(name: '', value: '')).value.toLowerCase();
       final snippet = gm.snippet ?? '';
       
       // === SUBSCRIPTION DETECTION ===
       // Skip if email already has subs tag from phase 1
       if (existing == null || !existing.subsLocal) {
-        final cats = [...gm.labelIds ?? []].map((e) => e.toLowerCase()).toList();
+        final cats = gm.labelIds.map((e) => e.toLowerCase()).toList();
         
         // Phase 2: Simple heuristic checks to see if email might be a subs email
         final subscriptionKeywords = ['newsletter', 'news', 'digest', 'alert', 'update', 'weekly', 'daily', 'monthly'];
@@ -415,11 +498,13 @@ class GmailSyncService {
           // Download the email body
           final unsubLink = await _tryExtractUnsubLink(accountId, gm.id);
           
-          // If unsubscribe link is found, update email in DB to add subs tag plus unsubscribe link
+          // Tag as subscription ONLY if unsubscribe link is found
           if (unsubLink != null && unsubLink.isNotEmpty) {
             await _repo.updateLocalClassification(gm.id, subs: true, unsubLink: unsubLink);
+            debugPrint('[Phase2] Tagged ${gm.id} as subscription with unsubLink: $unsubLink');
+          } else {
+            debugPrint('[Phase2] Skipping ${gm.id}: subscription candidate but no unsubscribe link found');
           }
-          // If unsubscribe link is not found, do nothing
         }
       }
       
@@ -476,6 +561,11 @@ class GmailSyncService {
     }
     
     debugPrint('[Phase2] Phase 2 tagging completed');
+    
+    // Notify completion callback to reload email list
+    if (onComplete != null) {
+      onComplete();
+    }
   }
   
   /// Download email body content (HTML and plain text combined)
@@ -673,7 +763,7 @@ class GmailSyncService {
       
       // Add attachments if any
       if (hasAttachments) {
-        for (final file in attachments!) {
+        for (final file in attachments) {
           if (!await file.exists()) continue;
           
           final fileBytes = await file.readAsBytes();

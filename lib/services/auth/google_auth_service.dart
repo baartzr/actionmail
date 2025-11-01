@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:google_sign_in/google_sign_in.dart';
@@ -9,9 +9,7 @@ import 'package:actionmail/config/oauth_config.dart';
 import 'package:http/http.dart' as http;
 import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
-import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class GoogleAuthService {
@@ -385,18 +383,7 @@ class GoogleAuthService {
         final refreshToken = tok['refresh_token'] as String?;
         final expiresIn = (tok['expires_in'] as num?)?.toInt();
 
-        // Fetch user info and update existing account
-        String email = '';
-        if (accessToken.isNotEmpty) {
-          final ui = await http.get(
-            Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
-            headers: {'Authorization': 'Bearer $accessToken'},
-          );
-          if (ui.statusCode == 200) {
-            final data = jsonDecode(ui.body) as Map<String, dynamic>;
-            email = (data['email'] as String?) ?? '';
-          }
-        }
+        // Fetch user info and update existing account (no longer needed as email is not used)
         final list = await loadAccounts();
         final idx = list.indexWhere((a) => a.id == accountId);
         if (idx == -1) return null;

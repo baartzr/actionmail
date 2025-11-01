@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_button.dart';
-import 'dart:io' show Platform;
 
 class AccountsSettingsScreen extends StatefulWidget {
   const AccountsSettingsScreen({super.key});

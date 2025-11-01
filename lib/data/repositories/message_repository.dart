@@ -7,12 +7,34 @@ class MessageRepository {
   final AppDatabase _dbProvider = AppDatabase();
 
   Future<void> upsertMessages(List<MessageIndex> messages) async {
+    if (messages.isEmpty) return;
     final db = await _dbProvider.database;
+    
+    // Get existing messages to preserve unsubLink values
+    final ids = messages.map((m) => m.id).toList();
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final existingRows = await db.query(
+      'messages',
+      columns: ['id', 'unsubLink'],
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+    final existingUnsubLinks = <String, String?>{};
+    for (final row in existingRows) {
+      existingUnsubLinks[row['id'] as String] = row['unsubLink'] as String?;
+    }
+    
     final batch = db.batch();
     for (final m in messages) {
+      final row = _toRow(m);
+      // Preserve existing unsubLink if it exists
+      final existingUnsubLink = existingUnsubLinks[m.id];
+      if (existingUnsubLink != null) {
+        row['unsubLink'] = existingUnsubLink;
+      }
       batch.insert(
         'messages',
-        _toRow(m),
+        row,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
     }
@@ -74,6 +96,33 @@ class MessageRepository {
     await db.update(
       'messages',
       {'isStarred': isStarred ? 1 : 0},
+      where: 'id=?',
+      whereArgs: [messageId],
+    );
+  }
+
+  /// Update only label-related fields (categories, flags, folder) without replacing entire message
+  /// This is used during incremental sync when only labels change
+  Future<void> updateMessageLabelsAndFlags(
+    String messageId,
+    List<String> gmailCategories,
+    List<String> gmailSmartLabels,
+    bool isRead,
+    bool isStarred,
+    bool isImportant,
+    String folderLabel,
+  ) async {
+    final db = await _dbProvider.database;
+    await db.update(
+      'messages',
+      {
+        'gmailCategories': jsonEncode(gmailCategories),
+        'gmailSmartLabels': jsonEncode(gmailSmartLabels),
+        'isRead': isRead ? 1 : 0,
+        'isStarred': isStarred ? 1 : 0,
+        'isImportant': isImportant ? 1 : 0,
+        'folderLabel': folderLabel,
+      },
       where: 'id=?',
       whereArgs: [messageId],
     );

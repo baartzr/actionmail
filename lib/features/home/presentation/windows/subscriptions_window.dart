@@ -44,7 +44,14 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                   if (_filterLocal == null) return true;
                   return m.localTagPersonal == _filterLocal;
                 }).toList();
-                if (filtered.isEmpty) return const Center(child: Text('No subscriptions found'));
+                if (filtered.isEmpty) {
+                  return Center(
+                    child: Text(
+                      'No subscriptions found',
+                      style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                    ),
+                  );
+                }
                 return ListView.separated(
                   itemCount: filtered.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
@@ -63,12 +70,36 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
   Widget _subscriptionTile(MessageIndex m) {
     final isDone = _unsubscribedIds.contains(m.id);
     return ListTile(
-      leading: const Icon(Icons.unsubscribe),
-      title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
-      subtitle: Text(m.from, maxLines: 1, overflow: TextOverflow.ellipsis),
+      dense: true,
+      leading: const Icon(Icons.unsubscribe, size: 18),
+      title: Text(
+        m.subject, 
+        maxLines: 2, 
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 13),
+      ),
+      subtitle: Text(
+        m.from, 
+        maxLines: 1, 
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(fontSize: 11),
+      ),
       trailing: isDone
-          ? const FilledButton(onPressed: null, child: Text('Unsubscribed'))
+          ? FilledButton(
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                minimumSize: const Size(0, 28),
+                textStyle: const TextStyle(fontSize: 11),
+              ),
+              onPressed: null, 
+              child: const Text('Unsubscribed'),
+            )
           : FilledButton(
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          minimumSize: const Size(0, 28),
+          textStyle: const TextStyle(fontSize: 11),
+        ),
         onPressed: () async {
           // Use stored unsubLink if present; fallback to sender domain
           final repo = MessageRepository();

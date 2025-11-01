@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
@@ -24,6 +23,7 @@ class EmailViewerDialog extends StatefulWidget {
 }
 
 class _EmailViewerDialogState extends State<EmailViewerDialog> {
+  // ignore: unused_field
   InAppWebViewController? _webViewController;
   String? _htmlContent;
   bool _isLoading = true;
@@ -313,21 +313,27 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                     : _htmlContent != null
                         ? InAppWebView(
                             initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                            // ignore: deprecated_member_use
                             initialOptions: InAppWebViewGroupOptions(
+                              // ignore: deprecated_member_use
                               crossPlatform: InAppWebViewOptions(
                                 useShouldOverrideUrlLoading: true,
                                 mediaPlaybackRequiresUserGesture: false,
                                 supportZoom: true,
                                 javaScriptEnabled: true,
                               ),
+                              // ignore: deprecated_member_use
                               android: AndroidInAppWebViewOptions(
                                 useHybridComposition: true,
                               ),
+                              // ignore: deprecated_member_use
                               ios: IOSInAppWebViewOptions(
                                 allowsInlineMediaPlayback: true,
                               ),
                             ),
                             onWebViewCreated: (controller) {
+                              // Controller stored for potential future use
+                              // ignore: unused_local_variable
                               _webViewController = controller;
                             },
                             shouldOverrideUrlLoading: (controller, navigationAction) async {

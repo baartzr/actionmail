@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
-import 'package:flutter/foundation.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:intl/intl.dart';
@@ -41,7 +40,6 @@ class _EmailTileState extends State<EmailTile> {
   bool _expanded = false;
   String? _localState; // null | Personal | Business
   bool _starred = false;
-  bool _showInlineActions = false; // legacy, use _revealDir
   int _revealDir = 0; // -1 left swipe, 1 right swipe, 0 none
   DateTime? _actionDate;
   String? _actionText;
@@ -248,7 +246,7 @@ class _EmailTileState extends State<EmailTile> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                     side: BorderSide(
-                      color: const Color(0xFF00897B).withOpacity(0.2), // Light teal border
+                      color: const Color(0xFF00897B).withValues(alpha: 0.2), // Light teal border
                       width: 0.5,
                     ),
                   ),
@@ -272,8 +270,8 @@ class _EmailTileState extends State<EmailTile> {
                     child: Material(
                       color: Colors.transparent,
                       child: InkWell(
-                        splashColor: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-                        highlightColor: Theme.of(context).colorScheme.primary.withOpacity(0.05),
+                        splashColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                        highlightColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.05),
                     child: Padding(
                       padding: const EdgeInsets.all(12.0),
                       child: Column(
@@ -456,7 +454,7 @@ class _EmailTileState extends State<EmailTile> {
                                               style: theme.textTheme.bodySmall?.copyWith(
                                                 color: isInbox 
                                                     ? theme.colorScheme.secondary
-                                                    : theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+                                                    : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                                                 decoration: TextDecoration.none,
                                                 fontStyle: FontStyle.normal,
                                                 fontWeight: FontWeight.w600,
@@ -485,13 +483,13 @@ class _EmailTileState extends State<EmailTile> {
                                           TextSpan(text: dateLabel),
                                           const TextSpan(text: '  •  '),
                                         ],
-                                          if (display.isNotEmpty) TextSpan(text: display + '  '),
+                                          if (display.isNotEmpty) TextSpan(text: '$display  '),
                                           TextSpan(
                                             text: 'Edit',
                                             style: theme.textTheme.bodySmall?.copyWith(
                                               color: isInbox 
                                                   ? theme.colorScheme.secondary
-                                                  : theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+                                                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                                               decoration: TextDecoration.none,
                                               fontStyle: FontStyle.normal,
                                               fontWeight: FontWeight.w600,
@@ -508,7 +506,7 @@ class _EmailTileState extends State<EmailTile> {
                                                   ? (isComplete 
                                                       ? theme.colorScheme.primary
                                                       : theme.colorScheme.tertiary)
-                                                  : theme.colorScheme.onSurfaceVariant.withOpacity(0.5),
+                                                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                                               decoration: TextDecoration.none,
                                               fontStyle: FontStyle.normal,
                                               fontWeight: FontWeight.w600,
@@ -575,6 +573,7 @@ class _EmailTileState extends State<EmailTile> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildCategorySwitch(BuildContext context) {
     final current = _localState;
     return AppSwitchButton<String>(
@@ -609,7 +608,7 @@ class _EmailTileState extends State<EmailTile> {
         Container(
           decoration: isPersonal
               ? BoxDecoration(
-                  color: cs.primary.withOpacity(0.12),
+                  color: cs.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(8),
                 )
               : null,
@@ -631,7 +630,7 @@ class _EmailTileState extends State<EmailTile> {
         Container(
           decoration: isBusiness
               ? BoxDecoration(
-                  color: cs.primary.withOpacity(0.12),
+                  color: cs.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(8),
                 )
               : null,
@@ -849,17 +848,32 @@ class _DomainIcon extends StatefulWidget {
 class _DomainIconState extends State<_DomainIcon> {
   ImageProvider? _iconProvider;
   bool _loading = true;
+  String? _lastEmail;
   final _service = DomainIconService();
 
   @override
   void initState() {
     super.initState();
+    _lastEmail = widget.email;
     _loadIcon();
   }
 
+  @override
+  void didUpdateWidget(_DomainIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.email != widget.email) {
+      _lastEmail = widget.email;
+      _loadIcon();
+    }
+  }
+
   Future<void> _loadIcon() async {
+    setState(() {
+      _loading = true;
+      _iconProvider = null;
+    });
     final provider = await _service.getDomainIcon(widget.email);
-    if (mounted) {
+    if (mounted && widget.email == _lastEmail) {
       setState(() {
         _iconProvider = provider;
         _loading = false;
@@ -875,7 +889,7 @@ class _DomainIconState extends State<_DomainIcon> {
     if (_iconProvider != null && !_loading) {
       return CircleAvatar(
         radius: 12,
-        backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
         child: ClipOval(
           child: Image(
             image: _iconProvider!,
@@ -886,7 +900,7 @@ class _DomainIconState extends State<_DomainIcon> {
               // Fallback to letter if image fails to load
               return CircleAvatar(
                 radius: 12,
-                backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
                 foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
                 child: Text(letter, style: Theme.of(context).textTheme.labelSmall),
               );
@@ -899,7 +913,7 @@ class _DomainIconState extends State<_DomainIcon> {
     // Fallback to letter avatar
     return CircleAvatar(
       radius: 12,
-      backgroundColor: Theme.of(context).colorScheme.surfaceVariant,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
       child: Text(letter, style: Theme.of(context).textTheme.labelSmall),
     );

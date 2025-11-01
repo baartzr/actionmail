@@ -66,7 +66,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     }
     try {
       // ignore: avoid_print
-      print('[sync] refresh account=$accountId folder=${_folderLabel}');
+      print('[sync] refresh account=$accountId folder=$_folderLabel');
       _ref.read(emailLoadingLocalProvider.notifier).state = true;
       final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
       state = AsyncValue.data(local);
@@ -84,7 +84,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       try {
         // Incremental sync always uses the latest historyID from DB
         // ignore: avoid_print
-        print('[sync] incremental tick account=${_currentAccountId}');
+        print('[sync] incremental tick account=$_currentAccountId');
         _ref.read(emailSyncingProvider.notifier).state = true;
         await _syncService.processPendingOps();
         // Run incremental sync (always uses latest historyID from DB)
@@ -244,6 +244,23 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       final list = current.value;
       final updated = list.where((m) => m.id != messageId).toList();
       state = AsyncValue.data(updated);
+    }
+  }
+
+  /// Silently reload emails from local DB (without showing loading state)
+  /// Used after Phase 2 tagging completes to update action dates in UI
+  Future<void> reloadLocalEmails() async {
+    if (_currentAccountId == null) return;
+    try {
+      final local = await _syncService.loadLocal(_currentAccountId!, folderLabel: _folderLabel);
+      if (state is AsyncData<List<MessageIndex>>) {
+        state = AsyncValue.data(local);
+        // ignore: avoid_print
+        print('[EmailList] Silently reloaded ${local.length} emails after Phase 2');
+      }
+    } catch (e) {
+      // ignore: avoid_print
+      print('[EmailList] Failed to silently reload: $e');
     }
   }
 }

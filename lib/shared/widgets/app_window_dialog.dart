@@ -37,10 +37,10 @@ class AppWindowDialog extends StatelessWidget {
       barrierDismissible: barrierDismissible,
       builder: (ctx) => AppWindowDialog(
         title: title,
-        child: child,
         bodyPadding: bodyPadding,
         headerActions: headerActions,
         size: size,
+        child: child,
       ),
     );
   }

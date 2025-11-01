@@ -25,7 +25,7 @@ class AppDropdown<T> extends StatelessWidget {
     final cs = theme.colorScheme;
     
     // Use gray color for dropdown text
-    final textColor = cs.onSurface.withOpacity(0.8);
+    final textColor = cs.onSurface.withValues(alpha: 0.8);
     
     return DropdownButton<T>(
       value: value,

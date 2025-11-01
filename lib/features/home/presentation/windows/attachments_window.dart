@@ -18,6 +18,8 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
   String? _filterLocal;
   final Map<String, List<String>> _attachmentCache = {};
   final Map<String, bool> _loadingAttachments = {};
+  final Set<String> _pendingLoads = {}; // Track messages currently being loaded to prevent duplicates
+  final Set<String> _seenMessages = {}; // Track which messages we've seen to prevent showing before check starts
   final GmailSyncService _syncService = GmailSyncService();
 
   @override
@@ -38,32 +40,81 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
           Expanded(
             child: messagesAsync.when(
               data: (list) {
+                // First filter by hasAttachments and local tag
                 final filtered = list.where((m) {
                   if (!m.hasAttachments) return false;
                   if (_filterLocal == null) return true;
                   return m.localTagPersonal == _filterLocal;
                 }).toList();
                 
-                // Filter to only show emails that actually have real attachments (not just inline images)
+                // Start verification for emails that haven't been checked yet
+                // NOTE: We mark as "seen" in postFrameCallback, not during build, to prevent showing before verification starts
+                bool needsAsyncLoad = false;
+                final newMessages = <String>[];
+                
+                for (final message in filtered) {
+                  if (!_attachmentCache.containsKey(message.id)) {
+                    if (!_seenMessages.contains(message.id)) {
+                      // Track new messages to mark as seen after rebuild
+                      newMessages.add(message.id);
+                    }
+                    if (!(_loadingAttachments[message.id] ?? false)) {
+                      // Mark as loading and trigger async check
+                      _loadingAttachments[message.id] = true;
+                      needsAsyncLoad = true;
+                    }
+                  }
+                }
+                
+                // Mark new messages as seen and trigger async loading in postFrameCallback
+                if (needsAsyncLoad || newMessages.isNotEmpty) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (!mounted) return;
+                    // Mark as seen AFTER first build, so they only show after verification starts
+                    for (final messageId in newMessages) {
+                      _seenMessages.add(messageId);
+                    }
+                    // Trigger rebuild to show emails that are now "seen" and loading
+                    if (newMessages.isNotEmpty) {
+                      setState(() {});
+                    }
+                    // Actually perform the async load
+                    for (final message in filtered) {
+                      if (_loadingAttachments[message.id] == true && !_attachmentCache.containsKey(message.id)) {
+                        _loadAttachments(message);
+                      }
+                    }
+                  });
+                }
+                
+                // Filter to only show emails that have been verified to have real attachments
+                // CRITICAL: Only show emails that have completed verification (attachments != null)
+                // This prevents emails from appearing before verification completes
                 final emailsWithRealAttachments = filtered.where((message) {
                   final attachments = _attachmentCache[message.id];
-                  final isLoading = _loadingAttachments[message.id] ?? false;
                   
-                  // Show if:
-                  // 1. We haven't checked yet (show while loading)
-                  // 2. We're currently loading attachments
-                  // 3. We've checked and found real attachments
-                  if (isLoading) return true; // Show while loading
-                  if (attachments == null) return true; // Haven't checked yet, show it
-                  return attachments.isNotEmpty; // Only show if has real attachments
+                  // ONLY show if verification is complete AND we found real attachments
+                  if (attachments != null && attachments.isNotEmpty) {
+                    return true;
+                  }
+                  
+                  // Don't show if:
+                  // - Not verified yet (attachments == null)
+                  // - Verified but no real attachments (attachments.isEmpty)
+                  return false;
                 }).toList();
                 
+                // Check if any emails are still being verified
+                final hasPendingVerification = filtered.any((m) {
+                  return !_attachmentCache.containsKey(m.id);
+                });
+                
+                if (hasPendingVerification) {
+                  // Show loading indicator while verification is in progress
+                  return const Center(child: CircularProgressIndicator());
+                }
+                
                 if (emailsWithRealAttachments.isEmpty) {
-                  // Check if any emails are still loading
-                  final hasLoading = filtered.any((m) => _loadingAttachments[m.id] ?? false);
-                  if (hasLoading) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
                   return const Center(child: Text('No emails with real attachments'));
                 }
                 
@@ -88,14 +139,7 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
     final isLoading = _loadingAttachments[m.id] ?? false;
     final attachments = _attachmentCache[m.id] ?? [];
     
-    // Load attachments if not already loaded (defer to after build)
-    if (!isLoading && attachments.isEmpty && !_attachmentCache.containsKey(m.id)) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_attachmentCache.containsKey(m.id) && !(_loadingAttachments[m.id] ?? false)) {
-          _loadAttachments(m);
-        }
-      });
-    }
+    // Note: Attachment loading is triggered in the build method above to avoid duplicates
     
     return ListTile(
       leading: const Icon(Icons.attachment),
@@ -142,11 +186,32 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
   }
 
   Future<void> _loadAttachments(MessageIndex message) async {
-    if (_loadingAttachments[message.id] == true) return;
+    // Prevent duplicate concurrent loads
+    if (_attachmentCache.containsKey(message.id)) {
+      // Already loaded, no need to reload
+      return;
+    }
     
-    setState(() {
-      _loadingAttachments[message.id] = true;
-    });
+    if (_pendingLoads.contains(message.id)) {
+      // Already loading, don't start another load
+      return;
+    }
+    
+    // Mark as pending and loading
+    _pendingLoads.add(message.id);
+    bool wasAlreadyLoading = _loadingAttachments[message.id] == true;
+    if (!wasAlreadyLoading) {
+      if (!mounted) {
+        _pendingLoads.remove(message.id);
+        return;
+      }
+      setState(() {
+        _loadingAttachments[message.id] = true;
+      });
+    } else if (mounted) {
+      // If already marked as loading, trigger rebuild to show loading state
+      setState(() {});
+    }
     
     try {
       final filenames = await _syncService.getAttachmentFilenames(message.accountId, message.id);
@@ -154,7 +219,10 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
         setState(() {
           _attachmentCache[message.id] = filenames;
           _loadingAttachments[message.id] = false;
+          _pendingLoads.remove(message.id);
         });
+      } else {
+        _pendingLoads.remove(message.id);
       }
     } catch (e) {
       // ignore: avoid_print
@@ -163,7 +231,10 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
         setState(() {
           _attachmentCache[message.id] = [];
           _loadingAttachments[message.id] = false;
+          _pendingLoads.remove(message.id);
         });
+      } else {
+        _pendingLoads.remove(message.id);
       }
     }
   }

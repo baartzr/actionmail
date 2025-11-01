@@ -24,10 +24,10 @@ class AppSegmentedBar<T> extends StatelessWidget {
     final cs = theme.colorScheme;
     final containerColor = style == AppSegmentedStyle.classic
         ? cs.surfaceContainerHighest
-        : cs.surface.withOpacity(0.5);
+        : cs.surface.withValues(alpha: 0.5);
     final borderColor = style == AppSegmentedStyle.classic
-        ? cs.outlineVariant.withOpacity(0.4)
-        : cs.outlineVariant.withOpacity(0.6);
+        ? cs.outlineVariant.withValues(alpha: 0.4)
+        : cs.outlineVariant.withValues(alpha: 0.6);
 
     return Container(
       decoration: BoxDecoration(
@@ -64,7 +64,7 @@ class _Seg extends StatelessWidget {
     final cs = Theme.of(context).colorScheme;
     return Material(
       color: selected
-          ? (style == AppSegmentedStyle.classic ? cs.primary : cs.primary.withOpacity(0.85))
+          ? (style == AppSegmentedStyle.classic ? cs.primary : cs.primary.withValues(alpha: 0.85))
           : (style == AppSegmentedStyle.classic ? cs.surface : Colors.transparent),
       borderRadius: BorderRadius.circular(8),
       child: InkWell(

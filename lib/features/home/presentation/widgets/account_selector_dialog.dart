@@ -39,6 +39,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
       setState(() {
         _accounts = updated;
       });
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Signed out successfully')),
       );
@@ -71,14 +72,17 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
     setState(() => _loading = false);
     if (success) {
       final updated = await svc.loadAccounts();
+      if (!mounted) return;
       setState(() {
         _accounts = updated;
       });
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Account removed')),
       );
       // If removed account was selected, close the dialog
       if (accountId == widget.selectedAccountId) {
+        if (!mounted) return;
         Navigator.of(context).pop(null);
       }
     }
@@ -154,14 +158,17 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                   padding: const EdgeInsets.all(16.0),
                   child: FilledButton.icon(
                     onPressed: () async {
-                      Navigator.of(context).pop();
+                      final navigator = Navigator.of(context);
+                      navigator.pop();
                       await Future.delayed(const Duration(milliseconds: 100));
+                      if (!mounted || !context.mounted) return;
                       final newAccountId = await showDialog<String>(
                         context: context,
                         builder: (_) => const AddAccountDialog(),
                       );
-                      if (newAccountId != null && context.mounted) {
-                        Navigator.of(context).pop(newAccountId);
+                      if (!mounted) return;
+                      if (newAccountId != null) {
+                        navigator.pop(newAccountId);
                       }
                     },
                     icon: const Icon(Icons.person_add_alt_1),

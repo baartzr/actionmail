@@ -95,7 +95,6 @@ class AppButton extends StatelessWidget {
   }
 
   Widget _buildChild(ThemeData theme, Color? fgOverride) {
-    final color = fgOverride ?? theme.colorScheme.onPrimary;
     final leading = leadingIcon != null
         ? Icon(leadingIcon, size: 18, color: variant == AppButtonVariant.filled || variant == AppButtonVariant.tonal ? null : null)
         : null;
@@ -130,8 +129,8 @@ class _GhostButton extends StatelessWidget {
     final base = style.merge(ButtonStyle(
       backgroundColor: const WidgetStatePropertyAll(Colors.transparent),
       foregroundColor: WidgetStatePropertyAll(cs.onSurface),
-      overlayColor: WidgetStatePropertyAll(cs.primary.withOpacity(0.08)),
-      side: WidgetStatePropertyAll(BorderSide(color: cs.outlineVariant.withOpacity(0.4))),
+      overlayColor: WidgetStatePropertyAll(cs.primary.withValues(alpha: 0.08)),
+      side: WidgetStatePropertyAll(BorderSide(color: cs.outlineVariant.withValues(alpha: 0.4))),
       elevation: const WidgetStatePropertyAll(0),
     ));
     return OutlinedButton(style: base, onPressed: onPressed, child: child);

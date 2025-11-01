@@ -1,12 +1,10 @@
-import 'package:actionmail/data/models/message_index.dart';
-
 class ActionExtractor {
   static final RegExp _numericDate = RegExp(r'\b(\d{1,2})\s*(?:\/|\-|\.)\s*(\d{1,2})(?:\s*(?:\/|\-|\.)\s*(\d{2,4}))?\b');
   static final RegExp _monthDay = RegExp(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b', caseSensitive: false);
   static final RegExp _weekdayMonthDay = RegExp(r'\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s*,?\s*(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b', caseSensitive: false);
   static final RegExp _isoDate = RegExp(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b');
-  static final RegExp _phrases = RegExp(r'\b(due|by|on|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment)\b', caseSensitive: false);
-  static final RegExp _relativeDate = RegExp(r'\b(tomorrow|today|next\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', caseSensitive: false);
+  static final RegExp _phrases = RegExp(r'\b(due|by|on|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment|party|event|birthday|gathering|celebration|wedding|dinner|lunch|breakfast|conference|call|webinar|seminar)\b', caseSensitive: false);
+  static final RegExp _relativeDate = RegExp(r'\b(tomorrow|today|next\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|new\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', caseSensitive: false);
 
   /// Quick heuristic check on subject/snippet only (lightweight, no body download)
   /// Returns true only if both an action phrase AND a date are found (to avoid false positives)
@@ -24,7 +22,9 @@ class ActionExtractor {
     
     // Require both action phrase AND date for candidate status
     final hasActionPhrase = _phrases.hasMatch(text);
-    final hasDate = _extractDate(text, now, fallbackYear: now.year) != null;
+    // Also check relative dates (e.g., "next wednesday")
+    DateTime? date = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
+    final hasDate = date != null;
     
     return hasActionPhrase && hasDate;
   }
@@ -35,11 +35,8 @@ class ActionExtractor {
     final text = '$subject $snippet $bodyContent';
     final now = DateTime.now();
 
-    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year);
-    if (detectedDate == null) {
-      // Try relative dates
-      detectedDate = _extractRelativeDate(text, now);
-    }
+    // Try relative dates if numeric extraction fails
+    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
 
     if (detectedDate == null) return null;
 
@@ -52,7 +49,7 @@ class ActionExtractor {
     // Extract action verb and context
     final verb = _phrases.hasMatch(text) ? _phrases.firstMatch(text)!.group(0)!.toLowerCase() : 'on';
     final monthStr = _monthName(detectedDate.month);
-    final label = _buildInsight(verb, detectedDate, monthStr);
+    final label = _buildInsight(verb, detectedDate, monthStr, text);
 
     return ActionResult(
       actionDate: detectedDate,
@@ -66,13 +63,14 @@ class ActionExtractor {
     final text = '$subject $snippet';
     final now = DateTime.now();
 
-    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year);
+    // Also try relative dates (e.g., "next wednesday")
+    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
     if (detectedDate == null) return null;
 
     detectedDate = DateTime(detectedDate.year, detectedDate.month, detectedDate.day);
     final verb = _phrases.hasMatch(text) ? _phrases.firstMatch(text)!.group(0)!.toLowerCase() : 'on';
     final monthStr = _monthName(detectedDate.month);
-    final label = _buildInsight(verb, detectedDate, monthStr);
+    final label = _buildInsight(verb, detectedDate, monthStr, text);
 
     // Lower confidence for quick detection (subject/snippet only)
     return ActionResult(
@@ -100,12 +98,14 @@ class ActionExtractor {
       final nextMonth = now.month == 12 ? DateTime(now.year + 1, 1, now.day) : DateTime(now.year, now.month + 1, now.day);
       return nextMonth;
     }
-    // Next weekday (e.g., "next Monday")
-    final weekdayMatch = RegExp(r'next\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)', caseSensitive: false).firstMatch(phrase);
+    // Next weekday (e.g., "next Monday" or "new Wednesday" - typo handling)
+    final weekdayMatch = RegExp(r'(?:next|new)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday)', caseSensitive: false).firstMatch(phrase);
     if (weekdayMatch != null) {
       final weekday = _weekdayFromName(weekdayMatch.group(1)!);
       if (weekday != null) {
         var date = DateTime(now.year, now.month, now.day);
+        // Find the next occurrence of this weekday (add at least 1 day to ensure it's "next")
+        date = date.add(const Duration(days: 1));
         while (date.weekday != weekday) {
           date = date.add(const Duration(days: 1));
         }
@@ -145,21 +145,61 @@ class ActionExtractor {
     return confidence.clamp(0.0, 1.0);
   }
 
-  static String _buildInsight(String verb, DateTime date, String monthStr) {
+  static String _buildInsight(String verb, DateTime date, String monthStr, String text) {
     final day = date.day;
+    final lowerText = text.toLowerCase();
+    
+    // Try to extract event context from the text
+    String? eventContext;
+    
+    // Check for specific event types
+    if (lowerText.contains('party') || lowerText.contains('birthday') || lowerText.contains('celebration')) {
+      eventContext = 'party';
+    } else if (lowerText.contains('meeting')) {
+      eventContext = 'meeting';
+    } else if (lowerText.contains('appointment')) {
+      eventContext = 'appointment';
+    } else if (lowerText.contains('conference') || lowerText.contains('webinar') || lowerText.contains('seminar')) {
+      eventContext = 'conference';
+    } else if (lowerText.contains('dinner') || lowerText.contains('lunch') || lowerText.contains('breakfast')) {
+      eventContext = lowerText.contains('dinner') ? 'dinner' : (lowerText.contains('lunch') ? 'lunch' : 'breakfast');
+    } else if (lowerText.contains('wedding')) {
+      eventContext = 'wedding';
+    } else if (lowerText.contains('event') || lowerText.contains('gathering')) {
+      eventContext = 'event';
+    } else if (lowerText.contains('flight') || lowerText.contains('departure') || lowerText.contains('arrival')) {
+      eventContext = 'flight';
+    } else if (lowerText.contains('delivery') || lowerText.contains('arrives') || lowerText.contains('shipment')) {
+      eventContext = 'delivery';
+    } else if (lowerText.contains('invoice') || lowerText.contains('payment') || lowerText.contains('due')) {
+      eventContext = 'payment due';
+    } else if (lowerText.contains('deadline')) {
+      eventContext = 'deadline';
+    } else if (lowerText.contains('call')) {
+      eventContext = 'call';
+    }
+    
+    // Build descriptive text with event context if found
+    if (eventContext != null) {
+      // Capitalize first letter
+      final capitalized = eventContext[0].toUpperCase() + eventContext.substring(1);
+      return '$capitalized on $day $monthStr.';
+    }
+    
+    // Fallback to verb-based descriptions if no event context
     switch (verb) {
       case 'due':
       case 'by':
-        return 'Possible action date: $day $monthStr (due).';
+        return 'Due by $day $monthStr.';
       case 'arrives':
       case 'delivery':
       case 'deliver':
-        return 'Possible action date: $day $monthStr (delivery).';
+        return 'Delivery on $day $monthStr.';
       case 'flight':
       case 'depart':
       case 'departure':
       case 'arrive':
-        return 'Possible action date: $day $monthStr (flight).';
+        return 'Flight on $day $monthStr.';
       default:
         return 'Possible action date: $day $monthStr.';
     }

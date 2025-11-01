@@ -48,12 +48,10 @@ class DomainIconService {
       );
 
       // Fallback to Clearbit if Google fails
-      if (provider == null) {
-        provider = await _tryLoadFavicon(
-          'https://logo.clearbit.com/$domain',
-          domain,
-        );
-      }
+      provider ??= await _tryLoadFavicon(
+        'https://logo.clearbit.com/$domain',
+        domain,
+      );
 
       // Cache the result (even if null)
       _cache[domain] = provider;

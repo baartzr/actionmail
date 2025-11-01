@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/shared/widgets/app_segmented_bar.dart';
@@ -91,23 +92,42 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
           Text('From: $senderDisplay', style: const TextStyle(fontSize: 12)),
           Text('Received: $receivedDateStr', style: const TextStyle(fontSize: 12)),
           const SizedBox(height: 4),
-          if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty) 
-            Text(m.actionInsightText!, style: const TextStyle(fontWeight: FontWeight.w500)),
-          if (actionDateStr.isNotEmpty) 
-            Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12)),
+          if (actionDateStr.isNotEmpty || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty))
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (actionDateStr.isNotEmpty)
+                  Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                if (actionDateStr.isNotEmpty && m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                  const Text('  •  ', style: TextStyle(fontSize: 12)),
+                if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                  Expanded(
+                    child: RichText(
+                      text: TextSpan(
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                        children: [
+                          TextSpan(text: 'Message: ${m.actionInsightText} '),
+                          TextSpan(
+                            text: 'Edit',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.secondary,
+                              fontWeight: FontWeight.w600,
+                              decoration: TextDecoration.underline,
+                            ),
+                            recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
         ],
       ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.edit, size: 20),
-            onPressed: () => _openEditActionDialog(m),
-            tooltip: 'Edit action',
-          ),
-          Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
-        ],
-      ),
+      trailing: Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
       onTap: () => _openEmailViewer(m),
     );
   }

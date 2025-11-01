@@ -169,7 +169,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(
-                    color: theme.colorScheme.outline.withOpacity(0.2),
+                    color: theme.colorScheme.outline.withValues(alpha: 0.2),
                   ),
                 ),
               ),
@@ -198,7 +198,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
               decoration: BoxDecoration(
                 border: Border(
                   bottom: BorderSide(
-                    color: theme.colorScheme.outline.withOpacity(0.2),
+                    color: theme.colorScheme.outline.withValues(alpha: 0.2),
                   ),
                 ),
               ),
@@ -222,7 +222,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
                 decoration: BoxDecoration(
                   border: Border(
                     bottom: BorderSide(
-                      color: theme.colorScheme.outline.withOpacity(0.2),
+                      color: theme.colorScheme.outline.withValues(alpha: 0.2),
                     ),
                   ),
                 ),
@@ -284,7 +284,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
                                 hintText: 'Compose your message...',
                                 border: InputBorder.none,
                                 hintStyle: TextStyle(
-                                  color: theme.colorScheme.onSurfaceVariant.withOpacity(0.6),
+                                  color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
                                   fontSize: 14,
                                 ),
                               ),
@@ -298,7 +298,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
                         // Divider
                         Container(
                           width: 1,
-                          color: theme.colorScheme.outline.withOpacity(0.2),
+                          color: theme.colorScheme.outline.withValues(alpha: 0.2),
                         ),
                         // Original email (right)
                         Expanded(
@@ -355,7 +355,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
                           hintText: 'Compose your message...',
                           border: InputBorder.none,
                           hintStyle: TextStyle(
-                            color: theme.colorScheme.onSurfaceVariant.withOpacity(0.6),
+                            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
                             fontSize: 14,
                           ),
                         ),

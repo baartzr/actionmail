@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/shared/widgets/app_button.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
@@ -51,7 +50,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 end: Alignment.bottomRight,
                                 colors: [
                                   theme.colorScheme.primary,
-                                  theme.colorScheme.primary.withOpacity(0.7),
+                                  theme.colorScheme.primary.withValues(alpha: 0.7),
                                 ],
                               ),
                               borderRadius: BorderRadius.circular(20),
@@ -136,6 +135,8 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           const SizedBox(height: 12),
                           FilledButton.icon(
                             onPressed: () async {
+                              final scaffoldMessenger = ScaffoldMessenger.of(context);
+                              final emailListRef = ref;
                               final confirmed = await showDialog<bool>(
                                 context: context,
                                 builder: (ctx) => AlertDialog(
@@ -157,15 +158,15 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                               );
                               if (confirmed == true && mounted) {
                                 await MessageRepository().clearAll();
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Database cleared')),
-                                  );
-                                  // Refresh email list if there's an active account
-                                  final accounts = await GoogleAuthService().loadAccounts();
-                                  if (accounts.isNotEmpty) {
-                                    ref.read(emailListProvider.notifier).refresh(accounts.first.id);
-                                  }
+                                if (!mounted) return;
+                                scaffoldMessenger.showSnackBar(
+                                  const SnackBar(content: Text('Database cleared')),
+                                );
+                                // Refresh email list if there's an active account
+                                final accounts = await GoogleAuthService().loadAccounts();
+                                if (!mounted) return;
+                                if (accounts.isNotEmpty) {
+                                  emailListRef.read(emailListProvider.notifier).refresh(accounts.first.id);
                                 }
                               }
                             },
@@ -249,16 +250,18 @@ class _AddAccountInlineDialogState extends State<_AddAccountInlineDialog> {
                     ? null
                     : () async {
                         setState(() => _signingIn = true);
+                        final navigator = Navigator.of(context);
+                        final scaffoldMessenger = ScaffoldMessenger.of(context);
                         final svc = GoogleAuthService();
                         final acc = await svc.signIn();
                         if (acc != null) {
                           final existing = await svc.loadAccounts();
                           await svc.saveAccounts([...existing, acc]);
                           if (!mounted) return;
-                          Navigator.of(context).pop(acc.id);
+                          navigator.pop(acc.id);
                         } else {
                           if (!mounted) return;
-                          ScaffoldMessenger.of(context).showSnackBar(
+                          scaffoldMessenger.showSnackBar(
                             const SnackBar(content: Text('Google sign-in not supported on this platform.')),
                           );
                           setState(() => _signingIn = false);

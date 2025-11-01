@@ -46,12 +46,12 @@ class AppToggleChip extends StatelessWidget {
     final bgColor = switch (style) {
       AppChipStyle.classic => selected ? (selectedColor ?? cs.primary) : theme.colorScheme.surfaceContainerHighest,
       AppChipStyle.glass => selected
-          ? cs.primary.withOpacity(0.85)
-          : theme.colorScheme.surface.withOpacity(0.5),
+          ? cs.primary.withValues(alpha: 0.85)
+          : theme.colorScheme.surface.withValues(alpha: 0.5),
     };
     final side = switch (style) {
-      AppChipStyle.classic => BorderSide(color: selected ? Colors.transparent : cs.outlineVariant.withOpacity(0.4)),
-      AppChipStyle.glass => BorderSide(color: selected ? Colors.transparent : cs.outlineVariant.withOpacity(0.6)),
+      AppChipStyle.classic => BorderSide(color: selected ? Colors.transparent : cs.outlineVariant.withValues(alpha: 0.4)),
+      AppChipStyle.glass => BorderSide(color: selected ? Colors.transparent : cs.outlineVariant.withValues(alpha: 0.6)),
     };
 
     return Material(
@@ -61,7 +61,7 @@ class AppToggleChip extends StatelessWidget {
         side: side,
       ),
       elevation: style == AppChipStyle.glass ? 1 : 0,
-      shadowColor: style == AppChipStyle.glass ? cs.shadow.withOpacity(0.2) : null,
+      shadowColor: style == AppChipStyle.glass ? cs.shadow.withValues(alpha: 0.2) : null,
       child: InkWell(
         borderRadius: borderRadius,
         onTap: onTap,

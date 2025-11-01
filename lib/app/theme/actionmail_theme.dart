@@ -120,7 +120,7 @@ class ActionMailTheme {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(
-            color: _lightColorScheme.outline.withOpacity(0.1),
+            color: _lightColorScheme.outline.withValues(alpha: 0.1),
             width: 1,
           ),
         ),
@@ -197,7 +197,7 @@ class ActionMailTheme {
           minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
           shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
           side: WidgetStatePropertyAll(BorderSide(
-            color: _lightColorScheme.outline.withOpacity(0.3),
+            color: _lightColorScheme.outline.withValues(alpha: 0.3),
             width: 1,
           )),
           visualDensity: VisualDensity.standard,
@@ -244,14 +244,14 @@ class ActionMailTheme {
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(
-            color: _lightColorScheme.outline.withOpacity(0.3),
+            color: _lightColorScheme.outline.withValues(alpha: 0.3),
             width: 1,
           ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(
-            color: _lightColorScheme.outline.withOpacity(0.3),
+            color: _lightColorScheme.outline.withValues(alpha: 0.3),
             width: 1,
           ),
         ),
@@ -288,7 +288,7 @@ class ActionMailTheme {
       
       // Dividers
       dividerTheme: DividerThemeData(
-        color: _lightColorScheme.outline.withOpacity(0.1),
+        color: _lightColorScheme.outline.withValues(alpha: 0.1),
         thickness: 1,
         space: 1,
       ),
@@ -329,7 +329,7 @@ class ActionMailTheme {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(
-            color: _darkColorScheme.outline.withOpacity(0.2),
+            color: _darkColorScheme.outline.withValues(alpha: 0.2),
             width: 1,
           ),
         ),
@@ -406,7 +406,7 @@ class ActionMailTheme {
           minimumSize: const WidgetStatePropertyAll(Size(0, 40)),
           shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
           side: WidgetStatePropertyAll(BorderSide(
-            color: _darkColorScheme.outline.withOpacity(0.4),
+            color: _darkColorScheme.outline.withValues(alpha: 0.4),
             width: 1,
           )),
           visualDensity: VisualDensity.standard,
@@ -453,14 +453,14 @@ class ActionMailTheme {
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(
-            color: _darkColorScheme.outline.withOpacity(0.4),
+            color: _darkColorScheme.outline.withValues(alpha: 0.4),
             width: 1,
           ),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: BorderSide(
-            color: _darkColorScheme.outline.withOpacity(0.4),
+            color: _darkColorScheme.outline.withValues(alpha: 0.4),
             width: 1,
           ),
         ),
@@ -497,7 +497,7 @@ class ActionMailTheme {
       
       // Dividers
       dividerTheme: DividerThemeData(
-        color: _darkColorScheme.outline.withOpacity(0.15),
+        color: _darkColorScheme.outline.withValues(alpha: 0.15),
         thickness: 1,
         space: 1,
       ),

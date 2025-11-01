@@ -1,8 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart';
 import 'package:actionmail/shared/widgets/app_toggle_chip.dart';
-import 'package:actionmail/shared/widgets/app_segmented_bar.dart';
-import 'package:actionmail/shared/widgets/app_button.dart';
 import 'package:actionmail/shared/widgets/app_dropdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/constants/app_constants.dart';
@@ -10,9 +7,9 @@ import 'package:actionmail/features/home/domain/providers/email_list_provider.da
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_tile.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/features/auth/presentation/add_account_dialog.dart';
 import 'package:actionmail/features/settings/presentation/accounts_settings_dialog.dart';
 import 'package:actionmail/features/home/presentation/windows/actions_window.dart';
+import 'package:actionmail/features/home/presentation/windows/actions_summary_window.dart';
 import 'package:actionmail/features/home/presentation/windows/attachments_window.dart';
 import 'package:actionmail/features/home/presentation/windows/subscriptions_window.dart';
 import 'package:actionmail/features/home/presentation/windows/shopping_window.dart';
@@ -134,7 +131,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             color: Theme.of(context).appBarTheme.backgroundColor ?? Theme.of(context).colorScheme.surfaceContainerHighest,
             border: Border(
               bottom: BorderSide(
-                color: Theme.of(context).colorScheme.outline.withOpacity(0.1),
+                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.1),
                 width: 1,
               ),
             ),
@@ -154,11 +151,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text(
-                              AppConstants.appName,
-                              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                                color: Theme.of(context).appBarTheme.foregroundColor,
-                                fontWeight: FontWeight.w500,
+                            GestureDetector(
+                              onTap: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (_) => ActionsSummaryWindow(),
+                                );
+                              },
+                              child: Text(
+                                AppConstants.appName,
+                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -250,6 +255,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 switch (value) {
                                   case 'Actions':
                                     showDialog(context: context, builder: (_) => const ActionsWindow());
+                                    break;
+                                  case 'Actions Summary':
+                                    showDialog(context: context, builder: (_) => ActionsSummaryWindow());
                                     break;
                                   case 'Attachments':
                                     showDialog(context: context, builder: (_) => const AttachmentsWindow());
@@ -440,10 +448,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     return Container(
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.5),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: cs.outlineVariant.withOpacity(0.3),
+          color: cs.outlineVariant.withValues(alpha: 0.3),
           width: 1,
         ),
       ),
@@ -499,10 +507,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     return Container(
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.5),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: cs.outlineVariant.withOpacity(0.3),
+          color: cs.outlineVariant.withValues(alpha: 0.3),
           width: 1,
         ),
       ),
@@ -568,10 +576,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     return Container(
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.5),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: cs.outlineVariant.withOpacity(0.3),
+          color: cs.outlineVariant.withValues(alpha: 0.3),
           width: 1,
         ),
       ),
@@ -781,9 +789,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   if (m.actionDate == null) continue;
                   final local = m.actionDate!.toLocal();
                   final d = DateTime(local.year, local.month, local.day);
-                  if (d == today) countToday++;
-                  else if (d.isAfter(today)) countUpcoming++;
-                  else countOverdue++;
+                  if (d == today) {
+                    countToday++;
+                  } else if (d.isAfter(today)) {
+                    countUpcoming++;
+                  } else {
+                    countOverdue++;
+                  }
                 }
               });
               // Action filter as text buttons
@@ -804,7 +816,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             icon: Icon(_showFilterBar ? Icons.filter_list : Icons.filter_list_outlined),
             color: _showFilterBar 
                 ? const Color(0xFF00695C) // Teal when active
-                : Theme.of(context).colorScheme.onSurfaceVariant.withOpacity(0.7),
+                : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
             iconSize: 20,
             onPressed: () {
               setState(() {
@@ -825,10 +837,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     return Container(
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withOpacity(0.5),
+        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: cs.outlineVariant.withOpacity(0.3),
+          color: cs.outlineVariant.withValues(alpha: 0.3),
           width: 1,
         ),
       ),
@@ -910,6 +922,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildCategoryCarousel() {
     return SizedBox(
       height: 40,
@@ -942,6 +955,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  // ignore: unused_element
   Color _categoryColor(BuildContext context, String category) {
     final cs = Theme.of(context).colorScheme;
     switch (category) {
@@ -960,6 +974,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
+  // ignore: unused_element
   Widget _buildStateFilterIconButton(BuildContext context, String state, IconData icon) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
@@ -982,7 +997,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Container(
       decoration: selected
           ? BoxDecoration(
-              color: cs.primary.withOpacity(0.12),
+              color: cs.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
             )
           : null,
@@ -998,6 +1013,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildLocalStateIconButton(BuildContext context, String state, IconData icon) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
@@ -1013,7 +1029,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Container(
       decoration: selected
           ? BoxDecoration(
-              color: cs.primary.withOpacity(0.12),
+              color: cs.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
             )
           : null,
@@ -1029,6 +1045,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildActionFilterIconButton(BuildContext context, String filter, IconData icon, int? count) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
@@ -1051,7 +1068,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Container(
       decoration: selected
           ? BoxDecoration(
-              color: cs.primary.withOpacity(0.12),
+              color: cs.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(8),
             )
           : null,
@@ -1101,7 +1118,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: selected
               ? BoxDecoration(
-                  color: cs.primary.withOpacity(0.12),
+                  color: cs.primary.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(8),
                 )
               : null,
@@ -1117,6 +1134,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildStateFilterDropdownRow() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
@@ -1142,9 +1160,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   value: 'Unread',
                   child: Row(
                     children: [
+                      // ignore: deprecated_member_use
                       Radio<String?>(
                         value: 'Unread',
+                        // ignore: deprecated_member_use
                         groupValue: _stateFilter,
+                        // ignore: deprecated_member_use
                         onChanged: (_) {},
                         visualDensity: VisualDensity.compact,
                       ),
@@ -1163,9 +1184,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 value: 'Starred',
                 child: Row(
                   children: [
+                    // ignore: deprecated_member_use
                     Radio<String?>(
                       value: 'Starred',
+                      // ignore: deprecated_member_use
                       groupValue: _stateFilter,
+                      // ignore: deprecated_member_use
                       onChanged: (_) {},
                       visualDensity: VisualDensity.compact,
                     ),
@@ -1184,9 +1208,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 value: 'Important',
                 child: Row(
                   children: [
+                    // ignore: deprecated_member_use
                     Radio<String?>(
                       value: 'Important',
+                      // ignore: deprecated_member_use
                       groupValue: _stateFilter,
+                      // ignore: deprecated_member_use
                       onChanged: (_) {},
                       visualDensity: VisualDensity.compact,
                     ),

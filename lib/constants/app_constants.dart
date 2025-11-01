@@ -37,6 +37,11 @@ class AppConstants {
   static const String categoryPromotions = 'CATEGORY_PROMOTIONS';
   static const String categoryUpdates = 'CATEGORY_UPDATES';
   static const String categoryForums = 'CATEGORY_FORUMS';
+  static const String categoryBills = 'CATEGORY_BILLS';
+  static const String categoryPurchases = 'CATEGORY_PURCHASES';
+  static const String categoryFinance = 'CATEGORY_FINANCE';
+  static const String categoryTravel = 'CATEGORY_TRAVEL';
+  static const String categoryReceipts = 'CATEGORY_RECEIPTS';
 
   static const List<String> allGmailCategories = [
     categoryPersonal,
@@ -44,6 +49,11 @@ class AppConstants {
     categoryPromotions,
     categoryUpdates,
     categoryForums,
+    categoryBills,
+    categoryPurchases,
+    categoryFinance,
+    categoryTravel,
+    categoryReceipts,
   ];
 
   static const Map<String, String> categoryDisplayNames = {
@@ -52,16 +62,23 @@ class AppConstants {
     categoryPromotions: 'Promotions',
     categoryUpdates: 'Updates',
     categoryForums: 'Forums',
+    categoryBills: 'Bills',
+    categoryPurchases: 'Purchases',
+    categoryFinance: 'Finance',
+    categoryTravel: 'Travel',
+    categoryReceipts: 'Receipts',
   };
 
   // Function windows
   static const String windowActions = 'Actions';
+  static const String windowActionsSummary = 'Actions Summary';
   static const String windowAttachments = 'Attachments';
   static const String windowSubscriptions = 'Subscriptions';
   static const String windowShopping = 'Shopping';
 
   static const List<String> allFunctionWindows = [
     windowActions,
+    windowActionsSummary,
     windowAttachments,
     windowSubscriptions,
     windowShopping,
