@@ -23,6 +23,7 @@ dependencies:
   
   # Window management for desktop
   window_manager: ^0.3.7
+  window_to_front: ^0.0.3
   
   # Local Storage
   sqflite: ^2.3.0

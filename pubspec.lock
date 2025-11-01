@@ -806,7 +806,7 @@ packages:
     source: hosted
     version: "0.3.9"
   window_to_front:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: window_to_front
       sha256: "7aef379752b7190c10479e12b5fd7c0b9d92adc96817d9e96c59937929512aee"

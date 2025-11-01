@@ -234,9 +234,7 @@ class _SplashScreenState extends State<SplashScreen> {
           );
         },
       ),
-    ).then((_) {
-      _dialogShown = false;
-    });
+    );
   }
 
   @override
