@@ -69,8 +69,12 @@ class GmailSyncService {
   /// Convert Gmail API messages to MessageIndex and apply heuristics
   /// This simulates the process: Gmail API -> MessageIndex -> Action Detection
   Future<List<MessageIndex>> syncMessages(String accountId, {String folderLabel = 'INBOX'}) async {
+    debugPrint('[Gmail] syncMessages starting account=$accountId folder=$folderLabel');
+    final syncStart = DateTime.now();
     // Download from Gmail API
     final gmailMessages = await downloadMessages(accountId, label: folderLabel);
+    final downloadDuration = DateTime.now().difference(syncStart);
+    debugPrint('[Gmail] syncMessages downloaded ${gmailMessages.length} messages in ${downloadDuration.inMilliseconds}ms');
     
     // Convert Gmail format to MessageIndex
     final messageIndexes = gmailMessages.map((gmailMsg) => gmailMsg.toMessageIndex(accountId)).toList();
@@ -136,14 +140,9 @@ class GmailSyncService {
     final existingIds = idMap.keys.toSet();
     final newGmailMessages = gmailMessages.where((gm) => !existingIds.contains(gm.id)).toList();
     
-    // Phase 1 local tagging using Gmail message headers and categories (NEW emails only)
-    if (newGmailMessages.isNotEmpty) {
-      await _phase1Tagging(accountId, newGmailMessages);
-    }
-    
-    // Phase 2 tagging on new messages (run in background after emails are loaded)
-    if (newGmailMessages.isNotEmpty) {
-      unawaited(_phase2TaggingNewMessages(accountId, newGmailMessages));
+    // Phase 1 and Phase 2 tagging on new messages for INBOX only (run in background)
+    if (newGmailMessages.isNotEmpty && folderLabel == 'INBOX') {
+      unawaited(_runBackgroundTaggingInSyncMessages(accountId, newGmailMessages));
     }
     
     // Save the latest historyId for future incremental syncs
@@ -159,19 +158,23 @@ class GmailSyncService {
     
     // Return from DB filtered by folder
     final stored = await _repo.getByFolder(accountId, folderLabel);
+    final totalDuration = DateTime.now().difference(syncStart);
+    debugPrint('[Gmail] syncMessages completed, returned ${stored.length} messages, total time=${totalDuration.inMilliseconds}ms');
     return stored;
     // TODO: Apply action detection heuristics when implemented
   }
 
   /// Incremental sync using Gmail History API: fetch changes since last historyId
-  Future<void> incrementalSync(String accountId) async {
+  /// Returns list of new INBOX messages for background tagging
+  Future<List<GmailMessage>> incrementalSync(String accountId) async {
     final account = await GoogleAuthService().ensureValidAccessToken(accountId);
     final accessToken = account?.accessToken;
-    if (accessToken == null || accessToken.isEmpty) return;
+    if (accessToken == null || accessToken.isEmpty) return [];
     final lastHistoryId = await _repo.getLastHistoryId(accountId);
-    if (lastHistoryId == null) return; // no baseline yet
+    if (lastHistoryId == null) return []; // no baseline yet
 
     debugPrint('[Gmail] incrementalSync account=$accountId historyId=$lastHistoryId');
+    final startTime = DateTime.now();
     String? pageToken;
     String? latestHistoryId;
     final gmailMessagesToTag = <GmailMessage>[];
@@ -182,9 +185,11 @@ class GmailSyncService {
         'historyTypes': 'messageAdded,labelAdded,labelRemoved',
         'maxResults': '100',
       });
+      debugPrint('[Gmail] incrementalSync fetching history page...');
       final resp = await http.get(uri, headers: {'Authorization': 'Bearer $accessToken'});
       if (resp.statusCode != 200) break;
       final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      debugPrint('[Gmail] incrementalSync history page received, history count=${(map['history'] as List?)?.length ?? 0}');
       latestHistoryId = (map['historyId']?.toString()) ?? latestHistoryId;
       final history = (map['history'] as List<dynamic>?) ?? [];
       for (final h in history) {
@@ -202,7 +207,10 @@ class GmailSyncService {
             final msgMap = jsonDecode(fullResp.body) as Map<String, dynamic>;
             final gi = GmailMessage.fromJson(msgMap).toMessageIndex(accountId);
             await _repo.upsertMessages([gi]);
-            gmailMessagesToTag.add(GmailMessage.fromJson(msgMap));
+            // Only tag INBOX emails
+            if (gi.folderLabel == 'INBOX') {
+              gmailMessagesToTag.add(GmailMessage.fromJson(msgMap));
+            }
           }
         }
         // For labels added/removed, update only the changed fields instead of replacing entire message
@@ -260,18 +268,16 @@ class GmailSyncService {
     if (latestHistoryId != null) {
       await _repo.setLastHistoryId(accountId, latestHistoryId);
     }
-    // Phase 1 tagging on new messages from incremental sync
-    debugPrint('[Gmail] incrementalSync found ${gmailMessagesToTag.length} new messages');
-    if (gmailMessagesToTag.isNotEmpty) {
-      await _phase1Tagging(accountId, gmailMessagesToTag);
-      // Phase 2 tagging on new messages only
-      await _phase2TaggingNewMessages(accountId, gmailMessagesToTag);
-    }
+    
+    final duration = DateTime.now().difference(startTime);
+    debugPrint('[Gmail] incrementalSync found ${gmailMessagesToTag.length} new INBOX messages, took ${duration.inMilliseconds}ms');
+    return gmailMessagesToTag;
   }
 
   // Apply pending Gmail modifications with retries
   Future<void> processPendingOps() async {
     final pending = await _repo.getPendingOps(limit: 20);
+    debugPrint('[Gmail] processPendingOps found ${pending.length} pending operations');
     for (final op in pending) {
       final int id = op['id'] as int;
       final String accountId = op['accountId'] as String;
@@ -443,7 +449,7 @@ class GmailSyncService {
     return null;
   }
 
-  Future<void> _phase1Tagging(String accountId, List<GmailMessage> gmailMessages) async {
+  Future<void> phase1Tagging(String accountId, List<GmailMessage> gmailMessages) async {
     // Lightweight: headers-only to avoid slowing load
     // Phase 1 tagging: checks email header and sets subs local tag if subscription email
     // This happens only once when new email arrives
@@ -461,7 +467,7 @@ class GmailSyncService {
     }
   }
   
-  Future<void> _phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages, {VoidCallback? onComplete}) async {
+  Future<void> phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages, {VoidCallback? onComplete}) async {
     // Phase 2 tagging: performs extra checks on emails that DO NOT have the subs tag already set
     // Also performs action detection with deeper body-based analysis
     debugPrint('[Phase2] Starting Phase 2 tagging for ${gmailMessages.length} messages');
@@ -1082,6 +1088,18 @@ class GmailSyncService {
     
     debugPrint('[Attachments] Including attachment: $realFilename ($mimeType)');
     return true;
+  }
+
+  Future<void> _runBackgroundTaggingInSyncMessages(String accountId, List<GmailMessage> gmailMessages) async {
+    debugPrint('[Gmail] starting background tagging for ${gmailMessages.length} messages in syncMessages');
+    try {
+      // Phase 1 tagging on message headers (INBOX emails only) - lightweight, header-only
+      unawaited(phase1Tagging(accountId, gmailMessages));
+      // Phase 2 tagging on payload in background (INBOX emails only) - heavy, body-based
+      unawaited(phase2TaggingNewMessages(accountId, gmailMessages));
+    } catch (e) {
+      debugPrint('[Gmail] background tagging error: $e');
+    }
   }
 }
 

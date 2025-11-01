@@ -43,6 +43,7 @@ class _EmailTileState extends State<EmailTile> {
   int _revealDir = 0; // -1 left swipe, 1 right swipe, 0 none
   DateTime? _actionDate;
   String? _actionText;
+  bool _actionExpanded = true; // whether action section is expanded
 
   @override
   void initState() {
@@ -51,6 +52,8 @@ class _EmailTileState extends State<EmailTile> {
     _starred = widget.message.isStarred;
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
+    // Default to collapsed if no action set, expanded if action exists
+    _actionExpanded = widget.message.actionDate != null || (widget.message.actionInsightText != null && widget.message.actionInsightText!.trim().isNotEmpty);
   }
 
   bool _hasLeftActions(String folder) {
@@ -166,6 +169,11 @@ class _EmailTileState extends State<EmailTile> {
         oldWidget.message.actionInsightText != widget.message.actionInsightText) {
       _actionDate = widget.message.actionDate;
       _actionText = widget.message.actionInsightText;
+      // Update expanded state based on whether action exists
+      final hasAction = widget.message.actionDate != null || (widget.message.actionInsightText != null && widget.message.actionInsightText!.trim().isNotEmpty);
+      if (hasAction) {
+        _actionExpanded = true; // Expand when action is added
+      }
     }
   }
 
@@ -415,12 +423,19 @@ class _EmailTileState extends State<EmailTile> {
                     opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
                     child: Row(
                       children: [
-                        Icon(
-                          Icons.lightbulb_outline,
-                          size: 16,
-                          color: isOverdue
-                              ? theme.colorScheme.error
-                              : theme.colorScheme.secondary,
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _actionExpanded = !_actionExpanded;
+                            });
+                          },
+                          child: Icon(
+                            Icons.lightbulb_outline,
+                            size: 16,
+                            color: isOverdue
+                                ? theme.colorScheme.error
+                                : theme.colorScheme.secondary,
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -434,6 +449,30 @@ class _EmailTileState extends State<EmailTile> {
                                     : theme.colorScheme.onSurfaceVariant,
                                 fontStyle: FontStyle.italic,
                               );
+                              
+                              // Collapsed: show nothing if no action, or just brief summary if has action
+                              if (!_actionExpanded && hasAction) {
+                                final display = _actionText ?? '';
+                                final dateLabel = _actionDate != null
+                                    ? _formatDate(_actionDate!, DateTime.now())
+                                    : null;
+                                return RichText(
+                                  text: TextSpan(
+                                    style: baseStyle,
+                                    children: [
+                                      if (dateLabel != null) ...[
+                                        TextSpan(text: dateLabel),
+                                        const TextSpan(text: '  •  '),
+                                      ],
+                                      TextSpan(text: display.isNotEmpty ? display : 'Action set'),
+                                    ],
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                );
+                              }
+                              
+                              // Expanded or no action: show full action UI
                               if (!hasAction) {
                                 return RichText(
                                   text: TextSpan(

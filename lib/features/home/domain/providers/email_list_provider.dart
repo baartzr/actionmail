@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/data/models/message_index.dart';
+import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 
 /// Provider for Gmail sync service
@@ -49,13 +50,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       state = AsyncValue.error(e, st);
     }
 
-    // 2) Background sync: check historyID and perform appropriate sync (INBOX only on startup)
-    if (folderLabel == 'INBOX') {
-      unawaited(_syncInboxOnStartup(accountId));
-    }
-
-    // 3) Background sync other folders (save to DB only)
-    unawaited(_syncOtherFolders());
+    // 2) Background sync: check historyID and perform appropriate sync
+    // This handles ALL folders via incremental sync (or initial full sync if no history)
+    unawaited(_syncInboxOnStartup(accountId));
   }
 
   /// Refresh emails: load from local immediately, then background sync
@@ -83,22 +80,45 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     _timer = Timer.periodic(const Duration(minutes: 2), (_) async {
       try {
         // Incremental sync always uses the latest historyID from DB
+        final syncStart = DateTime.now();
         // ignore: avoid_print
         print('[sync] incremental tick account=$_currentAccountId');
         _ref.read(emailSyncingProvider.notifier).state = true;
         await _syncService.processPendingOps();
         // Run incremental sync (always uses latest historyID from DB)
-        await _syncService.incrementalSync(_currentAccountId!);
+        final newInboxMessages = await _syncService.incrementalSync(_currentAccountId!);
         // Reload Inbox from local DB to show updated emails
         if (_folderLabel == 'INBOX') {
           final local = await _syncService.loadLocal(_currentAccountId!, folderLabel: 'INBOX');
           state = AsyncValue.data(local);
+          final syncDuration = DateTime.now().difference(syncStart);
           // ignore: avoid_print
-          print('[sync] incremental done count=${local.length}');
+          print('[sync] incremental done count=${local.length}, total time=${syncDuration.inMilliseconds}ms');
         }
-      } catch (_) {}
-      _ref.read(emailSyncingProvider.notifier).state = false;
+        // Turn off loading indicator
+        _ref.read(emailSyncingProvider.notifier).state = false;
+        // Run Phase 1 and Phase 2 tagging in background
+        if (newInboxMessages.isNotEmpty) {
+          unawaited(_runBackgroundTagging(_currentAccountId!, newInboxMessages));
+        }
+      } catch (_) {
+        _ref.read(emailSyncingProvider.notifier).state = false;
+      }
     });
+  }
+
+  Future<void> _runBackgroundTagging(String accountId, List<GmailMessage> gmailMessages) async {
+    // ignore: avoid_print
+    print('[sync] starting background tagging for ${gmailMessages.length} messages');
+    try {
+      // Phase 1 tagging on message headers (INBOX emails only) - non-blocking
+      unawaited(_syncService.phase1Tagging(accountId, gmailMessages));
+      // Phase 2 tagging on payload in background (INBOX emails only) - non-blocking
+      unawaited(_syncService.phase2TaggingNewMessages(accountId, gmailMessages));
+    } catch (e) {
+      // ignore: avoid_print
+      print('[sync] background tagging error: $e');
+    }
   }
 
   @override
@@ -117,17 +137,20 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       
       // Check for historyID in DB
       final hasHistory = await _syncService.hasHistoryId(accountId);
+      List<GmailMessage> newInboxMessages = [];
       
       if (hasHistory) {
-        // If historyID exists: run incremental sync using that historyID
+        // If historyID exists: run incremental sync using that historyID (handles all folders)
         // ignore: avoid_print
         print('[sync] historyID exists, doing incremental sync');
-        await _syncService.incrementalSync(accountId);
+        newInboxMessages = await _syncService.incrementalSync(accountId);
       } else {
-        // If no historyID: do initial sync (fetch from Gmail)
+        // If no historyID: do initial full sync for all folders sequentially
         // ignore: avoid_print
-        print('[sync] no historyID, doing initial sync');
-        await _syncService.syncMessages(accountId, folderLabel: 'INBOX');
+        print('[sync] no historyID, doing initial full sync for all folders');
+        for (final folder in _allFolders) {
+          await _syncService.syncMessages(accountId, folderLabel: folder);
+        }
       }
       
       // Reload Inbox from local DB to show updated emails
@@ -138,10 +161,19 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         print('[sync] syncInboxOnStartup done count=${local.length}');
       }
       
+      // Turn off loading indicator
+      _ref.read(emailSyncingProvider.notifier).state = false;
+      
       // Start the 2-minute incremental sync timer after sync completes
       _startIncremental();
-    } catch (_) {}
-    _ref.read(emailSyncingProvider.notifier).state = false;
+      
+      // Run Phase 1 and Phase 2 tagging in background
+      if (newInboxMessages.isNotEmpty) {
+        unawaited(_runBackgroundTagging(accountId, newInboxMessages));
+      }
+    } catch (_) {
+      _ref.read(emailSyncingProvider.notifier).state = false;
+    }
   }
 
   Future<void> _syncFolderAndUpdateCurrent() async {
@@ -153,7 +185,19 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       print('[sync] sync current account=$accountId folder=$currentFolder');
       _ref.read(emailSyncingProvider.notifier).state = true;
       await _syncService.processPendingOps();
-      await _syncService.syncMessages(accountId, folderLabel: currentFolder);
+      
+      // Use incremental sync if history exists, otherwise fall back to full sync
+      List<GmailMessage> newMessages = [];
+      final hasHistory = await _syncService.hasHistoryId(accountId);
+      if (hasHistory) {
+        // ignore: avoid_print
+        print('[sync] history exists, using incremental sync');
+        newMessages = await _syncService.incrementalSync(accountId);
+      } else {
+        // ignore: avoid_print
+        print('[sync] no history, using full sync for current folder');
+        await _syncService.syncMessages(accountId, folderLabel: currentFolder);
+      }
       
       // Reload local for current folder only if still on same folder
       if (_currentAccountId == accountId && _folderLabel == currentFolder) {
@@ -162,23 +206,19 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // ignore: avoid_print
         print('[sync] sync current done count=${local.length}');
       }
-    } catch (_) {}
-    _ref.read(emailSyncingProvider.notifier).state = false;
+      
+      // Turn off loading indicator
+      _ref.read(emailSyncingProvider.notifier).state = false;
+      
+      // Run Phase 1 and Phase 2 tagging in background for INBOX only
+      if (currentFolder == 'INBOX' && newMessages.isNotEmpty) {
+        unawaited(_runBackgroundTagging(accountId, newMessages));
+      }
+    } catch (_) {
+      _ref.read(emailSyncingProvider.notifier).state = false;
+    }
   }
 
-  Future<void> _syncOtherFolders() async {
-    if (_currentAccountId == null) return;
-    final accountId = _currentAccountId!;
-    for (final f in _allFolders) {
-      if (f == _folderLabel) continue;
-      try {
-        _ref.read(emailSyncingProvider.notifier).state = true;
-        await _syncService.processPendingOps();
-        await _syncService.syncMessages(accountId, folderLabel: f);
-      } catch (_) {}
-    }
-    _ref.read(emailSyncingProvider.notifier).state = false;
-  }
 
   /// Update a message's local tag in-memory without triggering loading state
   void setLocalTag(String messageId, String? localTag) {
@@ -262,6 +302,12 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // ignore: avoid_print
       print('[EmailList] Failed to silently reload: $e');
     }
+  }
+
+  /// Clear the email list (e.g., when no accounts are selected)
+  void clearEmails() {
+    state = const AsyncValue.data([]);
+    _currentAccountId = null;
   }
 }
 

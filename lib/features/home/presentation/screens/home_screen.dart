@@ -97,6 +97,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
         }
       }
+    } else {
+      // Account selector returned null (e.g., all accounts removed or dialog dismissed)
+      // Clear the selected account if no accounts remain
+      if (_accounts.isEmpty) {
+        setState(() {
+          _selectedAccountId = null;
+        });
+        ref.read(emailListProvider.notifier).clearEmails();
+      }
     }
   }
 

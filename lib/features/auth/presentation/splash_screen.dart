@@ -60,12 +60,15 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _load() async {
+    print('[splash] _load() started');
     final svc = GoogleAuthService();
     final accs = await svc.loadAccounts();
+    print('[splash] loaded ${accs.length} accounts, _forceAdd=$_forceAdd, mounted=$mounted');
     setState(() {
       _accounts = accs;
     });
     if (_accounts.isNotEmpty && mounted && !_forceAdd) {
+      print('[splash] auto-routing to home');
       // Get last active account from preferences
       final lastActiveAccountId = await _loadLastActiveAccount();
       
@@ -91,12 +94,14 @@ class _SplashScreenState extends State<SplashScreen> {
       return;
     }
     if (mounted && !_dialogShown) {
+      print('[splash] showing dialog');
       _dialogShown = true;
       _showSplashWindow();
     }
   }
 
   void _showSplashWindow() async {
+    print('[splash] _showSplashWindow() called');
     final result = await AppWindowDialog.show(
       context: context,
       title: _forceAdd ? 'Add Account' : 'Welcome to ActionMail',
@@ -145,47 +150,46 @@ class _SplashScreenState extends State<SplashScreen> {
                   onPressed: _signingIn
                       ? null
                         : () async {
+                          print('[splash] sign-in button pressed');
                           setState(() => _signingIn = true);
-                          final rootNavigator = Navigator.of(context, rootNavigator: true);
-                          final dialogNavigator = Navigator.of(context);
                           final scaffoldMessenger = ScaffoldMessenger.of(context);
+                          print('[splash] calling signIn()');
                           final svc = GoogleAuthService();
                           final acc = await svc.signIn();
+                          print('[splash] signIn returned, mounted=$mounted, acc=${acc != null}');
                           if (!mounted) return;
                           if (acc != null) {
+                            print('[splash] calling upsertAccount');
                             final stored = await svc.upsertAccount(acc);
+                            print('[splash] upsertAccount done, mounted=$mounted');
                             if (!mounted) return;
                             // Save as last active account
+                            print('[splash] saving last active account');
                             await _saveLastActiveAccount(stored.id);
+                            print('[splash] saved, mounted=$mounted');
                             if (!mounted) return;
-                            
-                            if (!mounted) return;
-                            // If forceAdd, close dialog and pop route with account ID
                             if (_forceAdd) {
-                              // Close the dialog first
-                              dialogNavigator.pop();
-                              // Wait a moment for dialog to close
-                              await Future.delayed(const Duration(milliseconds: 100));
-                              if (!mounted) return;
-                              // Bring app to front (works on desktop; mobile comes to front on navigation)
+                              print('[splash] forceAdd=true, popping with account=${stored.id}');
+                              // Bring app to front after sign-in
+                              await _bringAppToFront();
+                              // For add account flow, pop with account ID (this will pop AppWindowDialog)
                               try {
-                                await _bringAppToFront();
-                              } catch (_) {
-                                // Ignore errors
+                                Navigator.of(context).pop(stored.id);
+                                print('[splash] pop() call completed');
+                              } catch (e) {
+                                print('[splash] pop() error: $e');
                               }
-                              if (!mounted) return;
-                              // Then pop the route with the account ID
-                              rootNavigator.pop(stored.id);
                             } else {
-                              // Bring app to front before navigating to home
-                              try {
-                                await _bringAppToFront();
-                              } catch (_) {
-                                // Ignore errors
-                              }
-                              rootNavigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                              print('[splash] forceAdd=false, navigating to home');
+                              // Bring app to front after sign-in
+                              await _bringAppToFront();
+                              // For normal sign-in, navigate to home
+                              final navigator = Navigator.of(context, rootNavigator: true);
+                              navigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                              print('[splash] navigation call complete');
                             }
                           } else {
+                            print('[splash] sign-in failed, showing snackbar');
                             scaffoldMessenger.showSnackBar(
                               const SnackBar(content: Text('Google sign-in not supported on this platform.')),
                             );
@@ -235,10 +239,12 @@ class _SplashScreenState extends State<SplashScreen> {
         },
       ),
     );
+    print('[splash] AppWindowDialog.show() returned, result=$result');
     // If user dismissed the dialog without signing in, pop the route
     if (!mounted) return;
-    if (_forceAdd && result == null) {
-      Navigator.of(context).pop(null);
+    if (_forceAdd) {
+      print('[splash] forceAdd=true, popping SplashScreen route with result=$result');
+      Navigator.of(context).pop(result);
     }
   }
 
@@ -249,6 +255,7 @@ class _SplashScreenState extends State<SplashScreen> {
     final args = ModalRoute.of(context)?.settings.arguments;
     if (args is Map) {
       _forceAdd = (args['forceAdd'] as bool?) ?? _forceAdd;
+      print('[splash] build() called, _forceAdd=$_forceAdd from args');
     }
     // Provide a branded background with gradient
     return Scaffold(

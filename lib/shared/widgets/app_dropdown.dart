@@ -33,14 +33,17 @@ class AppDropdown<T> extends StatelessWidget {
       value: value,
       hint: hint != null ? Text(
         hint!,
-        style: TextStyle(color: selectedTextColor, fontSize: 13),
+        style: TextStyle(color: selectedTextColor, fontSize: 14),
       ) : null,
       icon: Icon(Icons.arrow_drop_down, color: selectedTextColor),
       selectedItemBuilder: (context) {
         return items.map((item) {
-          return Text(
-            itemBuilder(item),
-            style: TextStyle(color: selectedTextColor, fontSize: 13),
+          return Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              itemBuilder(item),
+              style: TextStyle(color: selectedTextColor, fontSize: 14),
+            ),
           );
         }).toList();
       },
@@ -49,17 +52,17 @@ class AppDropdown<T> extends StatelessWidget {
           value: item,
           child: Text(
             itemBuilder(item),
-            style: TextStyle(color: cs.onSurface, fontSize: 13),
+            style: TextStyle(color: cs.onSurface, fontSize: 14),
           ),
         );
       }).toList(),
       onChanged: onChanged,
       underline: const SizedBox.shrink(),
       isDense: isDense,
-      style: TextStyle(color: selectedTextColor, fontSize: 13),
+      style: TextStyle(color: selectedTextColor, fontSize: 14),
       dropdownColor: cs.surface,
       menuMaxHeight: 300,
-      iconSize: 20,
+      iconSize: 24,
     );
   }
 }
