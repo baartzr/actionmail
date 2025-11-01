@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
+import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/config/oauth_config.dart';
 import 'package:http/http.dart' as http;
@@ -169,14 +170,187 @@ class GoogleAuthService {
         // continue
       }
     }
-    // Use PKCE (code) flow via flutter_appauth on mobile/web-supported
-    if (OAuthConfig.clientId.isNotEmpty && AppConstants.oauthRedirectUri.isNotEmpty) {
+    // Use PKCE (code) flow for mobile
+    if (OAuthConfig.clientId.isNotEmpty && (Platform.isAndroid || Platform.isIOS)) {
+      try {
+        // For Android with web client and HTTP redirect, use local HTTP server approach
+        // (same as desktop, since flutter_web_auth_2 doesn't handle HTTP localhost well)
+        if (Platform.isAndroid) {
+          final redirectUri = AppConstants.oauthRedirectUriForMobile;
+          final verifier = _randomString(64);
+          final challenge = _codeChallenge(verifier);
+          
+          final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+            'client_id': OAuthConfig.clientId,
+            'redirect_uri': redirectUri,
+            'response_type': 'code',
+            'scope': AppConstants.oauthScopes.join(' '),
+            'prompt': 'consent',
+            'access_type': 'offline',
+            'include_granted_scopes': 'true',
+            'code_challenge': challenge,
+            'code_challenge_method': 'S256',
+          });
+          
+          // Use local HTTP server for Android (like desktop) since HTTP redirect needs to be caught
+          final redirect = Uri.parse(redirectUri);
+          final port = redirect.port == 0 ? 8400 : redirect.port;
+          final listener = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
+          
+          // Launch browser
+          await launchUrl(authUrl, mode: LaunchMode.externalApplication);
+          
+          // Wait for callback
+          final request = await listener.first;
+          final callbackUri = request.uri;
+          final code = callbackUri.queryParameters['code'];
+          
+          // Send response to browser
+          request.response
+            ..statusCode = 200
+            ..headers.set('Content-Type', 'text/html')
+            ..write('<html><body><p>Authentication complete. You can close this window.</p></body></html>');
+          await request.response.close();
+          await listener.close(force: true);
+          
+          if (code == null) return null;
+        
+          // Exchange code for tokens
+          final resp = await http.post(
+            Uri.parse('https://oauth2.googleapis.com/token'),
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: {
+              'client_id': OAuthConfig.clientId,
+              'redirect_uri': redirectUri,
+              'grant_type': 'authorization_code',
+              'code': code,
+              'code_verifier': verifier,
+              'client_secret': OAuthConfig.clientSecret,
+            },
+          );
+          
+          if (resp.statusCode != 200) return null;
+          final tok = jsonDecode(resp.body) as Map<String, dynamic>;
+          final accessToken = tok['access_token'] as String? ?? '';
+          final refreshToken = tok['refresh_token'] as String?;
+          final expiresIn = (tok['expires_in'] as num?)?.toInt();
+          final idToken = tok['id_token'] as String? ?? '';
+          
+          // Fetch user info
+          String displayName = 'Google Account';
+          String email = 'unknown@email';
+          String? photoUrl;
+          if (accessToken.isNotEmpty) {
+            final ui = await http.get(
+              Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+              headers: {'Authorization': 'Bearer $accessToken'},
+            );
+            if (ui.statusCode == 200) {
+              final data = jsonDecode(ui.body) as Map<String, dynamic>;
+              email = (data['email'] as String?) ?? email;
+              displayName = (data['name'] as String?) ?? displayName;
+              photoUrl = data['picture'] as String?;
+            }
+          }
+          
+          return GoogleAccount(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            email: email,
+            displayName: displayName,
+            photoUrl: photoUrl,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
+            idToken: idToken,
+          );
+        } else {
+          // iOS: Use flutter_web_auth_2 with custom scheme
+          final redirectUri = AppConstants.oauthRedirectUriForMobile;
+          final callbackUrlScheme = redirectUri.split(':/').first;
+          
+          final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+            'client_id': OAuthConfig.clientId,
+            'redirect_uri': redirectUri,
+            'response_type': 'code',
+            'scope': AppConstants.oauthScopes.join(' '),
+            'prompt': 'consent',
+            'access_type': 'offline',
+            'include_granted_scopes': 'true',
+          });
+          
+          final callbackUrl = await FlutterWebAuth2.authenticate(
+            url: authUrl.toString(),
+            callbackUrlScheme: callbackUrlScheme,
+          );
+          
+          final callbackUri = Uri.parse(callbackUrl);
+          final code = callbackUri.queryParameters['code'];
+          if (code == null) return null;
+          
+          // Exchange code for tokens (same as above)
+          final resp = await http.post(
+            Uri.parse('https://oauth2.googleapis.com/token'),
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: {
+              'client_id': OAuthConfig.clientId,
+              'redirect_uri': redirectUri,
+              'grant_type': 'authorization_code',
+              'code': code,
+              'client_secret': OAuthConfig.clientSecret,
+            },
+          );
+          
+          if (resp.statusCode != 200) return null;
+          final tok = jsonDecode(resp.body) as Map<String, dynamic>;
+          final accessToken = tok['access_token'] as String? ?? '';
+          final refreshToken = tok['refresh_token'] as String?;
+          final expiresIn = (tok['expires_in'] as num?)?.toInt();
+          final idToken = tok['id_token'] as String? ?? '';
+          
+          // Fetch user info
+          String displayName = 'Google Account';
+          String email = 'unknown@email';
+          String? photoUrl;
+          if (accessToken.isNotEmpty) {
+            final ui = await http.get(
+              Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+              headers: {'Authorization': 'Bearer $accessToken'},
+            );
+            if (ui.statusCode == 200) {
+              final data = jsonDecode(ui.body) as Map<String, dynamic>;
+              email = (data['email'] as String?) ?? email;
+              displayName = (data['name'] as String?) ?? displayName;
+              photoUrl = data['picture'] as String?;
+            }
+          }
+          
+          return GoogleAccount(
+            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            email: email,
+            displayName: displayName,
+            photoUrl: photoUrl,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
+            idToken: idToken,
+          );
+        }
+      } catch (_) {
+        // continue to fallback
+      }
+    }
+    
+    // Fallback: Use flutter_appauth for iOS or if web_auth_2 fails
+    if (OAuthConfig.clientId.isNotEmpty) {
       try {
         final appAuth = const FlutterAppAuth();
+        final redirectUri = Platform.isIOS 
+            ? AppConstants.oauthRedirectUriForMobile
+            : AppConstants.oauthRedirectUri;
         final result = await appAuth.authorizeAndExchangeCode(
           AuthorizationTokenRequest(
             OAuthConfig.clientId,
-            AppConstants.oauthRedirectUri,
+            redirectUri,
             scopes: AppConstants.oauthScopes,
             serviceConfiguration: const AuthorizationServiceConfiguration(
               authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -402,10 +576,14 @@ class GoogleAuthService {
     // Mobile/appauth: force consent to ensure refresh_token
     try {
       final appAuth = const FlutterAppAuth();
+      // Use mobile-specific redirect URI for Android/iOS
+      final redirectUri = Platform.isAndroid || Platform.isIOS 
+          ? AppConstants.oauthRedirectUriForMobile
+          : AppConstants.oauthRedirectUri;
       final result = await appAuth.authorizeAndExchangeCode(
         AuthorizationTokenRequest(
           OAuthConfig.clientId,
-          AppConstants.oauthRedirectUri,
+          redirectUri,
           scopes: AppConstants.oauthScopes,
           serviceConfiguration: const AuthorizationServiceConfiguration(
             authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',

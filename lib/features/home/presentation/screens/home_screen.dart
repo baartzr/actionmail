@@ -83,13 +83,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         selectedAccountId: _selectedAccountId,
       ),
     );
-    if (selectedAccount != null && selectedAccount != _selectedAccountId) {
-      setState(() {
-        _selectedAccountId = selectedAccount;
-      });
-      await _saveLastActiveAccount(selectedAccount);
-      if (_selectedAccountId != null) {
-        await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+    // Reload accounts to ensure we have the latest list (including newly added accounts)
+    await _loadAccounts();
+    if (!mounted) return;
+    if (selectedAccount != null) {
+      // Verify the account still exists in the list
+      if (_accounts.any((acc) => acc.id == selectedAccount)) {
+        setState(() {
+          _selectedAccountId = selectedAccount;
+        });
+        await _saveLastActiveAccount(selectedAccount);
+        if (_selectedAccountId != null) {
+          await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+        }
       }
     }
   }
@@ -125,7 +131,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
     return Scaffold(
       appBar: PreferredSize(
-        preferredSize: Size.fromHeight((kToolbarHeight * 1.8) + MediaQuery.of(context).padding.top),
+        preferredSize: Size.fromHeight((kToolbarHeight * 1.5) + MediaQuery.of(context).padding.top),
         child: Container(
           decoration: BoxDecoration(
             color: Theme.of(context).appBarTheme.backgroundColor ?? Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -160,7 +166,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               },
                               child: Text(
                                 AppConstants.appName,
-                                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                                   color: Theme.of(context).appBarTheme.foregroundColor,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -200,6 +206,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               value: _selectedFolder,
                               items: const ['INBOX','SENT','TRASH','SPAM','ARCHIVE'],
                               itemBuilder: (folder) => AppConstants.folderDisplayNames[folder] ?? folder,
+                              textColor: Theme.of(context).appBarTheme.foregroundColor,
                               onChanged: (value) async {
                                 if (value != null) {
                                   setState(() {
@@ -214,7 +221,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             const Spacer(),
                             IconButton(
                               tooltip: 'Compose',
-                              icon: const Icon(Icons.edit_outlined),
+                              icon: const Icon(Icons.edit_outlined, size: 18),
                               color: Theme.of(context).appBarTheme.foregroundColor,
                               onPressed: () {
                                 if (_selectedAccountId != null) {
@@ -229,7 +236,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ),
                             IconButton(
                               tooltip: 'Refresh',
-                              icon: const Icon(Icons.refresh),
+                              icon: const Icon(Icons.refresh, size: 18),
                               color: Theme.of(context).appBarTheme.foregroundColor,
                               onPressed: () async {
                                 if (_selectedAccountId != null) {
@@ -239,7 +246,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ),
                             IconButton(
                               tooltip: 'Settings',
-                              icon: const Icon(Icons.settings_outlined),
+                              icon: const Icon(Icons.settings_outlined, size: 18),
                               color: Theme.of(context).appBarTheme.foregroundColor,
                               onPressed: () {
                                 showDialog(
@@ -249,8 +256,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               },
                             ),
                             PopupMenuButton<String>(
-                              icon: const Icon(Icons.menu),
-                              color: Theme.of(context).appBarTheme.foregroundColor,
+                              icon: Icon(Icons.menu, size: 18, color: Theme.of(context).appBarTheme.foregroundColor),
                               onSelected: (value) {
                                 switch (value) {
                                   case 'Actions':
@@ -876,6 +882,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final isMobile = MediaQuery.of(context).size.width < 900;
     
     // Color for Personal/Business icons
     Color iconColor;
@@ -898,7 +905,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           });
         },
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: EdgeInsets.symmetric(
+            horizontal: isMobile ? 8 : 12, 
+            vertical: 6
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -907,14 +917,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 size: 18,
                 color: iconColor,
               ),
-              const SizedBox(width: 6),
-              Text(
-                state,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              // Hide text on mobile
+              if (!isMobile) ...[
+                const SizedBox(width: 6),
+                Text(
+                  state,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -1105,7 +1118,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
     final displayText = '$label ($count)';
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 2.0),
+      padding: const EdgeInsets.symmetric(horizontal: 1.0),
       child: InkWell(
         onTap: () {
           setState(() {
@@ -1115,7 +1128,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         },
         borderRadius: BorderRadius.circular(8),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           decoration: selected
               ? BoxDecoration(
                   color: cs.primary.withValues(alpha: 0.12),
@@ -1127,6 +1140,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             style: theme.textTheme.labelMedium?.copyWith(
               color: selected ? cs.primary : cs.onSurfaceVariant,
               fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              fontSize: 12,
             ),
           ),
         ),

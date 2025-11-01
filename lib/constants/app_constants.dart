@@ -1,3 +1,5 @@
+import 'dart:io';
+
 /// Application-wide constants
 class AppConstants {
   // App name
@@ -100,7 +102,24 @@ class AppConstants {
 
   // OAuth configuration
   // Note: clientId and clientSecret are now in lib/config/oauth_config.dart (gitignored)
-  static const String oauthRedirectUri = 'http://localhost:8400';
+  // Desktop uses localhost, mobile uses custom scheme
+  static String get oauthRedirectUri {
+    // For Android/iOS, use custom scheme matching applicationId
+    // For desktop, use localhost
+    return 'http://localhost:8400';
+  }
+  
+  // For Android with web client, must use HTTP redirect URI (web clients don't accept custom schemes)
+  // For iOS, use custom scheme
+  static String get oauthRedirectUriForMobile {
+    if (Platform.isAndroid) {
+      // Web client requires HTTP redirect URI
+      return 'http://127.0.0.1:8400/oauth2redirect';
+    } else {
+      // iOS uses custom scheme
+      return 'com.seagreen.inboxiq1:/oauth2redirect';
+    }
+  }
   static const List<String> oauthScopes = [
     'email',
     'https://www.googleapis.com/auth/gmail.readonly',

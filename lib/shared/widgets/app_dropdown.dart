@@ -8,6 +8,7 @@ class AppDropdown<T> extends StatelessWidget {
   final void Function(T?) onChanged;
   final String? hint;
   final bool isDense;
+  final Color? textColor;
 
   const AppDropdown({
     super.key,
@@ -17,6 +18,7 @@ class AppDropdown<T> extends StatelessWidget {
     required this.onChanged,
     this.hint,
     this.isDense = false,
+    this.textColor,
   });
 
   @override
@@ -24,16 +26,24 @@ class AppDropdown<T> extends StatelessWidget {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     
-    // Use gray color for dropdown text
-    final textColor = cs.onSurface.withValues(alpha: 0.8);
+    // Use provided textColor or default gray color for dropdown text
+    final selectedTextColor = textColor ?? cs.onSurface.withValues(alpha: 0.8);
     
     return DropdownButton<T>(
       value: value,
       hint: hint != null ? Text(
         hint!,
-        style: TextStyle(color: textColor, fontSize: 13),
+        style: TextStyle(color: selectedTextColor, fontSize: 13),
       ) : null,
-      icon: Icon(Icons.arrow_drop_down, color: textColor),
+      icon: Icon(Icons.arrow_drop_down, color: selectedTextColor),
+      selectedItemBuilder: (context) {
+        return items.map((item) {
+          return Text(
+            itemBuilder(item),
+            style: TextStyle(color: selectedTextColor, fontSize: 13),
+          );
+        }).toList();
+      },
       items: items.map((item) {
         return DropdownMenuItem<T>(
           value: item,
@@ -46,7 +56,7 @@ class AppDropdown<T> extends StatelessWidget {
       onChanged: onChanged,
       underline: const SizedBox.shrink(),
       isDense: isDense,
-      style: TextStyle(color: textColor, fontSize: 13),
+      style: TextStyle(color: selectedTextColor, fontSize: 13),
       dropdownColor: cs.surface,
       menuMaxHeight: 300,
       iconSize: 20,

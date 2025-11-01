@@ -352,8 +352,8 @@ class _EmailTileState extends State<EmailTile> {
                   ),
                 ],
 
-                // Email Full View button and local category chips (only show in expanded view)
-                if (_expanded) ...[
+                // Email Full View button and 4 info buttons (always visible)
+                ...[
                   const SizedBox(height: 8),
                   Row(
                     children: [
@@ -379,155 +379,6 @@ class _EmailTileState extends State<EmailTile> {
                         ),
                       ),
                       const Spacer(),
-                      if (widget.message.localTags.isNotEmpty)
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 4,
-                          children: widget.message.localTags.map((tag) {
-                            return Chip(
-                              label: Text(
-                                tag,
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  fontSize: 11,
-                                ),
-                              ),
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 0),
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              backgroundColor: tag == 'Subscription'
-                                  ? theme.colorScheme.secondaryContainer
-                                  : tag == 'Shopping'
-                                      ? theme.colorScheme.tertiaryContainer
-                                      : theme.colorScheme.surfaceContainerHighest,
-                              labelStyle: TextStyle(
-                                color: tag == 'Subscription'
-                                    ? theme.colorScheme.onSecondaryContainer
-                                    : tag == 'Shopping'
-                                        ? theme.colorScheme.onTertiaryContainer
-                                        : theme.colorScheme.onSurfaceVariant,
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                    ],
-                  ),
-                ],
-
-                // Action row - show in all folders, but disable when not in INBOX
-                ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Expanded(
-                        child: Opacity(
-                          opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.lightbulb_outline,
-                                size: 16,
-                                color: isOverdue
-                                    ? theme.colorScheme.error
-                                    : theme.colorScheme.secondary,
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Builder(
-                                  builder: (context) {
-                                    final hasAction = _actionDate != null || (_actionText != null && _actionText!.trim().isNotEmpty);
-                                    final isInbox = widget.message.folderLabel == 'INBOX';
-                                    final baseStyle = theme.textTheme.bodySmall?.copyWith(
-                                      color: isOverdue
-                                          ? theme.colorScheme.error
-                                          : theme.colorScheme.onSurfaceVariant,
-                                      fontStyle: FontStyle.italic,
-                                    );
-                                    if (!hasAction) {
-                                      return RichText(
-                                        text: TextSpan(
-                                          style: baseStyle,
-                                          children: [
-                                            const TextSpan(text: 'No action set. '),
-                                            TextSpan(
-                                              text: 'Add Action',
-                                              style: theme.textTheme.bodySmall?.copyWith(
-                                                color: isInbox 
-                                                    ? theme.colorScheme.secondary
-                                                    : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                                decoration: TextDecoration.none,
-                                                fontStyle: FontStyle.normal,
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                              recognizer: isInbox 
-                                                  ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
-                                                  : null,
-                                            ),
-                                          ],
-                                        ),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                      );
-                                    }
-                                  // With action: show [date] action text and [Edit, Mark as Complete/Incomplete]
-                                  final display = _actionText ?? '';
-                                  final dateLabel = _actionDate != null
-                                      ? _formatDate(_actionDate!, DateTime.now())
-                                      : null;
-                                  final isComplete = _isActionComplete(_actionText);
-                                    return RichText(
-                                      text: TextSpan(
-                                        style: baseStyle,
-                                        children: [
-                                        if (dateLabel != null) ...[
-                                          TextSpan(text: dateLabel),
-                                          const TextSpan(text: '  •  '),
-                                        ],
-                                          if (display.isNotEmpty) TextSpan(text: '$display  '),
-                                          TextSpan(
-                                            text: 'Edit',
-                                            style: theme.textTheme.bodySmall?.copyWith(
-                                              color: isInbox 
-                                                  ? theme.colorScheme.secondary
-                                                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                              decoration: TextDecoration.none,
-                                              fontStyle: FontStyle.normal,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                            recognizer: isInbox 
-                                                ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
-                                                : null,
-                                          ),
-                                          const TextSpan(text: '  '),
-                                          TextSpan(
-                                            text: isComplete ? 'Mark as incomplete' : 'Mark as complete',
-                                            style: theme.textTheme.bodySmall?.copyWith(
-                                              color: isInbox 
-                                                  ? (isComplete 
-                                                      ? theme.colorScheme.primary
-                                                      : theme.colorScheme.tertiary)
-                                                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                              decoration: TextDecoration.none,
-                                              fontStyle: FontStyle.normal,
-                                              fontWeight: FontWeight.w600,
-                                            ),
-                                            recognizer: isInbox 
-                                                ? (TapGestureRecognizer()..onTap = _handleMarkActionComplete)
-                                                : null,
-                                          ),
-                                        ],
-                                      ),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    );
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
                       _buildCategoryIconSwitch(context),
                       const SizedBox(width: 4),
                       IconButton(
@@ -554,6 +405,117 @@ class _EmailTileState extends State<EmailTile> {
                         tooltip: AppConstants.swipeActionTrash,
                       ),
                     ],
+                  ),
+                ],
+
+                // Action row - show in all folders, but disable when not in INBOX
+                ...[
+                  const SizedBox(height: 8),
+                  Opacity(
+                    opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.lightbulb_outline,
+                          size: 16,
+                          color: isOverdue
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.secondary,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Builder(
+                            builder: (context) {
+                              final hasAction = _actionDate != null || (_actionText != null && _actionText!.trim().isNotEmpty);
+                              final isInbox = widget.message.folderLabel == 'INBOX';
+                              final baseStyle = theme.textTheme.bodySmall?.copyWith(
+                                color: isOverdue
+                                    ? theme.colorScheme.error
+                                    : theme.colorScheme.onSurfaceVariant,
+                                fontStyle: FontStyle.italic,
+                              );
+                              if (!hasAction) {
+                                return RichText(
+                                  text: TextSpan(
+                                    style: baseStyle,
+                                    children: [
+                                      const TextSpan(text: 'No action set. '),
+                                      TextSpan(
+                                        text: 'Add Action',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: isInbox 
+                                              ? theme.colorScheme.secondary
+                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                          decoration: TextDecoration.none,
+                                          fontStyle: FontStyle.normal,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                        recognizer: isInbox 
+                                            ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
+                                            : null,
+                                      ),
+                                    ],
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                );
+                              }
+                            // With action: show [date] action text and [Edit, Mark as Complete/Incomplete]
+                            final display = _actionText ?? '';
+                            final dateLabel = _actionDate != null
+                                ? _formatDate(_actionDate!, DateTime.now())
+                                : null;
+                            final isComplete = _isActionComplete(_actionText);
+                              return RichText(
+                                text: TextSpan(
+                                  style: baseStyle,
+                                  children: [
+                                  if (dateLabel != null) ...[
+                                    TextSpan(text: dateLabel),
+                                    const TextSpan(text: '  •  '),
+                                  ],
+                                    if (display.isNotEmpty) TextSpan(text: '$display  '),
+                                    TextSpan(
+                                      text: 'Edit',
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: isInbox 
+                                            ? theme.colorScheme.secondary
+                                            : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                        decoration: TextDecoration.none,
+                                        fontStyle: FontStyle.normal,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      recognizer: isInbox 
+                                          ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
+                                          : null,
+                                    ),
+                                    const TextSpan(text: '  '),
+                                    TextSpan(
+                                      text: isComplete ? 'Mark as incomplete' : 'Mark as complete',
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: isInbox 
+                                            ? (isComplete 
+                                                ? theme.colorScheme.primary
+                                                : theme.colorScheme.tertiary)
+                                            : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                        decoration: TextDecoration.none,
+                                        fontStyle: FontStyle.normal,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      recognizer: isInbox 
+                                          ? (TapGestureRecognizer()..onTap = _handleMarkActionComplete)
+                                          : null,
+                                    ),
+                                  ],
+                                ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
 

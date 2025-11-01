@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_manager/window_manager.dart';
+import 'dart:io';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -31,6 +34,29 @@ class _SplashScreenState extends State<SplashScreen> {
   Future<void> _saveLastActiveAccount(String accountId) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('lastActiveAccountId', accountId);
+  }
+
+  static const MethodChannel _channel = MethodChannel('com.actionmail.actionmail/bringToFront');
+
+  Future<void> _bringAppToFront() async {
+    // Works on desktop platforms using window_manager
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {
+        // Ignore errors if window_manager is not initialized
+      }
+    }
+    // On Android, use platform channel to bring app to front
+    if (Platform.isAndroid) {
+      try {
+        await _channel.invokeMethod('bringToFront');
+      } catch (_) {
+        // Ignore errors if method channel not set up
+      }
+    }
+    // On iOS, navigation should bring app to front automatically
   }
 
   Future<void> _load() async {
@@ -73,88 +99,55 @@ class _SplashScreenState extends State<SplashScreen> {
   void _showSplashWindow() {
     AppWindowDialog.show(
       context: context,
-      title: 'Welcome to ActionMail',
+      title: _forceAdd ? 'Add Account' : 'Welcome to ActionMail',
       size: AppWindowSize.large,
       barrierDismissible: _forceAdd, // allow close only when explicitly adding
       bodyPadding: const EdgeInsets.all(32.0),
       child: Builder(
         builder: (context) {
           final theme = Theme.of(context);
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // App logo/icon
-              Container(
-                width: 100,
-                height: 100,
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      theme.colorScheme.primary,
-                      theme.colorScheme.primary.withValues(alpha: 0.7),
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: [
-                    BoxShadow(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.3),
-                      blurRadius: 20,
-                      offset: const Offset(0, 10),
+          return SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // App logo/icon
+                Container(
+                  width: 100,
+                  height: 100,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        theme.colorScheme.primary,
+                        theme.colorScheme.primary.withValues(alpha: 0.7),
+                      ],
                     ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.email_outlined,
-                  size: 60,
-                  color: theme.colorScheme.onPrimary,
-                ),
-              ),
-              const SizedBox(height: 24),
-              Text(
-                'ActionMail',
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color: theme.colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Email that helps you act faster',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 32),
-              Card(
-                elevation: 0,
-                color: theme.colorScheme.surfaceContainerHighest,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                child: Padding(
-                  padding: const EdgeInsets.all(20.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      _Benefit(icon: Icons.label_important_outline, text: 'Smart action labels and reminders'),
-                      _Benefit(icon: Icons.swipe, text: 'Swipe to Archive, Trash, or Restore with one tap'),
-                      _Benefit(icon: Icons.star_border_rounded, text: 'Star and filter important conversations'),
-                      _Benefit(icon: Icons.sync, text: 'Fast 2‑minute background sync'),
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: theme.colorScheme.primary.withValues(alpha: 0.3),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
+                      ),
                     ],
                   ),
+                  child: Icon(
+                    Icons.email_outlined,
+                    size: 60,
+                    color: theme.colorScheme.onPrimary,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 24),
-              Align(
-                alignment: Alignment.centerRight,
-                child: FilledButton.icon(
+                const SizedBox(height: 24),
+                // Sign in button - moved directly below graphic, centered
+                FilledButton.icon(
                   onPressed: _signingIn
                       ? null
-                      : () async {
+                        : () async {
                           setState(() => _signingIn = true);
-                          final navigator = Navigator.of(context, rootNavigator: true);
+                          final rootNavigator = Navigator.of(context, rootNavigator: true);
+                          final dialogNavigator = Navigator.of(context);
                           final scaffoldMessenger = ScaffoldMessenger.of(context);
                           final svc = GoogleAuthService();
                           final acc = await svc.signIn();
@@ -165,7 +158,33 @@ class _SplashScreenState extends State<SplashScreen> {
                             // Save as last active account
                             await _saveLastActiveAccount(stored.id);
                             if (!mounted) return;
-                            navigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                            
+                            if (!mounted) return;
+                            // If forceAdd, close dialog and pop route with account ID
+                            if (_forceAdd) {
+                              // Close the dialog first
+                              dialogNavigator.pop();
+                              // Wait a moment for dialog to close
+                              await Future.delayed(const Duration(milliseconds: 100));
+                              if (!mounted) return;
+                              // Bring app to front (works on desktop; mobile comes to front on navigation)
+                              try {
+                                await _bringAppToFront();
+                              } catch (_) {
+                                // Ignore errors
+                              }
+                              if (!mounted) return;
+                              // Then pop the route with the account ID
+                              rootNavigator.pop(stored.id);
+                            } else {
+                              // Bring app to front before navigating to home
+                              try {
+                                await _bringAppToFront();
+                              } catch (_) {
+                                // Ignore errors
+                              }
+                              rootNavigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                            }
                           } else {
                             scaffoldMessenger.showSnackBar(
                               const SnackBar(content: Text('Google sign-in not supported on this platform.')),
@@ -176,17 +195,47 @@ class _SplashScreenState extends State<SplashScreen> {
                   icon: const Icon(Icons.login),
                   label: Text(_signingIn ? 'Signing in…' : 'Sign in with Google'),
                 ),
-              ),
-            ],
+                const SizedBox(height: 32),
+                Text(
+                  'ActionMail',
+                  style: theme.textTheme.headlineMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Email that helps you act faster',
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 32),
+                Card(
+                  elevation: 0,
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(20.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: const [
+                        _Benefit(icon: Icons.label_important_outline, text: 'Smart action labels and reminders'),
+                        _Benefit(icon: Icons.swipe, text: 'Swipe to Archive, Trash, or Restore with one tap'),
+                        _Benefit(icon: Icons.star_border_rounded, text: 'Star and filter important conversations'),
+                        _Benefit(icon: Icons.sync, text: 'Fast 2‑minute background sync'),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
           );
         },
       ),
     ).then((_) {
       _dialogShown = false;
-      if (_forceAdd && mounted) {
-        // Return to previous screen when launched as Add Account
-        Navigator.of(context).maybePop();
-      }
     });
   }
 
