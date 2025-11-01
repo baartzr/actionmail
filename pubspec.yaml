@@ -1,0 +1,61 @@
+name: actionmail
+description: Action-centric Gmail client with intelligent action management and filtering.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State Management
+  flutter_riverpod: ^2.5.1
+  # removed window_size; using modal dialogs instead of resizing native window
+  
+  # Google Sign-In and OAuth (reuse from inboxiq)
+  google_sign_in: ^6.1.6
+  googleapis: ^11.4.0
+  googleapis_auth: ^1.4.1
+  flutter_web_auth_2: ^4.1.0
+  url_launcher: ^6.3.0
+  
+  # Window management for desktop
+  window_manager: ^0.3.7
+  
+  # Local Storage
+  sqflite: ^2.3.0
+  sqflite_common_ffi: ^2.3.0  # For desktop platforms
+  path: ^1.8.3
+  shared_preferences: ^2.2.2
+  
+  # HTTP and API
+  http: ^1.1.0
+  
+  # OAuth2 authentication
+  flutter_appauth: ^6.0.2
+  
+  # UI Components
+  cupertino_icons: ^1.0.2
+  # flutter_slidable: ^3.0.1  # removed (unused)
+  
+  # Utilities
+  intl: ^0.18.1
+  uuid: ^4.2.1
+  crypto: ^3.0.3
+  
+  # WebView for email viewing
+  flutter_inappwebview: ^6.1.5
+  
+  # Reuse inboxiq auth and Gmail services as local dependency
+  # inboxiq:
+  #   path: ../inboxiq  # removed (eliminate Firebase transitively)
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
