@@ -381,6 +381,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
   
   Widget _buildFilterBar() {
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
       child: Row(
@@ -388,8 +389,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         children: [
           // State filter buttons (Unread, Starred, Important) - sophisticated style
           _buildSophisticatedStateFilterButtons(context),
+          SizedBox(width: isDesktop ? 4 : 12),
           // Category filter button - sophisticated style
           _buildSophisticatedCategoryButton(context),
+          SizedBox(width: isDesktop ? 4 : 12),
           // Search button - sophisticated style
           _buildSophisticatedSearchButton(context),
         ],
@@ -451,6 +454,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildSophisticatedStateFilterButtons(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
     
     return Container(
       decoration: BoxDecoration(
@@ -477,6 +481,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               });
             },
           ),
+          SizedBox(width: isDesktop ? 2 : 8),
           _buildSophisticatedFilterButton(
             context,
             'Starred',
@@ -489,6 +494,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               });
             },
           ),
+          SizedBox(width: isDesktop ? 2 : 8),
           _buildSophisticatedFilterButton(
             context,
             'Important',
@@ -510,6 +516,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final hasCategories = _selectedCategories.isNotEmpty;
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
     
     return Container(
       decoration: BoxDecoration(
@@ -526,11 +533,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: () {
-            _showCategoriesWindow(context);
-          },
+          onTap: () => _showCategoriesPopup(context),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -559,14 +564,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                   ],
                 ),
-                const SizedBox(width: 6),
-                Text(
-                  'Categories',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: hasCategories ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                    fontWeight: hasCategories ? FontWeight.w600 : FontWeight.w500,
+                if (isDesktop) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    'Categories',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: hasCategories ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                      fontWeight: hasCategories ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -579,6 +586,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final isSearchActive = _showSearch;
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
     
     return Container(
       decoration: BoxDecoration(
@@ -605,7 +613,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             });
           },
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -616,14 +624,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ? cs.onPrimaryContainer 
                       : const Color(0xFF42A5F5), // Blue for search
                 ),
-                const SizedBox(width: 6),
-                Text(
-                  'Search',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: isSearchActive ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                    fontWeight: isSearchActive ? FontWeight.w600 : FontWeight.w500,
+                if (isDesktop) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    'Search',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: isSearchActive ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                      fontWeight: isSearchActive ? FontWeight.w600 : FontWeight.w500,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -642,6 +652,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   ) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
     
     // Assign colors based on filter type
     Color iconColor;
@@ -670,7 +681,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         borderRadius: BorderRadius.circular(10),
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -679,14 +690,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 size: 18,
                 color: iconColor,
               ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              if (isDesktop) ...[
+                const SizedBox(width: 6),
+                Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
         ),
@@ -694,50 +707,127 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  void _showCategoriesWindow(BuildContext context) {
+  void _showCategoriesPopup(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final currentSelections = Set<String>.from(_selectedCategories);
+    
+    // Map categories to icons and colors
+    final categoryConfig = <String, Map<String, dynamic>>{
+      'categoryPersonal': {'icon': Icons.person_outline, 'color': const Color(0xFF2196F3)},
+      'categorySocial': {'icon': Icons.people_outline, 'color': const Color(0xFF673AB7)},
+      'categoryPromotions': {'icon': Icons.local_offer_outlined, 'color': const Color(0xFFE91E63)},
+      'categoryUpdates': {'icon': Icons.info_outline, 'color': const Color(0xFF00BCD4)},
+      'categoryForums': {'icon': Icons.forum_outlined, 'color': const Color(0xFFFF9800)},
+      'categoryBills': {'icon': Icons.receipt_long_outlined, 'color': const Color(0xFF4CAF50)},
+      'categoryPurchases': {'icon': Icons.shopping_bag_outlined, 'color': const Color(0xFFFF5722)},
+      'categoryFinance': {'icon': Icons.account_balance_outlined, 'color': const Color(0xFF009688)},
+      'categoryTravel': {'icon': Icons.flight_outlined, 'color': const Color(0xFF03A9F4)},
+      'categoryReceipts': {'icon': Icons.receipt_outlined, 'color': const Color(0xFF795548)},
+    };
     
     showDialog(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (context, setDialogState) {
-          return AppWindowDialog(
-            title: 'Categories',
-            bodyPadding: const EdgeInsets.all(16.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Expanded(
-                  child: ListView.separated(
-                    itemCount: AppConstants.allGmailCategories.length,
-                    separatorBuilder: (_, __) => const Divider(height: 1),
-                    itemBuilder: (context, index) {
-                      final category = AppConstants.allGmailCategories[index];
-                      final displayName = AppConstants.categoryDisplayNames[category] ?? category;
-                      final isSelected = currentSelections.contains(category);
-                      return CheckboxListTile(
-                        title: Text(displayName),
-                        value: isSelected,
-                        onChanged: (value) {
-                          setDialogState(() {
-                            if (value == true) {
-                              currentSelections.add(category);
-                            } else {
-                              currentSelections.remove(category);
-                            }
-                          });
-                        },
-                      );
-                    },
+      barrierDismissible: true,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Container(
+              width: 250,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Header
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Row(
+                      children: [
+                        Text(
+                          'Categories',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const Spacer(),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          iconSize: 20,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          onPressed: () => Navigator.of(context).pop(),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ),
-          );
-        },
+                  const Divider(height: 1),
+                  // Category list
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: AppConstants.allGmailCategories.map((category) {
+                          final displayName = AppConstants.categoryDisplayNames[category] ?? category;
+                          final isSelected = currentSelections.contains(category);
+                          final config = categoryConfig[category] ?? {'icon': Icons.label_outline, 'color': cs.onSurfaceVariant};
+                          final icon = config['icon'] as IconData;
+                          final color = config['color'] as Color;
+                          
+                          return InkWell(
+                            onTap: () {
+                              setDialogState(() {
+                                if (isSelected) {
+                                  currentSelections.remove(category);
+                                } else {
+                                  currentSelections.add(category);
+                                }
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              decoration: BoxDecoration(
+                                color: isSelected ? cs.primaryContainer.withValues(alpha: 0.3) : null,
+                              ),
+                              child: Row(
+                                children: [
+                                  Icon(
+                                    icon,
+                                    size: 20,
+                                    color: isSelected ? cs.primary : color,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      displayName,
+                                      style: theme.textTheme.bodyMedium?.copyWith(
+                                        color: isSelected ? cs.onPrimaryContainer : null,
+                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                  if (isSelected)
+                                    Icon(
+                                      Icons.check,
+                                      size: 18,
+                                      color: cs.primary,
+                                    ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
       ),
     ).then((_) {
-      // Update state when dialog closes
+      // Apply selections when dialog closes
       setState(() {
         _selectedCategories.clear();
         _selectedCategories.addAll(currentSelections);

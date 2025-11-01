@@ -96,8 +96,8 @@ class _SplashScreenState extends State<SplashScreen> {
     }
   }
 
-  void _showSplashWindow() {
-    AppWindowDialog.show(
+  void _showSplashWindow() async {
+    final result = await AppWindowDialog.show(
       context: context,
       title: _forceAdd ? 'Add Account' : 'Welcome to ActionMail',
       size: AppWindowSize.large,
@@ -235,6 +235,11 @@ class _SplashScreenState extends State<SplashScreen> {
         },
       ),
     );
+    // If user dismissed the dialog without signing in, pop the route
+    if (!mounted) return;
+    if (_forceAdd && result == null) {
+      Navigator.of(context).pop(null);
+    }
   }
 
   @override
