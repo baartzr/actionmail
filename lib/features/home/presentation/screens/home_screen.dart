@@ -21,6 +21,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
+import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'dart:async';
 
 /// Main home screen for ActionMail
@@ -206,6 +207,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               },
                             ),
                             const Spacer(),
+                            IconButton(
+                              tooltip: 'Compose',
+                              icon: const Icon(Icons.edit_outlined),
+                              color: Theme.of(context).appBarTheme.foregroundColor,
+                              onPressed: () {
+                                if (_selectedAccountId != null) {
+                                  showDialog(
+                                    context: context,
+                                    builder: (ctx) => ComposeEmailDialog(
+                                      accountId: _selectedAccountId!,
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
                             IconButton(
                               tooltip: 'Refresh',
                               icon: const Icon(Icons.refresh),

@@ -137,13 +137,14 @@ class MessageRepository {
     await db.update('pending_ops', {'status': 'failed'}, where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText) async {
+  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence]) async {
     final db = await _dbProvider.database;
     await db.update(
       'messages',
       {
         'actionDate': actionDate?.millisecondsSinceEpoch,
         'actionInsightText': actionText,
+        if (confidence != null) 'actionConfidence': confidence,
       },
       where: 'id=?',
       whereArgs: [messageId],

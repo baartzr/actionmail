@@ -88,6 +88,8 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
   Widget build(BuildContext context) {
     return AppWindowDialog(
       title: 'Select Account',
+      size: AppWindowSize.small,
+      bodyPadding: EdgeInsets.zero,
       child: _loading
           ? const Center(child: CircularProgressIndicator())
           : Column(
@@ -95,6 +97,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
               children: [
                 Expanded(
                   child: ListView.separated(
+                    padding: const EdgeInsets.all(16.0),
                     itemCount: _accounts.length,
                     separatorBuilder: (_, __) => const Divider(height: 1),
                     itemBuilder: (context, index) {
@@ -146,9 +149,9 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                     },
                   ),
                 ),
-                const Divider(),
+                const Divider(height: 1),
                 Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8.0),
+                  padding: const EdgeInsets.all(16.0),
                   child: FilledButton.icon(
                     onPressed: () async {
                       Navigator.of(context).pop();

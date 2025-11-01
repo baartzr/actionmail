@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AddAccountDialog extends StatefulWidget {
   const AddAccountDialog({super.key});
@@ -12,22 +13,99 @@ class AddAccountDialog extends StatefulWidget {
 class _AddAccountDialogState extends State<AddAccountDialog> {
   bool _signingIn = false;
 
+  Future<void> _saveLastActiveAccount(String accountId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('lastActiveAccountId', accountId);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AppWindowDialog(
-      title: 'Add account',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Email that helps you act faster', style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-          const SizedBox(height: 16),
+      title: 'Add Account',
+      size: AppWindowSize.large,
+      bodyPadding: const EdgeInsets.all(32.0),
+      child: SingleChildScrollView(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+          // App logo/icon
+          Container(
+            width: 100,
+            height: 100,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  theme.colorScheme.primary,
+                  theme.colorScheme.primary.withOpacity(0.7),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: theme.colorScheme.primary.withOpacity(0.3),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10),
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.email_outlined,
+              size: 60,
+              color: theme.colorScheme.onPrimary,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'ActionMail',
+            style: theme.textTheme.headlineMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Email that helps you act faster',
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 32),
+          FilledButton.icon(
+            onPressed: _signingIn
+                ? null
+                : () async {
+                    setState(() => _signingIn = true);
+                    final svc = GoogleAuthService();
+                    final acc = await svc.signIn();
+                    if (acc != null) {
+                      final stored = await svc.upsertAccount(acc);
+                      if (!mounted) return;
+                      // Save as last active account
+                      await _saveLastActiveAccount(stored.id);
+                      Navigator.of(context).pop(stored.id);
+                    } else {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Google sign-in not supported on this platform.')),
+                      );
+                      setState(() => _signingIn = false);
+                    }
+                  },
+            icon: const Icon(Icons.login),
+            label: Text(_signingIn ? 'Signing in…' : 'Sign in with Google'),
+          ),
+          const SizedBox(height: 32),
           Card(
             elevation: 0,
             color: theme.colorScheme.surfaceContainerHighest,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             child: Padding(
-              padding: const EdgeInsets.all(12.0),
+              padding: const EdgeInsets.all(20.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: const [
@@ -39,33 +117,8 @@ class _AddAccountDialogState extends State<AddAccountDialog> {
               ),
             ),
           ),
-          const SizedBox(height: 16),
-          Align(
-            alignment: Alignment.centerRight,
-            child: FilledButton.icon(
-              onPressed: _signingIn
-                  ? null
-                  : () async {
-                      setState(() => _signingIn = true);
-                      final svc = GoogleAuthService();
-                      final acc = await svc.signIn();
-                      if (acc != null) {
-                        final stored = await svc.upsertAccount(acc);
-                        if (!mounted) return;
-                        Navigator.of(context).pop(stored.id);
-                      } else {
-                        if (!mounted) return;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Google sign-in not supported on this platform.')),
-                        );
-                        setState(() => _signingIn = false);
-                      }
-                    },
-              icon: const Icon(Icons.login),
-              label: Text(_signingIn ? 'Signing in…' : 'Sign in with Google'),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

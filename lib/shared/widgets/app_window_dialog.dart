@@ -2,14 +2,17 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 /// Reusable modal window for desktop/mobile
-/// - Width: 90% of viewport, capped at 800px
-/// - Height: 80% of viewport
+/// - Large: Width 90% of viewport (max 800px), Height 80% of viewport
+/// - Small: Width 50% of viewport (max 500px), Height auto-fit content (max 60% of viewport)
 /// - AppBar-styled header with title and a close button on the right
+enum AppWindowSize { large, small }
+
 class AppWindowDialog extends StatelessWidget {
   final String title;
   final Widget child;
   final EdgeInsetsGeometry bodyPadding;
   final List<Widget>? headerActions;
+  final AppWindowSize size;
 
   const AppWindowDialog({
     super.key,
@@ -17,6 +20,7 @@ class AppWindowDialog extends StatelessWidget {
     required this.child,
     this.bodyPadding = const EdgeInsets.all(24.0),
     this.headerActions,
+    this.size = AppWindowSize.large,
   });
 
   static Future<T?> show<T>({
@@ -26,6 +30,7 @@ class AppWindowDialog extends StatelessWidget {
     EdgeInsetsGeometry bodyPadding = const EdgeInsets.all(16.0),
     List<Widget>? headerActions,
     bool barrierDismissible = true,
+    AppWindowSize size = AppWindowSize.large,
   }) {
     return showDialog<T>(
       context: context,
@@ -35,6 +40,7 @@ class AppWindowDialog extends StatelessWidget {
         child: child,
         bodyPadding: bodyPadding,
         headerActions: headerActions,
+        size: size,
       ),
     );
   }
@@ -42,13 +48,21 @@ class AppWindowDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
-    final maxWidth = 800.0;
-    final targetWidth = math.min(media.size.width * 0.9, maxWidth);
-    final targetHeight = media.size.height * 0.8;
     final theme = Theme.of(context);
     // Use consistent dark teal for window title bars (same as appbar)
     final appBarBg = theme.appBarTheme.backgroundColor ?? const Color(0xFF00695C);
     final appBarFg = theme.appBarTheme.foregroundColor ?? const Color(0xFFB2DFDB);
+
+    // Determine dimensions based on size
+    final double targetWidth;
+    final double? targetHeight;
+    if (size == AppWindowSize.small) {
+      targetWidth = math.min(media.size.width * 0.5, 500.0);
+      targetHeight = math.min(media.size.height * 0.6, 600.0);
+    } else {
+      targetWidth = math.min(media.size.width * 0.9, 800.0);
+      targetHeight = media.size.height * 0.8;
+    }
 
     return Dialog(
       insetPadding: const EdgeInsets.all(24),
@@ -59,6 +73,7 @@ class AppWindowDialog extends StatelessWidget {
         height: targetHeight,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
           children: [
             // Header bar styled to match AppBar
             Material(
@@ -92,12 +107,17 @@ class AppWindowDialog extends StatelessWidget {
             ),
             const Divider(height: 1),
             // Body
-            Expanded(
-              child: Padding(
-                padding: bodyPadding,
+            if (size == AppWindowSize.small)
+              Expanded(
                 child: child,
+              )
+            else
+              Expanded(
+                child: Padding(
+                  padding: bodyPadding,
+                  child: child,
+                ),
               ),
-            ),
           ],
         ),
       ),

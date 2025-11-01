@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
@@ -84,8 +85,8 @@ class GmailSyncService {
       }
     }
     
-    // Apply basic action heuristics
-    var enriched = ActionExtractor.enrich(messageIndexes);
+    // Note: Action detection moved to Phase 2 (deeper body-based detection)
+    var enriched = messageIndexes;
 
     // Preserve local fields when present locally
     final idMap = await _repo.getByIds(accountId, enriched.map((e) => e.id).toList());
@@ -379,43 +380,175 @@ class GmailSyncService {
   
   Future<void> _phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages) async {
     // Phase 2 tagging: performs extra checks on emails that DO NOT have the subs tag already set
-    // First check existing messages in DB to see which ones already have subs tag from phase 1
+    // Also performs action detection with deeper body-based analysis
+    debugPrint('[Phase2] Starting Phase 2 tagging for ${gmailMessages.length} messages');
+    
+    // First check existing messages in DB to see which ones already have subs tag from phase 1 or action from previous run
     final messageIds = gmailMessages.map((gm) => gm.id).toList();
     final existingMessages = await _repo.getByIds(accountId, messageIds);
+    debugPrint('[Phase2] Loaded ${existingMessages.length} existing messages from DB');
     
     for (final gm in gmailMessages) {
-      // Skip if email already has subs tag from phase 1
       final existing = existingMessages[gm.id];
-      if (existing != null && existing.subsLocal) {
-        continue;
-      }
       
       final headers = gm.payload?.headers ?? [];
-      final cats = [...gm.labelIds ?? []].map((e) => e.toLowerCase()).toList();
       final subj = (headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value ?? '').toLowerCase();
       final from = (headers.firstWhere((h) => h.name.toLowerCase() == 'from', orElse: () => const MessageHeader(name: '', value: '')).value ?? '').toLowerCase();
+      final snippet = gm.snippet ?? '';
       
-      // Phase 2: Simple heuristic checks to see if email might be a subs email
-      // Check for subscription keywords in subject: newsletter, news, digest, alert, update, etc.
-      final subscriptionKeywords = ['newsletter', 'news', 'digest', 'alert', 'update', 'weekly', 'daily', 'monthly'];
-      final hasSubscriptionKeyword = subscriptionKeywords.any((keyword) => subj.contains(keyword));
-      
-      final isSubsCandidate = cats.any((c) => c.contains('forum') || c.contains('update')) || 
-                             subj.contains('unsubscribe') || 
-                             hasSubscriptionKeyword ||
-                             from.contains('noreply');
-      
-      // If email looks like a subs email, perform deeper checks
-      if (isSubsCandidate) {
-        // Download the email body
-        final unsubLink = await _tryExtractUnsubLink(accountId, gm.id);
+      // === SUBSCRIPTION DETECTION ===
+      // Skip if email already has subs tag from phase 1
+      if (existing == null || !existing.subsLocal) {
+        final cats = [...gm.labelIds ?? []].map((e) => e.toLowerCase()).toList();
         
-        // If unsubscribe link is found, update email in DB to add subs tag plus unsubscribe link
-        if (unsubLink != null && unsubLink.isNotEmpty) {
-          await _repo.updateLocalClassification(gm.id, subs: true, unsubLink: unsubLink);
+        // Phase 2: Simple heuristic checks to see if email might be a subs email
+        final subscriptionKeywords = ['newsletter', 'news', 'digest', 'alert', 'update', 'weekly', 'daily', 'monthly'];
+        final hasSubscriptionKeyword = subscriptionKeywords.any((keyword) => subj.contains(keyword));
+        
+        final isSubsCandidate = cats.any((c) => c.contains('forum') || c.contains('update')) || 
+                               subj.contains('unsubscribe') || 
+                               hasSubscriptionKeyword ||
+                               from.contains('noreply');
+        
+        // If email looks like a subs email, perform deeper checks
+        if (isSubsCandidate) {
+          // Download the email body
+          final unsubLink = await _tryExtractUnsubLink(accountId, gm.id);
+          
+          // If unsubscribe link is found, update email in DB to add subs tag plus unsubscribe link
+          if (unsubLink != null && unsubLink.isNotEmpty) {
+            await _repo.updateLocalClassification(gm.id, subs: true, unsubLink: unsubLink);
+          }
+          // If unsubscribe link is not found, do nothing
         }
-        // If unsubscribe link is not found, do nothing
       }
+      
+      // === ACTION DETECTION ===
+      // Skip if email already has an action (don't overwrite user edits)
+      if (existing == null || existing.actionDate == null) {
+        debugPrint('[Phase2] Checking action for message ${gm.id}: subject="$subj", snippet="${snippet.substring(0, snippet.length > 50 ? 50 : snippet.length)}"');
+        
+        // Quick check: is this an action candidate? (lightweight, no body download)
+        final isActionCandidate = ActionExtractor.isActionCandidate(subj, snippet);
+        debugPrint('[Phase2] Action candidate check: $isActionCandidate for message ${gm.id}');
+        
+        if (isActionCandidate) {
+          // Quick detection on subject/snippet first (low confidence)
+          final quickResult = ActionExtractor.detectQuick(subj, snippet);
+          debugPrint('[Phase2] Quick detection result for ${gm.id}: ${quickResult != null ? "date=${quickResult.actionDate}, confidence=${quickResult.confidence}, text=${quickResult.insightText}" : "null"}');
+          
+          if (quickResult != null) {
+            // Download email body for deeper detection (higher confidence)
+            debugPrint('[Phase2] Downloading body for ${gm.id}...');
+            final bodyContent = await _downloadEmailBody(accountId, gm.id);
+            debugPrint('[Phase2] Body download for ${gm.id}: ${bodyContent != null ? "success (${bodyContent.length} chars)" : "failed"}');
+            
+            if (bodyContent != null && bodyContent.isNotEmpty) {
+              // Deep detection with full body content
+              final deepResult = ActionExtractor.detectWithBody(subj, snippet, bodyContent);
+              debugPrint('[Phase2] Deep detection result for ${gm.id}: ${deepResult != null ? "date=${deepResult.actionDate}, confidence=${deepResult.confidence}, text=${deepResult.insightText}" : "null"}');
+              
+              if (deepResult != null && deepResult.confidence >= 0.6) {
+                // Use deep result if confidence is high enough
+                debugPrint('[Phase2] Saving deep result for ${gm.id} (confidence ${deepResult.confidence} >= 0.6)');
+                await _repo.updateAction(gm.id, deepResult.actionDate, deepResult.insightText, deepResult.confidence);
+              } else if (quickResult.confidence >= 0.5) {
+                // Fall back to quick result if deep detection didn't improve confidence
+                debugPrint('[Phase2] Saving quick result for ${gm.id} (confidence ${quickResult.confidence} >= 0.5)');
+                await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+              } else {
+                debugPrint('[Phase2] Skipping ${gm.id}: deep result confidence ${deepResult?.confidence ?? "null"} < 0.6, quick confidence ${quickResult.confidence} < 0.5');
+              }
+            } else if (quickResult.confidence >= 0.5) {
+              // If body download fails, use quick result
+              debugPrint('[Phase2] Body download failed, saving quick result for ${gm.id} (confidence ${quickResult.confidence} >= 0.5)');
+              await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+            } else {
+              debugPrint('[Phase2] Body download failed and quick confidence ${quickResult.confidence} < 0.5, skipping ${gm.id}');
+            }
+          } else {
+            debugPrint('[Phase2] Quick detection returned null for ${gm.id}, skipping');
+          }
+        }
+      } else {
+        debugPrint('[Phase2] Skipping action detection for ${gm.id}: already has action (date=${existing.actionDate})');
+      }
+    }
+    
+    debugPrint('[Phase2] Phase 2 tagging completed');
+  }
+  
+  /// Download email body content (HTML and plain text combined)
+  Future<String?> _downloadEmailBody(String accountId, String messageId) async {
+    final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+    final accessToken = account?.accessToken;
+    if (accessToken == null || accessToken.isEmpty) {
+      debugPrint('[Phase2] Body download failed for $messageId: no access token');
+      return null;
+    }
+    
+    final resp = await http.get(
+      Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId?format=full'),
+      headers: {'Authorization': 'Bearer $accessToken'},
+    );
+    if (resp.statusCode != 200) {
+      debugPrint('[Phase2] Body download failed for $messageId: HTTP ${resp.statusCode}');
+      return null;
+    }
+    
+    try {
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final gm = GmailMessage.fromJson(map);
+      
+      // Collect HTML/plain bodies from parts tree
+      final bodies = <String>[];
+      void walkPart(MessagePart? part) {
+        if (part == null) return;
+        final mime = (part.mimeType ?? '').toLowerCase();
+        if ((mime.contains('text/html') || mime.contains('text/plain')) && part.body?.data != null) {
+          try {
+            final decoded = utf8.decode(
+              base64Url.decode((part.body!.data!).replaceAll('-', '+').replaceAll('_', '/')),
+            );
+            bodies.add(decoded);
+          } catch (e) {
+            debugPrint('[Phase2] Failed to decode body part for $messageId: $e');
+          }
+        }
+        if (part.parts != null) {
+          for (final p in part.parts!) {
+            walkPart(p);
+          }
+        }
+      }
+      
+      // Check if payload itself has body data (MessagePayload.body is a String, not MessageBody)
+      if (gm.payload?.body != null && gm.payload!.body!.isNotEmpty) {
+        try {
+          final decoded = utf8.decode(
+            base64Url.decode((gm.payload!.body!).replaceAll('-', '+').replaceAll('_', '/')),
+          );
+          bodies.add(decoded);
+        } catch (e) {
+          debugPrint('[Phase2] Failed to decode payload body for $messageId: $e');
+        }
+      }
+      
+      if (gm.payload?.parts != null) {
+        for (final p in gm.payload!.parts!) {
+          walkPart(p);
+        }
+      }
+      
+      if (bodies.isEmpty) {
+        debugPrint('[Phase2] Body download for $messageId: no body content found in parts');
+        return null;
+      }
+      
+      return bodies.join(' ');
+    } catch (e) {
+      debugPrint('[Phase2] Body download failed for $messageId: parse error $e');
+      return null;
     }
   }
 
@@ -461,6 +594,150 @@ class GmailSyncService {
     if (match != null) return match.group(1)!.trim();
     if (from.contains('@')) return from.trim();
     return '';
+  }
+
+  /// Send an email via Gmail API
+  /// [to] can be comma-separated for multiple recipients
+  /// [cc] and [bcc] are optional and can be comma-separated
+  /// [replyTo] is optional message ID for replies
+  /// [attachments] is a list of File objects to attach
+  Future<bool> sendEmail(
+    String accountId, {
+    required String to,
+    required String subject,
+    required String body,
+    String? cc,
+    String? bcc,
+    String? replyTo,
+    String? inReplyTo,
+    List<String>? references,
+    List<File>? attachments,
+  }) async {
+    try {
+      final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+      if (account == null) {
+        debugPrint('[Gmail] sendEmail: No account found for accountId $accountId');
+        return false;
+      }
+      final accessToken = account.accessToken;
+      if (accessToken.isEmpty) {
+        debugPrint('[Gmail] sendEmail: No access token for account $accountId');
+        return false;
+      }
+
+      // Get the sender's email address (the account's email)
+      final senderEmail = account.email;
+
+      // Build the raw email message
+      final rawMessage = StringBuffer();
+      
+      final hasAttachments = attachments != null && attachments.isNotEmpty;
+      
+      // Generate a boundary for multipart messages if we have attachments
+      final boundary = hasAttachments ? '----=_Part_${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecondsSinceEpoch}' : null;
+      
+      // Headers
+      rawMessage.writeln('From: $senderEmail');
+      rawMessage.writeln('To: $to');
+      if (cc != null && cc.trim().isNotEmpty) {
+        rawMessage.writeln('Cc: $cc');
+      }
+      if (bcc != null && bcc.trim().isNotEmpty) {
+        rawMessage.writeln('Bcc: $bcc');
+      }
+      rawMessage.writeln('Subject: $subject');
+      
+      // Reply headers
+      if (inReplyTo != null) {
+        rawMessage.writeln('In-Reply-To: $inReplyTo');
+      }
+      if (references != null && references.isNotEmpty) {
+        rawMessage.writeln('References: ${references.join(' ')}');
+      }
+      
+      // MIME type headers
+      if (hasAttachments) {
+        rawMessage.writeln('MIME-Version: 1.0');
+        rawMessage.writeln('Content-Type: multipart/mixed; boundary="$boundary"');
+        rawMessage.writeln('');
+        rawMessage.writeln('This is a multi-part message in MIME format.');
+        rawMessage.writeln('');
+        rawMessage.writeln('--$boundary');
+      }
+      
+      // Message body
+      rawMessage.writeln('Content-Type: text/plain; charset=UTF-8');
+      rawMessage.writeln('Content-Transfer-Encoding: 7bit');
+      rawMessage.writeln('');
+      rawMessage.writeln(body);
+      
+      // Add attachments if any
+      if (hasAttachments) {
+        for (final file in attachments!) {
+          if (!await file.exists()) continue;
+          
+          final fileBytes = await file.readAsBytes();
+          final fileName = file.path.split(Platform.pathSeparator).last;
+          final fileExtension = fileName.split('.').last.toLowerCase();
+          
+          // Determine MIME type based on extension
+          String mimeType = 'application/octet-stream';
+          if (fileExtension == 'pdf') {
+            mimeType = 'application/pdf';
+          } else if (fileExtension == 'jpg' || fileExtension == 'jpeg') {
+            mimeType = 'image/jpeg';
+          } else if (fileExtension == 'png') {
+            mimeType = 'image/png';
+          } else if (fileExtension == 'gif') {
+            mimeType = 'image/gif';
+          } else if (fileExtension == 'txt') {
+            mimeType = 'text/plain';
+          } else if (fileExtension == 'html' || fileExtension == 'htm') {
+            mimeType = 'text/html';
+          } else if (fileExtension == 'doc' || fileExtension == 'docx') {
+            mimeType = 'application/msword';
+          } else if (fileExtension == 'xls' || fileExtension == 'xlsx') {
+            mimeType = 'application/vnd.ms-excel';
+          }
+          
+          rawMessage.writeln('');
+          rawMessage.writeln('--$boundary');
+          rawMessage.writeln('Content-Type: $mimeType; name="$fileName"');
+          rawMessage.writeln('Content-Disposition: attachment; filename="$fileName"');
+          rawMessage.writeln('Content-Transfer-Encoding: base64');
+          rawMessage.writeln('');
+          rawMessage.writeln(base64Encode(fileBytes));
+        }
+        
+        rawMessage.writeln('');
+        rawMessage.writeln('--$boundary--');
+      }
+
+      // Encode to base64url (URL-safe base64, padding removed)
+      final rawBase64Url = base64UrlEncode(utf8.encode(rawMessage.toString()))
+          .replaceAll('=', '');
+
+      // Send via Gmail API
+      final resp = await http.post(
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/send'),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode({'raw': rawBase64Url}),
+      );
+
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        debugPrint('[Gmail] sendEmail: Successfully sent email to=$to subject=$subject');
+        return true;
+      } else {
+        debugPrint('[Gmail] sendEmail: Failed ${resp.statusCode}: ${resp.body}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('[Gmail] sendEmail: Error: $e');
+      return false;
+    }
   }
 
   /// Send an auto-unsubscribe mail when List-Unsubscribe provides a mailto: link

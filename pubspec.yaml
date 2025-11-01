@@ -48,6 +48,9 @@ dependencies:
   # WebView for email viewing
   flutter_inappwebview: ^6.1.5
   
+  # File picker for attachments
+  file_picker: ^8.0.0+1
+  
   # Reuse inboxiq auth and Gmail services as local dependency
   # inboxiq:
   #   path: ../inboxiq  # removed (eliminate Firebase transitively)

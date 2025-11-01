@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:actionmail/constants/app_constants.dart';
+import 'package:actionmail/config/oauth_config.dart';
 import 'package:http/http.dart' as http;
 import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
@@ -81,12 +82,15 @@ class GoogleAuthService {
         final verifier = _randomString(64);
         final challenge = _codeChallenge(verifier);
         final redirect = Uri.parse(AppConstants.oauthRedirectUri);
+        // Use 'consent' to force consent screen and ensure refresh token is returned
+        // This is necessary because Google only returns refresh_token on first authorization
+        // or when consent is explicitly requested
         final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-          'client_id': AppConstants.oauthClientId,
+          'client_id': OAuthConfig.clientId,
           'redirect_uri': AppConstants.oauthRedirectUri,
           'response_type': 'code',
           'scope': AppConstants.oauthScopes.join(' '),
-          'prompt': 'select_account',
+          'prompt': 'consent',  // Force consent to get refresh token
           'access_type': 'offline',
           'include_granted_scopes': 'true',
           'code_challenge': challenge,
@@ -99,6 +103,13 @@ class GoogleAuthService {
         final request = await listener.first;
         final uri = request.uri;
         final code = uri.queryParameters['code'];
+        final error = uri.queryParameters['error'];
+        final errorDescription = uri.queryParameters['error_description'];
+        
+        if (error != null) {
+          // ignore: avoid_print
+          print('[auth] OAuth error from Google: $error - $errorDescription');
+        }
         // Respond to close the tab
         request.response
           ..statusCode = 200
@@ -112,15 +123,20 @@ class GoogleAuthService {
           Uri.parse('https://oauth2.googleapis.com/token'),
           headers: {'Content-Type': 'application/x-www-form-urlencoded'},
           body: {
-            'client_id': AppConstants.oauthClientId,
+            'client_id': OAuthConfig.clientId,
             'redirect_uri': AppConstants.oauthRedirectUri,
             'grant_type': 'authorization_code',
             'code': code,
             'code_verifier': verifier,
-            'client_secret': AppConstants.oauthClientSecret,
+            'client_secret': OAuthConfig.clientSecret,
           },
         );
-        if (resp.statusCode != 200) return null;
+        if (resp.statusCode != 200) {
+          // Log error for debugging
+          // ignore: avoid_print
+          print('[auth] token exchange failed: status=${resp.statusCode} body=${resp.body}');
+          return null;
+        }
         final tok = jsonDecode(resp.body) as Map<String, dynamic>;
         final accessToken = tok['access_token'] as String? ?? '';
         final refreshToken = tok['refresh_token'] as String?; // may be null if previously granted
@@ -156,12 +172,12 @@ class GoogleAuthService {
       }
     }
     // Use PKCE (code) flow via flutter_appauth on mobile/web-supported
-    if (AppConstants.oauthClientId.isNotEmpty && AppConstants.oauthRedirectUri.isNotEmpty) {
+    if (OAuthConfig.clientId.isNotEmpty && AppConstants.oauthRedirectUri.isNotEmpty) {
       try {
         final appAuth = const FlutterAppAuth();
         final result = await appAuth.authorizeAndExchangeCode(
           AuthorizationTokenRequest(
-            AppConstants.oauthClientId,
+            OAuthConfig.clientId,
             AppConstants.oauthRedirectUri,
             scopes: AppConstants.oauthScopes,
             serviceConfiguration: const AuthorizationServiceConfiguration(
@@ -283,6 +299,15 @@ class GoogleAuthService {
     // ignore: avoid_print
     print('[auth] ensureValidAccessToken account=$accountId access=${account.accessToken.isNotEmpty} refresh=${(account.refreshToken ?? '').isNotEmpty} nearExpiry=$isNearExpiry remainingMs=${remainingMs ?? -1} valid=$valid');
     if (isNearExpiry || !valid) {
+      // Check if refresh token exists
+      if (account.refreshToken == null || account.refreshToken!.isEmpty) {
+        // ignore: avoid_print
+        print('[auth] no refreshToken available, account needs re-authentication account=$accountId');
+        // Return null to indicate authentication is required
+        // The caller should handle this by prompting for re-authentication
+        return null;
+      }
+      
       final refreshed = await refreshAccessToken(accountId);
       if (refreshed != null && refreshed.accessToken.isNotEmpty) {
         account = refreshed;
@@ -291,7 +316,8 @@ class GoogleAuthService {
         print('[auth] refreshed access token account=$accountId ok remainingMs=${rem2 ?? -1}');
       } else {
         // ignore: avoid_print
-        print('[auth] refresh failed or no refreshToken account=$accountId');
+        print('[auth] refresh failed account=$accountId - token refresh request failed');
+        // Refresh failed - return null to indicate re-authentication needed
         return null;
       }
     }
@@ -318,7 +344,7 @@ class GoogleAuthService {
         final challenge = _codeChallenge(verifier);
         final redirect = Uri.parse(AppConstants.oauthRedirectUri);
         final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
-          'client_id': AppConstants.oauthClientId,
+          'client_id': OAuthConfig.clientId,
           'redirect_uri': AppConstants.oauthRedirectUri,
           'response_type': 'code',
           'scope': AppConstants.oauthScopes.join(' '),
@@ -345,12 +371,12 @@ class GoogleAuthService {
           Uri.parse('https://oauth2.googleapis.com/token'),
           headers: {'Content-Type': 'application/x-www-form-urlencoded'},
           body: {
-            'client_id': AppConstants.oauthClientId,
+            'client_id': OAuthConfig.clientId,
             'redirect_uri': AppConstants.oauthRedirectUri,
             'grant_type': 'authorization_code',
             'code': code,
             'code_verifier': verifier,
-            'client_secret': AppConstants.oauthClientSecret,
+            'client_secret': OAuthConfig.clientSecret,
           },
         );
         if (resp.statusCode != 200) return null;
@@ -391,7 +417,7 @@ class GoogleAuthService {
       final appAuth = const FlutterAppAuth();
       final result = await appAuth.authorizeAndExchangeCode(
         AuthorizationTokenRequest(
-          AppConstants.oauthClientId,
+          OAuthConfig.clientId,
           AppConstants.oauthRedirectUri,
           scopes: AppConstants.oauthScopes,
           serviceConfiguration: const AuthorizationServiceConfiguration(
@@ -429,17 +455,26 @@ class GoogleAuthService {
       Uri.parse('https://oauth2.googleapis.com/token'),
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
       body: {
-        'client_id': AppConstants.oauthClientId,
-        'client_secret': AppConstants.oauthClientSecret,
+        'client_id': OAuthConfig.clientId,
+        'client_secret': OAuthConfig.clientSecret,
         'grant_type': 'refresh_token',
         'refresh_token': account.refreshToken!,
       },
     );
-    if (resp.statusCode != 200) return null;
+    if (resp.statusCode != 200) {
+      // Log error details for debugging
+      // ignore: avoid_print
+      print('[auth] refresh token request failed: status=${resp.statusCode} body=${resp.body}');
+      return null;
+    }
     final tok = jsonDecode(resp.body) as Map<String, dynamic>;
     final accessToken = tok['access_token'] as String?;
     final expiresIn = (tok['expires_in'] as num?)?.toInt();
-    if (accessToken == null || accessToken.isEmpty) return null;
+    if (accessToken == null || accessToken.isEmpty) {
+      // ignore: avoid_print
+      print('[auth] refresh token response missing access_token: $tok');
+      return null;
+    }
     final updated = account.copyWith(
       accessToken: accessToken,
       tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : account.tokenExpiryMs,

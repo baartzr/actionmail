@@ -4,6 +4,7 @@ import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -200,70 +201,147 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
            '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
   }
 
+  String _extractEmail(String from) {
+    final regex = RegExp(r'<([^>]+)>');
+    final match = regex.firstMatch(from);
+    if (match != null) return match.group(1)!.trim();
+    if (from.contains('@')) return from.trim();
+    return '';
+  }
+
+  void _handleReply() {
+    final to = _extractEmail(widget.message.from);
+    final subject = widget.message.subject.startsWith('Re:') 
+        ? widget.message.subject 
+        : 'Re: ${widget.message.subject}';
+    showDialog(
+      context: context,
+      builder: (ctx) => ComposeEmailDialog(
+        to: to,
+        subject: subject,
+        accountId: widget.accountId,
+        originalMessage: widget.message,
+      ),
+    );
+  }
+
+  void _handleReplyAll() {
+    final to = _extractEmail(widget.message.from);
+    // TODO: Extract all recipients from the email
+    final subject = widget.message.subject.startsWith('Re:') 
+        ? widget.message.subject 
+        : 'Re: ${widget.message.subject}';
+    showDialog(
+      context: context,
+      builder: (ctx) => ComposeEmailDialog(
+        to: to,
+        subject: subject,
+        accountId: widget.accountId,
+        originalMessage: widget.message,
+      ),
+    );
+  }
+
+  void _handleForward() {
+    final subject = widget.message.subject.startsWith('Fwd:') 
+        ? widget.message.subject 
+        : 'Fwd: ${widget.message.subject}';
+    showDialog(
+      context: context,
+      builder: (ctx) => ComposeEmailDialog(
+        subject: subject,
+        body: '\n\n--- Forwarded message ---\nFrom: ${widget.message.from}\nDate: ${_formatDate(widget.message.internalDate)}\nSubject: ${widget.message.subject}\n\n',
+        accountId: widget.accountId,
+        originalMessage: widget.message,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return AppWindowDialog(
       title: 'Email',
+      headerActions: [
+        IconButton(
+          tooltip: 'Reply',
+          icon: const Icon(Icons.reply, size: 20),
+          color: theme.appBarTheme.foregroundColor,
+          onPressed: _handleReply,
+        ),
+        IconButton(
+          tooltip: 'Reply All',
+          icon: const Icon(Icons.reply_all, size: 20),
+          color: theme.appBarTheme.foregroundColor,
+          onPressed: _handleReplyAll,
+        ),
+        IconButton(
+          tooltip: 'Forward',
+          icon: const Icon(Icons.forward, size: 20),
+          color: theme.appBarTheme.foregroundColor,
+          onPressed: _handleForward,
+        ),
+      ],
       child: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
-                      const SizedBox(height: 16),
-                      Text(
-                        _error!,
-                        style: Theme.of(context).textTheme.bodyLarge,
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 16),
-                      ElevatedButton(
-                        onPressed: () {
-                          setState(() {
-                            _isLoading = true;
-                            _error = null;
-                          });
-                          _loadEmailBody();
-                        },
-                        child: const Text('Retry'),
-                      ),
-                    ],
-                  ),
-                )
-              : _htmlContent != null
-                  ? InAppWebView(
-                      initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
-                      initialOptions: InAppWebViewGroupOptions(
-                        crossPlatform: InAppWebViewOptions(
-                          useShouldOverrideUrlLoading: true,
-                          mediaPlaybackRequiresUserGesture: false,
-                          supportZoom: true,
-                          javaScriptEnabled: true,
+                ? const Center(child: CircularProgressIndicator())
+                : _error != null
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
+                            const SizedBox(height: 16),
+                            Text(
+                              _error!,
+                              style: Theme.of(context).textTheme.bodyLarge,
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 16),
+                            ElevatedButton(
+                              onPressed: () {
+                                setState(() {
+                                  _isLoading = true;
+                                  _error = null;
+                                });
+                                _loadEmailBody();
+                              },
+                              child: const Text('Retry'),
+                            ),
+                          ],
                         ),
-                        android: AndroidInAppWebViewOptions(
-                          useHybridComposition: true,
-                        ),
-                        ios: IOSInAppWebViewOptions(
-                          allowsInlineMediaPlayback: true,
-                        ),
-                      ),
-                      onWebViewCreated: (controller) {
-                        _webViewController = controller;
-                      },
-                      shouldOverrideUrlLoading: (controller, navigationAction) async {
-                        // Open external links in default browser
-                        final url = navigationAction.request.url;
-                        if (url != null && (url.scheme == 'http' || url.scheme == 'https')) {
-                          // Allow navigation within the email HTML (like images, anchors)
-                          // but we could block external links if desired
-                          return NavigationActionPolicy.ALLOW;
-                        }
-                        return NavigationActionPolicy.CANCEL;
-                      },
-                    )
-                  : const Center(child: Text('No content available')),
+                      )
+                    : _htmlContent != null
+                        ? InAppWebView(
+                            initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                            initialOptions: InAppWebViewGroupOptions(
+                              crossPlatform: InAppWebViewOptions(
+                                useShouldOverrideUrlLoading: true,
+                                mediaPlaybackRequiresUserGesture: false,
+                                supportZoom: true,
+                                javaScriptEnabled: true,
+                              ),
+                              android: AndroidInAppWebViewOptions(
+                                useHybridComposition: true,
+                              ),
+                              ios: IOSInAppWebViewOptions(
+                                allowsInlineMediaPlayback: true,
+                              ),
+                            ),
+                            onWebViewCreated: (controller) {
+                              _webViewController = controller;
+                            },
+                            shouldOverrideUrlLoading: (controller, navigationAction) async {
+                              // Open external links in default browser
+                              final url = navigationAction.request.url;
+                              if (url != null && (url.scheme == 'http' || url.scheme == 'https')) {
+                                // Allow navigation within the email HTML (like images, anchors)
+                                // but we could block external links if desired
+                                return NavigationActionPolicy.ALLOW;
+                              }
+                              return NavigationActionPolicy.CANCEL;
+                            },
+                          )
+                        : const Center(child: Text('No content available')),
     );
   }
 }

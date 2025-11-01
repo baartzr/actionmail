@@ -37,21 +37,69 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                     color: theme.colorScheme.surfaceContainerHighest,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     child: Padding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.all(24.0),
                       child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          Text('ActionMail', style: theme.textTheme.titleLarge),
-                          const SizedBox(height: 4),
-                          Text('Version 0.1.0', style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-                          const SizedBox(height: 12),
+                          // App icon/logo
+                          Container(
+                            width: 80,
+                            height: 80,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  theme.colorScheme.primary,
+                                  theme.colorScheme.primary.withOpacity(0.7),
+                                ],
+                              ),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Icon(
+                              Icons.email_outlined,
+                              size: 48,
+                              color: theme.colorScheme.onPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
                           Text(
-                            'A focused email client for fast actions and a clean workflow.\n\n'
-                            '• Material 3 UI\n'
-                            '• Inline swipe actions (Archive/Trash/Restore)\n'
-                            '• Smart action labels and reminders\n'
-                            '• 2‑minute background sync with Gmail',
-                            style: theme.textTheme.bodyMedium,
+                            'ActionMail',
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              fontWeight: FontWeight.bold,
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            'Version 0.1.0',
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: theme.colorScheme.surface,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'A focused email client for fast actions and a clean workflow.',
+                                  style: theme.textTheme.bodyLarge?.copyWith(
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                const SizedBox(height: 16),
+                                _FeatureItem(icon: Icons.label_important_outline, text: 'Material 3 UI'),
+                                _FeatureItem(icon: Icons.swipe, text: 'Inline swipe actions (Archive/Trash/Restore)'),
+                                _FeatureItem(icon: Icons.schedule, text: 'Smart action labels and reminders'),
+                                _FeatureItem(icon: Icons.sync, text: '2‑minute background sync with Gmail'),
+                              ],
+                            ),
                           ),
                         ],
                       ),
@@ -135,6 +183,32 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                 ],
               ),
             ),
+    );
+  }
+}
+
+class _FeatureItem extends StatelessWidget {
+  final IconData icon;
+  final String text;
+  const _FeatureItem({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: theme.colorScheme.primary),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -76,25 +76,68 @@ class _SplashScreenState extends State<SplashScreen> {
   void _showSplashWindow() {
     AppWindowDialog.show(
       context: context,
-      title: 'ActionMail',
+      title: 'Welcome to ActionMail',
+      size: AppWindowSize.large,
       barrierDismissible: _forceAdd, // allow close only when explicitly adding
+      bodyPadding: const EdgeInsets.all(32.0),
       child: Builder(
         builder: (context) {
           final theme = Theme.of(context);
           return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
             children: [
+              // App logo/icon
+              Container(
+                width: 100,
+                height: 100,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      theme.colorScheme.primary,
+                      theme.colorScheme.primary.withOpacity(0.7),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(24),
+                  boxShadow: [
+                    BoxShadow(
+                      color: theme.colorScheme.primary.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Icon(
+                  Icons.email_outlined,
+                  size: 60,
+                  color: theme.colorScheme.onPrimary,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'ActionMail',
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 8),
               Text(
                 'Email that helps you act faster',
-                style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 32),
               Card(
                 elevation: 0,
                 color: theme.colorScheme.surfaceContainerHighest,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                 child: Padding(
-                  padding: const EdgeInsets.all(12.0),
+                  padding: const EdgeInsets.all(20.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: const [
@@ -106,7 +149,7 @@ class _SplashScreenState extends State<SplashScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
               Align(
                 alignment: Alignment.centerRight,
                 child: FilledButton.icon(
@@ -156,16 +199,56 @@ class _SplashScreenState extends State<SplashScreen> {
     if (args is Map) {
       _forceAdd = (args['forceAdd'] as bool?) ?? _forceAdd;
     }
-    // Provide a simple branded background if dialog is not visible
+    // Provide a branded background with gradient
     return Scaffold(
-      body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text('ActionMail', style: Theme.of(context).textTheme.headlineSmall),
-            const SizedBox(height: 8),
-            const CircularProgressIndicator(),
-          ],
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              theme.colorScheme.surface,
+              theme.colorScheme.surfaceContainerHighest,
+            ],
+          ),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // App logo
+              Container(
+                width: 80,
+                height: 80,
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      theme.colorScheme.primary,
+                      theme.colorScheme.primary.withOpacity(0.7),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Icon(
+                  Icons.email_outlined,
+                  size: 48,
+                  color: theme.colorScheme.onPrimary,
+                ),
+              ),
+              const SizedBox(height: 24),
+              Text(
+                'ActionMail',
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const CircularProgressIndicator(),
+            ],
+          ),
         ),
       ),
     );
