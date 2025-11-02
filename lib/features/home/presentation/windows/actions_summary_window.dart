@@ -6,7 +6,9 @@ import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
+import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class ActionsSummaryWindow extends ConsumerStatefulWidget {
   const ActionsSummaryWindow({super.key});
@@ -18,7 +20,12 @@ class ActionsSummaryWindow extends ConsumerStatefulWidget {
 class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   List<GoogleAccount> _accounts = [];
   Map<String, List<MessageIndex>> _accountMessages = {};
+  Map<String, List<MessageIndex>> _allAccountMessages = {}; // Store all messages before filtering
   bool _loading = true;
+  // Track completion state for each message (true = complete, false = incomplete)
+  Map<String, bool> _completionState = {};
+  // Personal/Business filter state
+  String? _selectedLocalState;
 
   @override
   void initState() {
@@ -33,14 +40,41 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     final accounts = await svc.loadAccounts();
     final repo = MessageRepository();
     
+    // Get the active account ID from preferences
+    final prefs = await SharedPreferences.getInstance();
+    final activeAccountId = prefs.getString('lastActiveAccountId');
+    
+    // Sort accounts to show active account first
+    final sortedAccounts = List<GoogleAccount>.from(accounts);
+    if (activeAccountId != null) {
+      sortedAccounts.sort((a, b) {
+        if (a.id == activeAccountId) return -1;
+        if (b.id == activeAccountId) return 1;
+        return 0;
+      });
+    }
+    
     final Map<String, List<MessageIndex>> messagesByAccount = {};
     
-    for (final account in accounts) {
+    for (final account in sortedAccounts) {
       final messages = await repo.getByFolder(account.id, 'INBOX');
-      // Filter to only messages with actions
-      final actions = messages.where((m) => 
-        m.actionDate != null || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-      ).toList();
+      // Filter to only messages with actions, excluding completed ones
+      final actions = messages.where((m) {
+        // Exclude completed actions
+        if (m.actionInsightText != null && 
+            m.actionInsightText!.toLowerCase().contains('complete')) {
+          return false;
+        }
+        // Include if has action date or action text
+        return m.actionDate != null || 
+               (m.actionInsightText != null && m.actionInsightText!.isNotEmpty);
+      }).toList();
+      
+      // Initialize completion state for each message based on current action text
+      for (final msg in actions) {
+        _completionState[msg.id] = _isActionComplete(msg.actionInsightText);
+      }
+      
       if (actions.isNotEmpty) {
         messagesByAccount[account.id] = actions;
       }
@@ -48,8 +82,9 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     
     if (mounted) {
       setState(() {
-        _accounts = accounts;
-        _accountMessages = messagesByAccount;
+        _accounts = sortedAccounts;
+        _allAccountMessages = messagesByAccount;
+        _accountMessages = _applyLocalStateFilter(messagesByAccount);
         _loading = false;
       });
     }
@@ -61,6 +96,10 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       title: 'Actions Summary',
       size: AppWindowSize.large,
       bodyPadding: const EdgeInsets.all(16.0),
+      headerActions: [
+        _buildCategoryIconSwitch(),
+        const SizedBox(width: 8),
+      ],
       child: _loading
           ? const Center(child: CircularProgressIndicator())
           : _accountMessages.isEmpty
@@ -74,6 +113,88 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                         .toList(),
                   ),
                 ),
+    );
+  }
+
+  Map<String, List<MessageIndex>> _applyLocalStateFilter(Map<String, List<MessageIndex>> messagesByAccount) {
+    if (_selectedLocalState == null) {
+      return messagesByAccount;
+    }
+    
+    final filtered = <String, List<MessageIndex>>{};
+    for (final entry in messagesByAccount.entries) {
+      final filteredMessages = entry.value.where((m) => m.localTagPersonal == _selectedLocalState).toList();
+      if (filteredMessages.isNotEmpty) {
+        filtered[entry.key] = filteredMessages;
+      }
+    }
+    return filtered;
+  }
+
+  Widget _buildCategoryIconSwitch() {
+    final cs = Theme.of(context).colorScheme;
+    final isPersonal = _selectedLocalState == 'Personal';
+    final isBusiness = _selectedLocalState == 'Business';
+
+    Color colorFor(bool selected) {
+      return selected ? cs.onSurface : cs.onSurfaceVariant.withValues(alpha: 0.7);
+    }
+
+    // Create a connected switch appearance
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.4)),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Material(
+            color: isPersonal ? cs.primary.withValues(alpha: 0.5) : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () {
+                setState(() {
+                  _selectedLocalState = isPersonal ? null : 'Personal';
+                  _accountMessages = _applyLocalStateFilter(_allAccountMessages);
+                });
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Icon(
+                  isPersonal ? Icons.person : Icons.person_outline,
+                  size: 20,
+                  color: isPersonal ? cs.onPrimary : colorFor(false),
+                ),
+              ),
+            ),
+          ),
+          Material(
+            color: isBusiness ? cs.primary.withValues(alpha: 0.5) : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () {
+                setState(() {
+                  _selectedLocalState = isBusiness ? null : 'Business';
+                  _accountMessages = _applyLocalStateFilter(_allAccountMessages);
+                });
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Icon(
+                  isBusiness ? Icons.business_center : Icons.business_center_outlined,
+                  size: 20,
+                  color: isBusiness ? cs.onPrimary : colorFor(false),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -233,113 +354,184 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         ? dateFmt.format(message.actionDate!.toLocal())
         : '';
     
+    final isComplete = _completionState[message.id] ?? false;
+    
     return Padding(
       padding: const EdgeInsets.only(bottom: 6.0),
-      child: Container(
-        padding: const EdgeInsets.all(8.0),
-        decoration: BoxDecoration(
-          color: backgroundColor.withValues(alpha: 0.3),
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: backgroundColor.withValues(alpha: 0.5),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              width: 3,
-              height: 32,
-              decoration: BoxDecoration(
-                color: backgroundColor,
-                borderRadius: BorderRadius.circular(1.5),
-              ),
+      child: GestureDetector(
+        onTap: () => _openEmail(message),
+        onDoubleTap: () => _openEditActionDialog(message),
+        child: Container(
+          padding: const EdgeInsets.all(8.0),
+          decoration: BoxDecoration(
+            color: backgroundColor.withValues(alpha: 0.3),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: backgroundColor.withValues(alpha: 0.5),
+              width: 1,
             ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Email subject
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.email_outlined,
-                        size: 13,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 5),
-                      Expanded(
-                        child: Text(
-                          message.subject,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Theme.of(context).colorScheme.onSurface,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 3,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: backgroundColor,
+                  borderRadius: BorderRadius.circular(1.5),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Email subject
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.email_outlined,
+                          size: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  // Action text with Edit link
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.event_note,
-                        size: 12,
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                      const SizedBox(width: 5),
-                      Expanded(
-                        child: RichText(
-                          text: TextSpan(
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: Text(
+                            message.subject,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    // Action text (Edit text removed)
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.event_note,
+                          size: 12,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 5),
+                        Expanded(
+                          child: Text(
+                            [
+                              if (message.actionInsightText != null && message.actionInsightText!.isNotEmpty)
+                                message.actionInsightText!,
+                              if (actionDateStr.isNotEmpty)
+                                actionDateStr,
+                            ].where((s) => s.isNotEmpty).join(' • '),
                             style: TextStyle(
                               fontSize: 11,
                               color: Theme.of(context).colorScheme.onSurface,
                             ),
-                            children: [
-                              if (message.actionInsightText != null && message.actionInsightText!.isNotEmpty)
-                                TextSpan(text: '${message.actionInsightText} '),
-                              if (actionDateStr.isNotEmpty)
-                                TextSpan(
-                                  text: actionDateStr,
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              const TextSpan(text: ' '),
-                              TextSpan(
-                                text: 'Edit',
-                                style: TextStyle(
-                                  color: Theme.of(context).colorScheme.secondary,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 11,
-                                  decoration: TextDecoration.underline,
-                                ),
-                                recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(message),
-                              ),
-                            ],
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(width: 8),
+              // Complete button - minus icon changes to tick when complete
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: () => _toggleComplete(message),
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    alignment: Alignment.center,
+                    child: Icon(
+                      isComplete ? Icons.check : Icons.remove,
+                      size: 20,
+                      color: isComplete 
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
+  Future<void> _openEmail(MessageIndex message) async {
+    await showDialog(
+      context: context,
+      builder: (ctx) => EmailViewerDialog(
+        message: message,
+        accountId: message.accountId,
+      ),
+    );
+  }
+
+  Future<void> _toggleComplete(MessageIndex message) async {
+    final existingText = (message.actionInsightText ?? '').trim();
+    final isComplete = _isActionComplete(existingText);
+    
+    String newText;
+    if (isComplete) {
+      // Remove "(Complete)" from the text
+      newText = existingText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
+    } else {
+      // Add "(Complete)" to the text
+      newText = existingText.isEmpty ? 'Complete' : '$existingText (Complete)';
+    }
+    
+    // Update local state and message object in both _allAccountMessages and _accountMessages
+    setState(() {
+      _completionState[message.id] = !isComplete;
+      // Update the message object in _allAccountMessages (source of truth)
+      for (final accountId in _allAccountMessages.keys) {
+        final messages = _allAccountMessages[accountId];
+        final index = messages?.indexWhere((m) => m.id == message.id);
+        if (index != null && index >= 0 && messages != null) {
+          _allAccountMessages[accountId] = List.from(messages);
+          _allAccountMessages[accountId]![index] = messages[index].copyWith(
+            actionInsightText: newText.isEmpty ? null : newText,
+          );
+        }
+      }
+      // Reapply filter to update _accountMessages
+      _accountMessages = _applyLocalStateFilter(_allAccountMessages);
+    });
+    
+    // Persist to database
+    await MessageRepository().updateAction(message.id, message.actionDate, newText.isEmpty ? null : newText);
+    
+    // Update provider state
+    ref.read(emailListProvider.notifier).setAction(
+      message.id,
+      message.actionDate,
+      newText.isEmpty ? null : newText,
+    );
+  }
+
+  bool _isActionComplete(String? actionText) {
+    if (actionText == null || actionText.isEmpty) return false;
+    return actionText.toLowerCase().contains('complete');
+  }
+
   Future<void> _openEditActionDialog(MessageIndex message) async {
     DateTime? tempDate = message.actionDate ?? DateTime.now();
-    final textController = TextEditingController(text: message.actionInsightText ?? '');
+    // Remove "(Complete)" from text when editing, so user sees clean text
+    final existingText = (message.actionInsightText ?? '').trim();
+    final cleanText = existingText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
+    final textController = TextEditingController(text: cleanText);
 
     final result = await showDialog<Map<String, dynamic>?>(
       context: context,
@@ -413,8 +605,24 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         actionDate,
         actionText,
       );
-      // Reload data to reflect changes
-      await _loadData();
+      // Update message in _allAccountMessages and reapply filter
+      for (final accountId in _allAccountMessages.keys) {
+        final messages = _allAccountMessages[accountId];
+        final index = messages?.indexWhere((m) => m.id == message.id);
+        if (index != null && index >= 0 && messages != null) {
+          _allAccountMessages[accountId] = List.from(messages);
+          _allAccountMessages[accountId]![index] = messages[index].copyWith(
+            actionDate: actionDate,
+            actionInsightText: actionText,
+          );
+        }
+      }
+      // Reset completion state when action is edited (revert to minus icon)
+      setState(() {
+        _completionState[message.id] = false;
+        // Reapply filter to update _accountMessages
+        _accountMessages = _applyLocalStateFilter(_allAccountMessages);
+      });
     }
   }
 }

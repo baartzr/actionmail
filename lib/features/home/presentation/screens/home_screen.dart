@@ -257,9 +257,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                     );
                                     break;
                                   case 'Actions':
-                                    showDialog(context: context, builder: (_) => const ActionsWindow());
-                                    break;
-                                  case 'Account Digest':
                                     showDialog(context: context, builder: (_) => ActionsSummaryWindow());
                                     break;
                                   case 'Attachments':
@@ -327,8 +324,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                     ),
                                   ),
                                   const PopupMenuDivider(),
-                                  // Actions and other function windows (excluding Actions Summary)
-                                  ...AppConstants.allFunctionWindows.where((window) => window != AppConstants.windowActionsSummary).map((window) {
+                                  // Actions (renamed from Account Digest)
+                                  PopupMenuItem(
+                                    value: 'Actions',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          'Actions',
+                                          style: TextStyle(
+                                            color: cs.onSurface,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  // Other function windows (excluding Actions and Actions Summary which are shown separately)
+                                  ...AppConstants.allFunctionWindows.where((window) => window != AppConstants.windowActions && window != AppConstants.windowActionsSummary).map((window) {
                                     IconData icon;
                                     switch (window) {
                                       case AppConstants.windowActions:
@@ -363,24 +377,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                       ),
                                     );
                                   }),
-                                  const PopupMenuDivider(),
-                                  // Account Digest (moved to bottom)
-                                  PopupMenuItem(
-                                    value: 'Account Digest',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Account Digest',
-                                          style: TextStyle(
-                                            color: cs.onSurface,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
                                 ];
                               },
                             ),

@@ -121,107 +121,115 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                           final account = _accounts[index];
                           final isSelected = account.id == widget.selectedAccountId;
                           final theme = Theme.of(context);
+                          final cs = theme.colorScheme;
                           return Container(
                             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                // Row 1: Email and Display Name
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: [
-                                          Text(
-                                            account.email,
-                                            style: theme.textTheme.bodyLarge?.copyWith(
-                                              fontWeight: FontWeight.w500,
-                                            ),
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                          if (account.displayName.isNotEmpty) ...[
-                                            const SizedBox(height: 2),
-                                            Text(
-                                              account.displayName,
-                                              style: theme.textTheme.bodySmall?.copyWith(
-                                                color: theme.colorScheme.onSurfaceVariant,
+                                // Row 1: Email (with tick) + Name below (clickable to switch account)
+                                InkWell(
+                                  onTap: () {
+                                    Navigator.of(context).pop(account.id);
+                                  },
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(vertical: 4),
+                                    child: Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Text(
+                                                account.email,
+                                                style: theme.textTheme.bodyMedium?.copyWith(
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
+                                              if (account.displayName.isNotEmpty) ...[
+                                                const SizedBox(height: 2),
+                                                Text(
+                                                  account.displayName,
+                                                  style: theme.textTheme.bodySmall?.copyWith(
+                                                    color: cs.onSurfaceVariant,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                        if (isSelected) ...[
+                                          const SizedBox(width: 8),
+                                          Icon(
+                                            Icons.check,
+                                            size: 20,
+                                            color: cs.primary.withValues(alpha: 0.7),
+                                          ),
                                         ],
-                                      ),
+                                      ],
                                     ),
-                                  ],
+                                  ),
                                 ),
-                                // Row 2: Action buttons
+                                // Row 2: SignOut icon + text + Remove icon + text
                                 const SizedBox(height: 8),
                                 Row(
                                   children: [
-                                    if (isDesktop)
-                                      TextButton.icon(
-                                        onPressed: () => _handleSignOut(account.id),
-                                        icon: const Icon(Icons.logout, size: 18),
-                                        label: const Text('Sign Out'),
-                                        style: TextButton.styleFrom(
-                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                          minimumSize: const Size(0, 32),
-                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                    InkWell(
+                                      onTap: () => _handleSignOut(account.id),
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.logout,
+                                              size: 18,
+                                              color: cs.onSurfaceVariant,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              'SignOut',
+                                              style: theme.textTheme.bodySmall?.copyWith(
+                                                color: cs.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                      )
-                                    else
-                                      IconButton(
-                                        icon: const Icon(Icons.logout, size: 20),
-                                        tooltip: 'Sign Out',
-                                        onPressed: () => _handleSignOut(account.id),
-                                        constraints: const BoxConstraints(),
-                                        padding: const EdgeInsets.all(8),
                                       ),
-                                    const SizedBox(width: 8),
-                                    if (isDesktop)
-                                      TextButton.icon(
-                                        onPressed: () => _handleRemove(account.id),
-                                        icon: const Icon(Icons.delete_outline, size: 18),
-                                        label: const Text('Remove'),
-                                        style: TextButton.styleFrom(
-                                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                          minimumSize: const Size(0, 32),
-                                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                          foregroundColor: theme.colorScheme.error,
+                                    ),
+                                    const SizedBox(width: 16),
+                                    InkWell(
+                                      onTap: () => _handleRemove(account.id),
+                                      borderRadius: BorderRadius.circular(4),
+                                      child: Padding(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              Icons.delete_outline,
+                                              size: 18,
+                                              color: cs.error,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              'Remove',
+                                              style: theme.textTheme.bodySmall?.copyWith(
+                                                color: cs.error,
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                      )
-                                    else
-                                      IconButton(
-                                        icon: const Icon(Icons.delete_outline, size: 20),
-                                        tooltip: 'Remove',
-                                        onPressed: () => _handleRemove(account.id),
-                                        constraints: const BoxConstraints(),
-                                        padding: const EdgeInsets.all(8),
-                                        color: theme.colorScheme.error,
                                       ),
-                                    const Spacer(),
-                                    // Switch or check mark
-                                    if (isSelected)
-                                      Icon(
-                                        Icons.check_circle,
-                                        color: theme.colorScheme.primary,
-                                        size: 24,
-                                      )
-                                    else
-                                      IconButton(
-                                        icon: const Icon(Icons.swap_horiz, size: 24),
-                                        tooltip: 'Switch to this account',
-                                        onPressed: () {
-                                          Navigator.of(context).pop(account.id);
-                                        },
-                                        constraints: const BoxConstraints(),
-                                        padding: const EdgeInsets.all(8),
-                                      ),
+                                    ),
                                   ],
                                 ),
                               ],
