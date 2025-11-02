@@ -970,6 +970,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 final today = DateTime(now.year, now.month, now.day);
                 for (final m in emails) {
                   if (m.actionDate == null) continue;
+                  // Filter by Personal/Business selection
+                  if (_selectedLocalState != null && m.localTagPersonal != _selectedLocalState) {
+                    continue;
+                  }
+                  // Exclude completed actions
+                  if (m.actionInsightText != null && 
+                      m.actionInsightText!.toLowerCase().contains('complete')) {
+                    continue;
+                  }
                   final local = m.actionDate!.toLocal();
                   final d = DateTime(local.year, local.month, local.day);
                   if (d == today) {

@@ -245,6 +245,9 @@ class _EmailTileState extends State<EmailTile> {
                 child: Card(
                   margin: EdgeInsets.zero,
                   elevation: 0,
+                  color: widget.message.isRead 
+                      ? theme.colorScheme.primaryContainer.withValues(alpha: 0.4)
+                      : theme.colorScheme.surfaceContainerLow,
                   clipBehavior: Clip.antiAlias,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),

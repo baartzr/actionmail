@@ -40,6 +40,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
       final accessToken = account?.accessToken;
       if (accessToken == null || accessToken.isEmpty) {
+        if (!mounted) return;
         setState(() {
           _error = 'No access token available';
           _isLoading = false;
@@ -53,6 +54,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       );
 
       if (resp.statusCode != 200) {
+        if (!mounted) return;
         setState(() {
           _error = 'Failed to load email: ${resp.statusCode}';
           _isLoading = false;
@@ -175,11 +177,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 </html>
       ''';
 
+      if (!mounted) return;
       setState(() {
         _htmlContent = fullHtml;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Error loading email: $e';
         _isLoading = false;
