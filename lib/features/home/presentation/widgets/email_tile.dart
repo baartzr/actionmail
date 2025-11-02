@@ -43,7 +43,6 @@ class _EmailTileState extends State<EmailTile> {
   int _revealDir = 0; // -1 left swipe, 1 right swipe, 0 none
   DateTime? _actionDate;
   String? _actionText;
-  bool _actionExpanded = true; // whether action section is expanded
 
   @override
   void initState() {
@@ -52,8 +51,6 @@ class _EmailTileState extends State<EmailTile> {
     _starred = widget.message.isStarred;
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
-    // Default to collapsed if no action set, expanded if action exists
-    _actionExpanded = widget.message.actionDate != null || (widget.message.actionInsightText != null && widget.message.actionInsightText!.trim().isNotEmpty);
   }
 
   bool _hasLeftActions(String folder) {
@@ -169,11 +166,6 @@ class _EmailTileState extends State<EmailTile> {
         oldWidget.message.actionInsightText != widget.message.actionInsightText) {
       _actionDate = widget.message.actionDate;
       _actionText = widget.message.actionInsightText;
-      // Update expanded state based on whether action exists
-      final hasAction = widget.message.actionDate != null || (widget.message.actionInsightText != null && widget.message.actionInsightText!.trim().isNotEmpty);
-      if (hasAction) {
-        _actionExpanded = true; // Expand when action is added
-      }
     }
   }
 
@@ -254,7 +246,7 @@ class _EmailTileState extends State<EmailTile> {
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                     side: BorderSide(
-                      color: const Color(0xFF00897B).withValues(alpha: 0.2), // Light teal border
+                      color: const Color(0xFF00897B).withValues(alpha: 0.4), // Darker teal border
                       width: 0.5,
                     ),
                   ),
@@ -423,19 +415,12 @@ class _EmailTileState extends State<EmailTile> {
                     opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
                     child: Row(
                       children: [
-                        GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              _actionExpanded = !_actionExpanded;
-                            });
-                          },
-                          child: Icon(
-                            Icons.lightbulb_outline,
-                            size: 16,
-                            color: isOverdue
-                                ? theme.colorScheme.error
-                                : theme.colorScheme.secondary,
-                          ),
+                        Icon(
+                          Icons.lightbulb_outline,
+                          size: 16,
+                          color: isOverdue
+                              ? theme.colorScheme.error
+                              : theme.colorScheme.secondary,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
@@ -450,53 +435,32 @@ class _EmailTileState extends State<EmailTile> {
                                 fontStyle: FontStyle.italic,
                               );
                               
-                              // Collapsed: show nothing if no action, or just brief summary if has action
-                              if (!_actionExpanded && hasAction) {
-                                final display = _actionText ?? '';
-                                final dateLabel = _actionDate != null
-                                    ? _formatDate(_actionDate!, DateTime.now())
-                                    : null;
-                                return RichText(
-                                  text: TextSpan(
-                                    style: baseStyle,
-                                    children: [
-                                      if (dateLabel != null) ...[
-                                        TextSpan(text: dateLabel),
-                                        const TextSpan(text: '  •  '),
-                                      ],
-                                      TextSpan(text: display.isNotEmpty ? display : 'Action set'),
-                                    ],
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                );
-                              }
-                              
-                              // Expanded or no action: show full action UI
+                              // Show full action UI
                               if (!hasAction) {
-                                return RichText(
-                                  text: TextSpan(
-                                    style: baseStyle,
-                                    children: [
-                                      const TextSpan(text: 'No action set. '),
-                                      TextSpan(
-                                        text: 'Add Action',
-                                        style: theme.textTheme.bodySmall?.copyWith(
-                                          color: isInbox 
-                                              ? theme.colorScheme.secondary
-                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                          decoration: TextDecoration.none,
-                                          fontStyle: FontStyle.normal,
-                                          fontWeight: FontWeight.w600,
+                                return GestureDetector(
+                                  onTap: isInbox ? _openEditActionDialog : null,
+                                  behavior: HitTestBehavior.opaque,
+                                  child: RichText(
+                                    text: TextSpan(
+                                      style: baseStyle,
+                                      children: [
+                                        const TextSpan(text: 'No action set. '),
+                                        TextSpan(
+                                          text: 'Add Action',
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                            color: isInbox 
+                                                ? theme.colorScheme.secondary
+                                                : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                            decoration: TextDecoration.none,
+                                            fontStyle: FontStyle.normal,
+                                            fontWeight: FontWeight.w600,
+                                          ),
                                         ),
-                                        recognizer: isInbox 
-                                            ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
-                                            : null,
-                                      ),
-                                    ],
+                                      ],
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
                                 );
                               }
                             // With action: show [date] action text and [Edit, Mark as Complete/Incomplete]
@@ -505,50 +469,54 @@ class _EmailTileState extends State<EmailTile> {
                                 ? _formatDate(_actionDate!, DateTime.now())
                                 : null;
                             final isComplete = _isActionComplete(_actionText);
-                              return RichText(
-                                text: TextSpan(
-                                  style: baseStyle,
-                                  children: [
-                                  if (dateLabel != null) ...[
-                                    TextSpan(text: dateLabel),
-                                    const TextSpan(text: '  •  '),
-                                  ],
-                                    if (display.isNotEmpty) TextSpan(text: '$display  '),
-                                    TextSpan(
-                                      text: 'Edit',
-                                      style: theme.textTheme.bodySmall?.copyWith(
-                                        color: isInbox 
-                                            ? theme.colorScheme.secondary
-                                            : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                        decoration: TextDecoration.none,
-                                        fontStyle: FontStyle.normal,
-                                        fontWeight: FontWeight.w600,
+                              return GestureDetector(
+                                onTap: isInbox ? _openEditActionDialog : null,
+                                behavior: HitTestBehavior.opaque,
+                                child: RichText(
+                                  text: TextSpan(
+                                    style: baseStyle,
+                                    children: [
+                                    if (dateLabel != null) ...[
+                                      TextSpan(text: dateLabel),
+                                      const TextSpan(text: '  •  '),
+                                    ],
+                                      if (display.isNotEmpty) TextSpan(text: '$display  '),
+                                      TextSpan(
+                                        text: 'Edit',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: isInbox 
+                                              ? theme.colorScheme.secondary
+                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                          decoration: TextDecoration.none,
+                                          fontStyle: FontStyle.normal,
+                                          fontWeight: FontWeight.w600,
+                                        ),
                                       ),
-                                      recognizer: isInbox 
-                                          ? (TapGestureRecognizer()..onTap = _openEditActionDialog)
-                                          : null,
-                                    ),
-                                    const TextSpan(text: '  '),
-                                    TextSpan(
-                                      text: isComplete ? 'Mark as incomplete' : 'Mark as complete',
-                                      style: theme.textTheme.bodySmall?.copyWith(
-                                        color: isInbox 
-                                            ? (isComplete 
-                                                ? theme.colorScheme.primary
-                                                : theme.colorScheme.tertiary)
-                                            : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                        decoration: TextDecoration.none,
-                                        fontStyle: FontStyle.normal,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                      recognizer: isInbox 
-                                          ? (TapGestureRecognizer()..onTap = _handleMarkActionComplete)
-                                          : null,
-                                    ),
-                                  ],
+                                      if (!isComplete) ...[
+                                        const TextSpan(text: '  '),
+                                        TextSpan(
+                                          text: 'Mark as complete',
+                                          style: theme.textTheme.bodySmall?.copyWith(
+                                            color: isInbox 
+                                                ? theme.colorScheme.tertiary
+                                                : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                            decoration: TextDecoration.none,
+                                            fontStyle: FontStyle.normal,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          recognizer: isInbox 
+                                              ? (TapGestureRecognizer()
+                                                ..onTap = () {
+                                                  _handleMarkActionComplete();
+                                                })
+                                              : null,
+                                        ),
+                                      ],
+                                    ],
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
                               );
                             },
                           ),
@@ -658,67 +626,129 @@ class _EmailTileState extends State<EmailTile> {
 
   Future<void> _openEditActionDialog() async {
     DateTime? tempDate = _actionDate ?? DateTime.now();
-    final textController = TextEditingController(text: _actionText ?? '');
+    // Remove "(Complete)" when editing to set as incomplete
+    final currentText = _actionText ?? '';
+    final textWithoutComplete = currentText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
+    final textController = TextEditingController(text: textWithoutComplete);
 
     await showDialog<void>(
       context: context,
       builder: (context) {
         return StatefulBuilder(
           builder: (context, sbSet) {
-            return AlertDialog(
-              title: const Text('Edit Action'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: textController,
-                    decoration: const InputDecoration(
-                      labelText: 'Action',
-                    ),
-                    maxLines: 2,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: tempDate ?? DateTime.now(),
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) {
-                        sbSet(() {
-                          tempDate = picked;
-                        });
-                      }
-                    },
-                    icon: const Icon(Icons.calendar_today),
-                    label: Text(tempDate != null
-                        ? DateFormat('dd-MMM, y').format(tempDate!)
-                        : 'Pick date'),
-                  ),
-                ],
+            return Dialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(0), // Square corners
               ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancel'),
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 400),
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Title
+                    Text(
+                      'Edit Action',
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    // Action text field
+                    TextField(
+                      controller: textController,
+                      decoration: InputDecoration(
+                        labelText: 'Action',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      ),
+                      maxLines: 3,
+                      minLines: 1,
+                    ),
+                    const SizedBox(height: 16),
+                    // Date picker button
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: tempDate ?? DateTime.now(),
+                          firstDate: DateTime(2000),
+                          lastDate: DateTime(2100),
+                          builder: (context, child) {
+                            return Theme(
+                              data: Theme.of(context).copyWith(
+                                dialogTheme: DialogThemeData(
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(0), // Square corners
+                                  ),
+                                ),
+                              ),
+                              child: child!,
+                            );
+                          },
+                        );
+                        if (picked != null) {
+                          sbSet(() {
+                            tempDate = picked;
+                          });
+                        }
+                      },
+                      icon: const Icon(Icons.calendar_today, size: 18),
+                      label: Text(
+                        tempDate != null
+                            ? DateFormat('dd MMM yyyy').format(tempDate!)
+                            : 'Pick date',
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    // Action buttons
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          style: TextButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                          ),
+                          child: const Text('Cancel'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: () {
+                            final newText = textController.text.trim();
+                            // Ensure we don't have "(Complete)" in the text since editing sets it as incomplete
+                            final cleanedText = newText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
+                            setState(() {
+                              _actionDate = tempDate;
+                              _actionText = cleanedText.isEmpty ? null : cleanedText;
+                            });
+                            if (widget.onActionUpdated != null) {
+                              widget.onActionUpdated!(_actionDate, _actionText);
+                            }
+                            Navigator.of(context).pop();
+                          },
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: const Text('Save'),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
-                FilledButton(
-                  onPressed: () {
-                    setState(() {
-                      _actionDate = tempDate;
-                      _actionText = textController.text.trim();
-                    });
-                    if (widget.onActionUpdated != null) {
-                      widget.onActionUpdated!(_actionDate, _actionText);
-                    }
-                    Navigator.of(context).pop();
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
+              ),
             );
           },
         );

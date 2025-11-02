@@ -83,52 +83,86 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
         ? '$senderName <$senderEmail>'
         : senderEmail;
     
-    return ListTile(
-      leading: const Icon(Icons.event_note),
-      title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
-      subtitle: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('From: $senderDisplay', style: const TextStyle(fontSize: 12)),
-          Text('Received: $receivedDateStr', style: const TextStyle(fontSize: 12)),
-          const SizedBox(height: 4),
-          if (actionDateStr.isNotEmpty || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty))
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (actionDateStr.isNotEmpty)
-                  Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-                if (actionDateStr.isNotEmpty && m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-                  const Text('  •  ', style: TextStyle(fontSize: 12)),
-                if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-                  Expanded(
-                    child: RichText(
-                      text: TextSpan(
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context).colorScheme.onSurface,
-                        ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isMobile = constraints.maxWidth < 900;
+        return ListTile(
+          leading: isMobile ? null : const Icon(Icons.event_note),
+          title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
+          subtitle: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('From: $senderDisplay', style: const TextStyle(fontSize: 12)),
+              Text('Received: $receivedDateStr', style: const TextStyle(fontSize: 12)),
+              const SizedBox(height: 4),
+              if (actionDateStr.isNotEmpty || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty))
+                isMobile 
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          TextSpan(text: 'Message: ${m.actionInsightText} '),
-                          TextSpan(
-                            text: 'Edit',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.secondary,
-                              fontWeight: FontWeight.w600,
-                              decoration: TextDecoration.underline,
+                          if (actionDateStr.isNotEmpty)
+                            Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                          if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                            RichText(
+                              text: TextSpan(
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context).colorScheme.onSurface,
+                                ),
+                                children: [
+                                  TextSpan(text: 'Message: ${m.actionInsightText} '),
+                                  TextSpan(
+                                    text: 'Edit',
+                                    style: TextStyle(
+                                      color: Theme.of(context).colorScheme.secondary,
+                                      fontWeight: FontWeight.w600,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                    recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
+                                  ),
+                                ],
+                              ),
                             ),
-                            recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
-                          ),
+                        ],
+                      )
+                    : Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (actionDateStr.isNotEmpty)
+                            Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                          if (actionDateStr.isNotEmpty && m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                            const Text('  •  ', style: TextStyle(fontSize: 12)),
+                          if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                            Expanded(
+                              child: RichText(
+                                text: TextSpan(
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(context).colorScheme.onSurface,
+                                  ),
+                                  children: [
+                                    TextSpan(text: 'Message: ${m.actionInsightText} '),
+                                    TextSpan(
+                                      text: 'Edit',
+                                      style: TextStyle(
+                                        color: Theme.of(context).colorScheme.secondary,
+                                        fontWeight: FontWeight.w600,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                      recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                         ],
                       ),
-                    ),
-                  ),
-              ],
-            ),
-        ],
-      ),
-      trailing: Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
-      onTap: () => _openEmailViewer(m),
+            ],
+          ),
+          trailing: Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
+          onTap: () => _openEmailViewer(m),
+        );
+      },
     );
   }
 

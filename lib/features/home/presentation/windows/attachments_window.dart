@@ -138,11 +138,12 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
     final dateStr = df.format(m.internalDate.toLocal());
     final isLoading = _loadingAttachments[m.id] ?? false;
     final attachments = _attachmentCache[m.id] ?? [];
+    final isMobile = MediaQuery.of(context).size.width < 900;
     
     // Note: Attachment loading is triggered in the build method above to avoid duplicates
     
     return ListTile(
-      leading: const Icon(Icons.attachment),
+      leading: isMobile ? null : const Icon(Icons.attachment),
       title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

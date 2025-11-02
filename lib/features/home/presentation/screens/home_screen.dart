@@ -15,7 +15,6 @@ import 'package:actionmail/features/home/presentation/windows/subscriptions_wind
 import 'package:actionmail/features/home/presentation/windows/shopping_window.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
@@ -38,7 +37,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   List<GoogleAccount> _accounts = [];
   bool _initializedFromRoute = false;
   
-  // Selected local state filter
+  // Selected local state filter: null (show all), 'Personal', or 'Business'
   String? _selectedLocalState;
   
   // Selected action summary filter (null = no filter / show all)
@@ -94,7 +93,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         });
         await _saveLastActiveAccount(selectedAccount);
         if (_selectedAccountId != null) {
-          await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+          // Use loadEmails for account switch to trigger full initial sync if needed
+          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
       }
     } else {
@@ -222,56 +222,44 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                     _selectedFolder = value;
                                   });
                                   if (_selectedAccountId != null) {
-                                    await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+                                    await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
                                   }
                                 }
                               },
                             ),
                             const Spacer(),
-                            IconButton(
-                              tooltip: 'Compose',
-                              icon: const Icon(Icons.edit_outlined, size: 18),
-                              color: Theme.of(context).appBarTheme.foregroundColor,
-                              onPressed: () {
-                                if (_selectedAccountId != null) {
-                                  showDialog(
-                                    context: context,
-                                    builder: (ctx) => ComposeEmailDialog(
-                                      accountId: _selectedAccountId!,
-                                    ),
-                                  );
-                                }
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Refresh',
-                              icon: const Icon(Icons.refresh, size: 18),
-                              color: Theme.of(context).appBarTheme.foregroundColor,
-                              onPressed: () async {
-                                if (_selectedAccountId != null) {
-                                  await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
-                                }
-                              },
-                            ),
-                            IconButton(
-                              tooltip: 'Settings',
-                              icon: const Icon(Icons.settings_outlined, size: 18),
-                              color: Theme.of(context).appBarTheme.foregroundColor,
-                              onPressed: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (ctx) => const AccountsSettingsDialog(),
-                                );
-                              },
-                            ),
+                            // Personal/Business/All switch
+                            _buildAppBarLocalStateSwitch(context),
+                            const SizedBox(width: 8),
                             PopupMenuButton<String>(
                               icon: Icon(Icons.menu, size: 18, color: Theme.of(context).appBarTheme.foregroundColor),
                               onSelected: (value) {
                                 switch (value) {
+                                  case 'Compose':
+                                    if (_selectedAccountId != null) {
+                                      showDialog(
+                                        context: context,
+                                        builder: (ctx) => ComposeEmailDialog(
+                                          accountId: _selectedAccountId!,
+                                        ),
+                                      );
+                                    }
+                                    break;
+                                  case 'Refresh':
+                                    if (_selectedAccountId != null) {
+                                      ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+                                    }
+                                    break;
+                                  case 'Settings':
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => const AccountsSettingsDialog(),
+                                    );
+                                    break;
                                   case 'Actions':
                                     showDialog(context: context, builder: (_) => const ActionsWindow());
                                     break;
-                                  case 'Actions Summary':
+                                  case 'Account Digest':
                                     showDialog(context: context, builder: (_) => ActionsSummaryWindow());
                                     break;
                                   case 'Attachments':
@@ -289,18 +277,111 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               },
                               itemBuilder: (context) {
                                 final cs = Theme.of(context).colorScheme;
-                                return AppConstants.allFunctionWindows.map((window) {
-                                  return PopupMenuItem(
-                                    value: window,
-                                    child: Text(
-                                      window,
-                                      style: TextStyle(
-                                        color: cs.onSurface,
-                                        fontSize: 13,
-                                      ),
+                                return [
+                                  PopupMenuItem(
+                                    value: 'Compose',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.edit_outlined, size: 18, color: cs.onSurface),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          'Compose',
+                                          style: TextStyle(
+                                            color: cs.onSurface,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
                                     ),
-                                  );
-                                }).toList();
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'Refresh',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.refresh, size: 18, color: cs.onSurface),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          'Refresh',
+                                          style: TextStyle(
+                                            color: cs.onSurface,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'Settings',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.settings_outlined, size: 18, color: cs.onSurface),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          'Settings',
+                                          style: TextStyle(
+                                            color: cs.onSurface,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const PopupMenuDivider(),
+                                  // Actions and other function windows (excluding Actions Summary)
+                                  ...AppConstants.allFunctionWindows.where((window) => window != AppConstants.windowActionsSummary).map((window) {
+                                    IconData icon;
+                                    switch (window) {
+                                      case AppConstants.windowActions:
+                                        icon = Icons.auto_fix_high;
+                                        break;
+                                      case AppConstants.windowAttachments:
+                                        icon = Icons.attach_file;
+                                        break;
+                                      case AppConstants.windowSubscriptions:
+                                        icon = Icons.subscriptions;
+                                        break;
+                                      case AppConstants.windowShopping:
+                                        icon = Icons.shopping_bag;
+                                        break;
+                                      default:
+                                        icon = Icons.info_outline;
+                                    }
+                                    return PopupMenuItem(
+                                      value: window,
+                                      child: Row(
+                                        children: [
+                                          Icon(icon, size: 18, color: cs.onSurface),
+                                          const SizedBox(width: 12),
+                                          Text(
+                                            window,
+                                            style: TextStyle(
+                                              color: cs.onSurface,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }),
+                                  const PopupMenuDivider(),
+                                  // Account Digest (moved to bottom)
+                                  PopupMenuItem(
+                                    value: 'Account Digest',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
+                                        const SizedBox(width: 12),
+                                        Text(
+                                          'Account Digest',
+                                          style: TextStyle(
+                                            color: cs.onSurface,
+                                            fontSize: 13,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ];
                               },
                             ),
                           ],
@@ -392,7 +473,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildFilterBar() {
     final isDesktop = MediaQuery.of(context).size.width >= 900;
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
+      padding: const EdgeInsets.only(left: 8.0, right: 8.0, top: 2.0, bottom: 6.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -875,13 +956,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildTopFilterRow() {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 6.0),
+      padding: const EdgeInsets.only(left: 8.0, right: 8.0, top: 6.0, bottom: 2.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Personal/Business buttons (sophisticated styling)
-          _buildSophisticatedLocalStateButtons(context),
-          const SizedBox(width: 16),
           // Action filter as text buttons
           Builder(
             builder: (context) {
@@ -930,6 +1008,136 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             },
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildAppBarLocalStateSwitch(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Calculate approximate button widths and text widths
+        // Personal button: icon (16) + spacing (4) + text (~60) + padding (20) ≈ 100
+        // Personal text width: ~60
+        // Business button: icon (16) + spacing (4) + text (~65) + padding (20) ≈ 105
+        // Business text width: ~65
+        const double personalButtonWidth = 95.0;
+        const double businessButtonWidth = 100.0;
+        const double personalTextWidth = 55.0;
+        const double businessTextWidth = 60.0;
+        const double iconAndSpacing = 20.0; // icon (16) + spacing (4)
+        
+        double underlineLeft = 0;
+        double underlineWidth = 0;
+        
+        if (_selectedLocalState == 'Personal') {
+          underlineLeft = iconAndSpacing; // Start after icon and spacing
+          underlineWidth = personalTextWidth;
+        } else if (_selectedLocalState == 'Business') {
+          underlineLeft = personalButtonWidth + iconAndSpacing;
+          underlineWidth = businessTextWidth;
+        }
+        
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Transparent row of buttons
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildAppBarStateButton(
+                  context,
+                  'Personal',
+                  Icons.person_outline,
+                  Icons.person,
+                  _selectedLocalState == 'Personal',
+                  () {
+                    setState(() {
+                      // Toggle: if already selected, deselect; otherwise select
+                      _selectedLocalState = _selectedLocalState == 'Personal' ? null : 'Personal';
+                    });
+                  },
+                ),
+                _buildAppBarStateButton(
+                  context,
+                  'Business',
+                  Icons.business_center_outlined,
+                  Icons.business,
+                  _selectedLocalState == 'Business',
+                  () {
+                    setState(() {
+                      // Toggle: if already selected, deselect; otherwise select
+                      _selectedLocalState = _selectedLocalState == 'Business' ? null : 'Business';
+                    });
+                  },
+                ),
+              ],
+            ),
+            // Sliding underline
+            if (_selectedLocalState != null)
+              Positioned(
+                bottom: 0,
+                left: underlineLeft,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeInOut,
+                  width: underlineWidth,
+                  height: 2,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(1),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildAppBarStateButton(
+    BuildContext context,
+    String state,
+    IconData outlinedIcon,
+    IconData filledIcon,
+    bool selected,
+    VoidCallback onTap,
+  ) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    
+    // Color for icons and text - white for better visibility on teal background
+    const Color iconColor = Colors.white;
+    const Color textColor = Colors.white;
+    
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                selected ? filledIcon : outlinedIcon,
+                size: 16,
+                color: iconColor,
+              ),
+              const SizedBox(width: 4),
+              Text(
+                state,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: textColor,
+                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                  fontSize: 11,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1000,6 +1208,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         borderRadius: BorderRadius.circular(10),
         onTap: () {
           setState(() {
+            // Toggle: if already selected, deselect; otherwise select
             _selectedLocalState = selected ? null : state;
           });
         },
@@ -1149,7 +1358,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         tooltip: state,
         icon: Icon(actualIcon, color: colorFor(selected)),
         onPressed: () {
-          setState(() {
+              setState(() {
+            // Toggle: if already selected, deselect; otherwise select
             _selectedLocalState = selected ? null : state;
           });
         },
@@ -1375,7 +1585,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       data: (emails) {
         // Apply filters in-memory for current folder result set
         final filtered = emails.where((m) {
-          // Local state filter
+          // Local state filter (null means no filter, Personal/Business means filter)
           if (_selectedLocalState != null) {
             if (m.localTagPersonal != _selectedLocalState) return false;
           }

@@ -168,25 +168,17 @@ class _SplashScreenState extends State<SplashScreen> {
                             await _saveLastActiveAccount(stored.id);
                             print('[splash] saved, mounted=$mounted');
                             if (!mounted) return;
+                            // Bring app to front after sign-in
+                            await _bringAppToFront();
+                            if (!mounted) return;
+                            
                             if (_forceAdd) {
-                              print('[splash] forceAdd=true, popping with account=${stored.id}');
-                              // Bring app to front after sign-in
-                              await _bringAppToFront();
                               // For add account flow, pop with account ID (this will pop AppWindowDialog)
-                              try {
-                                Navigator.of(context).pop(stored.id);
-                                print('[splash] pop() call completed');
-                              } catch (e) {
-                                print('[splash] pop() error: $e');
-                              }
+                              Navigator.of(context).pop(stored.id);
                             } else {
-                              print('[splash] forceAdd=false, navigating to home');
-                              // Bring app to front after sign-in
-                              await _bringAppToFront();
                               // For normal sign-in, navigate to home
                               final navigator = Navigator.of(context, rootNavigator: true);
                               navigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
-                              print('[splash] navigation call complete');
                             }
                           } else {
                             print('[splash] sign-in failed, showing snackbar');

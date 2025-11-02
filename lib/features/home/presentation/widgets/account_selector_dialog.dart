@@ -249,11 +249,12 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                           if (!mounted) return;
                           // Close this dialog and return the new account ID to the parent
                           final newAccountId = result is String ? result : null;
+                          final navigator = Navigator.of(context);
                           if (newAccountId != null) {
-                            Navigator.of(context).pop(newAccountId);
+                            navigator.pop(newAccountId);
                           } else {
                             // User cancelled, just close the dialog without changing account
-                            Navigator.of(context).pop();
+                            navigator.pop();
                           }
                         },
                         icon: const Icon(Icons.person_add_alt_1),

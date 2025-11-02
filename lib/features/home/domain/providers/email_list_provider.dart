@@ -25,6 +25,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   String? _currentAccountId;
   String _folderLabel = 'INBOX';
   Timer? _timer;
+  bool _isInitialSyncing = false;
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
 
   EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading());
@@ -55,6 +56,24 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     unawaited(_syncInboxOnStartup(accountId));
   }
 
+  /// Load emails for a folder: only reload from local DB, no sync
+  Future<void> loadFolder(String accountId, {String? folderLabel}) async {
+    _currentAccountId = accountId;
+    if (folderLabel != null) {
+      _folderLabel = folderLabel;
+    }
+    try {
+      // ignore: avoid_print
+      print('[sync] loadFolder account=$accountId folder=$_folderLabel');
+      _ref.read(emailLoadingLocalProvider.notifier).state = true;
+      final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+      state = AsyncValue.data(local);
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+    }
+    _ref.read(emailLoadingLocalProvider.notifier).state = false;
+  }
+
   /// Refresh emails: load from local immediately, then background sync
   Future<void> refresh(String accountId, {String? folderLabel}) async {
     _currentAccountId = accountId;
@@ -78,6 +97,12 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     _timer?.cancel();
     if (_currentAccountId == null) return;
     _timer = Timer.periodic(const Duration(minutes: 2), (_) async {
+      // Skip if initial sync is in progress
+      if (_isInitialSyncing) {
+        // ignore: avoid_print
+        print('[sync] incremental tick skipped, initial sync in progress');
+        return;
+      }
       try {
         // Incremental sync always uses the latest historyID from DB
         final syncStart = DateTime.now();
@@ -127,7 +152,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     super.dispose();
   }
 
-  /// Sync INBOX on startup: check historyID and perform appropriate sync
+  /// Sync all folders on startup: check historyID and perform appropriate sync
   Future<void> _syncInboxOnStartup(String accountId) async {
     try {
       // ignore: avoid_print
@@ -137,6 +162,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       
       // Check for historyID in DB
       final hasHistory = await _syncService.hasHistoryId(accountId);
+      // ignore: avoid_print
+      print('[sync] hasHistoryId check result: $hasHistory');
       List<GmailMessage> newInboxMessages = [];
       
       if (hasHistory) {
@@ -148,17 +175,23 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // If no historyID: do initial full sync for all folders sequentially
         // ignore: avoid_print
         print('[sync] no historyID, doing initial full sync for all folders');
-        for (final folder in _allFolders) {
-          await _syncService.syncMessages(accountId, folderLabel: folder);
+        _isInitialSyncing = true;
+        try {
+          for (final folder in _allFolders) {
+            // ignore: avoid_print
+            print('[sync] initial sync: fetching folder=$folder');
+            await _syncService.syncMessages(accountId, folderLabel: folder);
+            // After each folder sync, reload current folder from local DB to show updated emails in UI
+            if (_currentAccountId == accountId) {
+              final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+              // ignore: avoid_print
+              print('[sync] initial sync: synced $folder, reloading $_folderLabel, count=${local.length}');
+              state = AsyncValue.data(local);
+            }
+          }
+        } finally {
+          _isInitialSyncing = false;
         }
-      }
-      
-      // Reload Inbox from local DB to show updated emails
-      if (_currentAccountId == accountId && _folderLabel == 'INBOX') {
-        final local = await _syncService.loadLocal(accountId, folderLabel: 'INBOX');
-        state = AsyncValue.data(local);
-        // ignore: avoid_print
-        print('[sync] syncInboxOnStartup done count=${local.length}');
       }
       
       // Turn off loading indicator
@@ -178,6 +211,12 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
 
   Future<void> _syncFolderAndUpdateCurrent() async {
     if (_currentAccountId == null) return;
+    // Skip if initial sync is in progress
+    if (_isInitialSyncing) {
+      // ignore: avoid_print
+      print('[sync] sync current skipped, initial sync in progress');
+      return;
+    }
     final accountId = _currentAccountId!;
     final currentFolder = _folderLabel;
     try {

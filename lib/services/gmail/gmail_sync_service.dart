@@ -51,19 +51,22 @@ class GmailSyncService {
     if (listResp.statusCode != 200) return [];
     final listJson = (listResp.body.isNotEmpty) ? listResp.body : '{}';
     final listMap = jsonDecode(listJson) as Map<String, dynamic>;
-    final messages = <GmailMessage>[];
     final items = (listMap['messages'] as List<dynamic>?) ?? [];
-    for (final item in items) {
+    
+    // Fetch all messages in parallel
+    final futures = items.map((item) async {
       final id = (item as Map<String, dynamic>)['id'] as String;
       final msgResp = await http.get(
         Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$id?format=full'),
         headers: headers,
       );
-      if (msgResp.statusCode != 200) continue;
+      if (msgResp.statusCode != 200) return null;
       final msgMap = jsonDecode(msgResp.body) as Map<String, dynamic>;
-      messages.add(GmailMessage.fromJson(msgMap));
-    }
-    return messages;
+      return GmailMessage.fromJson(msgMap);
+    }).toList();
+    
+    final results = await Future.wait(futures);
+    return results.whereType<GmailMessage>().toList();
   }
   
   /// Convert Gmail API messages to MessageIndex and apply heuristics
@@ -78,6 +81,18 @@ class GmailSyncService {
     
     // Convert Gmail format to MessageIndex
     final messageIndexes = gmailMessages.map((gmailMsg) => gmailMsg.toMessageIndex(accountId)).toList();
+    
+    // Log attachment candidates
+    // Note: hasAttachments is basic check (any filename), verification happens in attachments window
+    // Shopping and subscription checks happen in Phase 1 tagging
+    for (var i = 0; i < gmailMessages.length && i < messageIndexes.length; i++) {
+      final mi = messageIndexes[i];
+      final subject = mi.subject;
+      
+      if (mi.hasAttachments) {
+        debugPrint('[Sync] ✓ ATTACHMENT CANDIDATE: subject="$subject" -> has filename (needs verification)');
+      }
+    }
 
     // Apply sender preferences (auto-apply local tag)
     final senderPrefs = await _repo.getAllSenderPrefs();
@@ -149,10 +164,16 @@ class GmailSyncService {
     String? latestHistoryId;
     for (final gm in gmailMessages) {
       if (gm.historyId != null) {
-        latestHistoryId = gm.historyId;
+        // Keep the maximum (latest) historyId
+        if (latestHistoryId == null || 
+            (int.tryParse(gm.historyId!) != null && int.tryParse(latestHistoryId) != null &&
+             int.parse(gm.historyId!) > int.parse(latestHistoryId))) {
+          latestHistoryId = gm.historyId;
+        }
       }
     }
     if (latestHistoryId != null) {
+      debugPrint('[Gmail] syncMessages saving historyId=$latestHistoryId');
       await _repo.setLastHistoryId(accountId, latestHistoryId);
     }
     
@@ -179,22 +200,41 @@ class GmailSyncService {
     String? latestHistoryId;
     final gmailMessagesToTag = <GmailMessage>[];
     do {
-      final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/history').replace(queryParameters: {
-        'startHistoryId': lastHistoryId,
-        if (pageToken != null) 'pageToken': pageToken,
-        'historyTypes': 'messageAdded,labelAdded,labelRemoved',
-        'maxResults': '100',
-      });
-      debugPrint('[Gmail] incrementalSync fetching history page...');
+      // Build URI with array parameters manually
+      final queryParams = <String>[
+        'startHistoryId=$lastHistoryId',
+        'historyTypes=messageAdded',
+        'historyTypes=labelAdded',
+        'historyTypes=labelRemoved',
+        'maxResults=100',
+      ];
+      if (pageToken != null) {
+        queryParams.add('pageToken=$pageToken');
+      }
+      final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/history?${queryParams.join('&')}');
+      debugPrint('[Gmail] incrementalSync fetching history page, pageToken=${pageToken != null ? "exists" : "null"}');
       final resp = await http.get(uri, headers: {'Authorization': 'Bearer $accessToken'});
-      if (resp.statusCode != 200) break;
+      if (resp.statusCode != 200) {
+        debugPrint('[Gmail] incrementalSync history API failed, statusCode=${resp.statusCode}, body=${resp.body}');
+        break;
+      }
       final map = jsonDecode(resp.body) as Map<String, dynamic>;
-      debugPrint('[Gmail] incrementalSync history page received, history count=${(map['history'] as List?)?.length ?? 0}');
-      latestHistoryId = (map['historyId']?.toString()) ?? latestHistoryId;
       final history = (map['history'] as List<dynamic>?) ?? [];
+      debugPrint('[Gmail] incrementalSync history page received, history count=${history.length}, latestHistoryId=${map['historyId']}');
+      latestHistoryId = (map['historyId']?.toString()) ?? latestHistoryId;
+      int addedCount = 0;
+      int labelAddedCount = 0;
+      int labelRemovedCount = 0;
+      debugPrint('[Gmail] incrementalSync processing ${history.length} history entries');
+      int processedCount = 0;
       for (final h in history) {
+        processedCount++;
+        if (processedCount % 10 == 0) {
+          debugPrint('[Gmail] incrementalSync processed $processedCount/${history.length} history entries');
+        }
         final hist = h as Map<String, dynamic>;
         final messagesAdded = (hist['messagesAdded'] as List<dynamic>?) ?? [];
+        addedCount += messagesAdded.length;
         for (final ma in messagesAdded) {
           final m = (ma as Map<String, dynamic>)['message'] as Map<String, dynamic>;
           final id = m['id'] as String;
@@ -219,10 +259,12 @@ class GmailSyncService {
           final msg = (la as Map<String, dynamic>)['message'] as Map<String, dynamic>;
           ids.add(msg['id'] as String);
         }
+        labelAddedCount += (hist['labelsAdded'] as List<dynamic>?)?.length ?? 0;
         for (final lr in (hist['labelsRemoved'] as List<dynamic>?) ?? []) {
           final msg = (lr as Map<String, dynamic>)['message'] as Map<String, dynamic>;
           ids.add(msg['id'] as String);
         }
+        labelRemovedCount += (hist['labelsRemoved'] as List<dynamic>?)?.length ?? 0;
         for (final id in ids) {
           // Fetch only metadata (not full message) to get current labels
           final metadataResp = await http.get(
@@ -263,9 +305,11 @@ class GmailSyncService {
         }
       }
       pageToken = map['nextPageToken'] as String?;
+      debugPrint('[Gmail] incrementalSync page processed: added=$addedCount, labelAdded=$labelAddedCount, labelRemoved=$labelRemovedCount, pageToken=${pageToken != null ? "exists" : "null"}');
     } while (pageToken != null);
 
     if (latestHistoryId != null) {
+      debugPrint('[Gmail] incrementalSync saving latestHistoryId=$latestHistoryId');
       await _repo.setLastHistoryId(accountId, latestHistoryId);
     }
     
@@ -452,9 +496,13 @@ class GmailSyncService {
   Future<void> phase1Tagging(String accountId, List<GmailMessage> gmailMessages) async {
     // Lightweight: headers-only to avoid slowing load
     // Phase 1 tagging: checks email header and sets subs local tag if subscription email
+    // Also checks for shopping category from labelIds
     // This happens only once when new email arrives
+    debugPrint('[Phase1] Testing ${gmailMessages.length} messages for subscription headers and shopping');
     for (final gm in gmailMessages) {
       final headers = gm.payload?.headers ?? [];
+      final subject = headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value;
+      
       final hasListHeader = headers.any((h) {
         final name = h.name.toLowerCase();
         return name == 'list-unsubscribe' || name == 'list-id';
@@ -463,6 +511,18 @@ class GmailSyncService {
         // Extract a usable unsubscribe link from List-Unsubscribe header if present
         final unsubLink = _extractUnsubFromHeader(headers);
         await _repo.updateLocalClassification(gm.id, subs: true, unsubLink: unsubLink);
+        debugPrint('[Phase1] ✓ SUBSCRIPTION: subject="$subject" -> detected (List-* header)');
+      } else {
+        debugPrint('[Phase1] ✗ NO SUBSCRIPTION: subject="$subject" -> no headers');
+      }
+      
+      // Check for shopping category
+      final hasShopping = gm.labelIds.contains('CATEGORY_PURCHASES');
+      if (hasShopping) {
+        await _repo.updateLocalClassification(gm.id, shopping: true);
+        debugPrint('[Phase1] ✓ SHOPPING: subject="$subject" -> CATEGORY_PURCHASES');
+      } else {
+        debugPrint('[Phase1] ✗ NO SHOPPING: subject="$subject"');
       }
     }
   }
@@ -470,18 +530,18 @@ class GmailSyncService {
   Future<void> phase2TaggingNewMessages(String accountId, List<GmailMessage> gmailMessages, {VoidCallback? onComplete}) async {
     // Phase 2 tagging: performs extra checks on emails that DO NOT have the subs tag already set
     // Also performs action detection with deeper body-based analysis
-    debugPrint('[Phase2] Starting Phase 2 tagging for ${gmailMessages.length} messages');
+    debugPrint('[Phase2] Testing ${gmailMessages.length} messages for subscriptions and actions');
     
     // First check existing messages in DB to see which ones already have subs tag from phase 1 or action from previous run
     final messageIds = gmailMessages.map((gm) => gm.id).toList();
     final existingMessages = await _repo.getByIds(accountId, messageIds);
-    debugPrint('[Phase2] Loaded ${existingMessages.length} existing messages from DB');
     
     for (final gm in gmailMessages) {
       final existing = existingMessages[gm.id];
       
       final headers = gm.payload?.headers ?? [];
-      final subj = headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value.toLowerCase();
+      final subject = headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value;
+      final subj = subject.toLowerCase();
       final from = headers.firstWhere((h) => h.name.toLowerCase() == 'from', orElse: () => const MessageHeader(name: '', value: '')).value.toLowerCase();
       final snippet = gm.snippet ?? '';
       
@@ -507,66 +567,63 @@ class GmailSyncService {
           // Tag as subscription ONLY if unsubscribe link is found
           if (unsubLink != null && unsubLink.isNotEmpty) {
             await _repo.updateLocalClassification(gm.id, subs: true, unsubLink: unsubLink);
-            debugPrint('[Phase2] Tagged ${gm.id} as subscription with unsubLink: $unsubLink');
+            debugPrint('[Phase2] ✓ SUBSCRIPTION: subject="$subject" -> detected (heuristic + unsubLink)');
           } else {
-            debugPrint('[Phase2] Skipping ${gm.id}: subscription candidate but no unsubscribe link found');
+            debugPrint('[Phase2] ✗ NO SUBSCRIPTION: subject="$subject" -> candidate but no unsubLink');
           }
         }
+      } else {
+        debugPrint('[Phase2] - SKIP SUBSCRIPTION: subject="$subject" -> already tagged');
       }
       
       // === ACTION DETECTION ===
       // Skip if email already has an action (don't overwrite user edits)
       if (existing == null || existing.actionDate == null) {
-        debugPrint('[Phase2] Checking action for message ${gm.id}: subject="$subj", snippet="${snippet.substring(0, snippet.length > 50 ? 50 : snippet.length)}"');
-        
         // Quick check: is this an action candidate? (lightweight, no body download)
         final isActionCandidate = ActionExtractor.isActionCandidate(subj, snippet);
-        debugPrint('[Phase2] Action candidate check: $isActionCandidate for message ${gm.id}');
         
         if (isActionCandidate) {
           // Quick detection on subject/snippet first (low confidence)
           final quickResult = ActionExtractor.detectQuick(subj, snippet);
-          debugPrint('[Phase2] Quick detection result for ${gm.id}: ${quickResult != null ? "date=${quickResult.actionDate}, confidence=${quickResult.confidence}, text=${quickResult.insightText}" : "null"}');
           
           if (quickResult != null) {
             // Download email body for deeper detection (higher confidence)
-            debugPrint('[Phase2] Downloading body for ${gm.id}...');
             final bodyContent = await _downloadEmailBody(accountId, gm.id);
-            debugPrint('[Phase2] Body download for ${gm.id}: ${bodyContent != null ? "success (${bodyContent.length} chars)" : "failed"}');
             
             if (bodyContent != null && bodyContent.isNotEmpty) {
               // Deep detection with full body content
               final deepResult = ActionExtractor.detectWithBody(subj, snippet, bodyContent);
-              debugPrint('[Phase2] Deep detection result for ${gm.id}: ${deepResult != null ? "date=${deepResult.actionDate}, confidence=${deepResult.confidence}, text=${deepResult.insightText}" : "null"}');
               
               if (deepResult != null && deepResult.confidence >= 0.6) {
                 // Use deep result if confidence is high enough
-                debugPrint('[Phase2] Saving deep result for ${gm.id} (confidence ${deepResult.confidence} >= 0.6)');
                 await _repo.updateAction(gm.id, deepResult.actionDate, deepResult.insightText, deepResult.confidence);
+                debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> deep (${deepResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${deepResult.confidence})');
               } else if (quickResult.confidence >= 0.5) {
                 // Fall back to quick result if deep detection didn't improve confidence
-                debugPrint('[Phase2] Saving quick result for ${gm.id} (confidence ${quickResult.confidence} >= 0.5)');
                 await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+                debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence})');
               } else {
-                debugPrint('[Phase2] Skipping ${gm.id}: deep result confidence ${deepResult?.confidence ?? "null"} < 0.6, quick confidence ${quickResult.confidence} < 0.5');
+                debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> confidence too low (deep=${deepResult?.confidence ?? 0.0}, quick=${quickResult.confidence})');
               }
             } else if (quickResult.confidence >= 0.5) {
               // If body download fails, use quick result
-              debugPrint('[Phase2] Body download failed, saving quick result for ${gm.id} (confidence ${quickResult.confidence} >= 0.5)');
               await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+              debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence}) body failed');
             } else {
-              debugPrint('[Phase2] Body download failed and quick confidence ${quickResult.confidence} < 0.5, skipping ${gm.id}');
+              debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> body failed, confidence too low (${quickResult.confidence})');
             }
           } else {
-            debugPrint('[Phase2] Quick detection returned null for ${gm.id}, skipping');
+            debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> quick detection null');
           }
+        } else {
+          debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> not a candidate');
         }
       } else {
-        debugPrint('[Phase2] Skipping action detection for ${gm.id}: already has action (date=${existing.actionDate})');
+        debugPrint('[Phase2] - SKIP ACTION: subject="$subject" -> already has action');
       }
     }
     
-    debugPrint('[Phase2] Phase 2 tagging completed');
+    debugPrint('[Phase2] Testing completed');
     
     // Notify completion callback to reload email list
     if (onComplete != null) {
@@ -904,7 +961,12 @@ class GmailSyncService {
     final map = jsonDecode(resp.body) as Map<String, dynamic>;
     final gm = GmailMessage.fromJson(map);
     final filenames = _extractAttachmentFilenames(gm.payload);
-    debugPrint('[Attachments] Found ${filenames.length} attachments for message $messageId: $filenames');
+    final subject = gm.payload?.headers.firstWhere((h) => h.name.toLowerCase() == 'subject', orElse: () => const MessageHeader(name: '', value: '')).value ?? 'unknown';
+    if (filenames.isNotEmpty) {
+      debugPrint('[Attachments] ✓ VERIFIED: subject="$subject" -> ${filenames.length} real attachments: $filenames');
+    } else {
+      debugPrint('[Attachments] ✗ NO ATTACHMENTS: subject="$subject" -> no real attachments (filtered out)');
+    }
     return filenames;
   }
 
@@ -1056,11 +1118,6 @@ class GmailSyncService {
         return true;
       }
       debugPrint('[Attachments] Excluding image type: ${part.filename}');
-      return false;
-    }
-    
-    // Exclude text/html and text/plain as they're message content, not attachments
-    if (mimeType == 'text/html' || mimeType == 'text/plain') {
       return false;
     }
     

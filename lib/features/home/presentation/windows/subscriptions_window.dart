@@ -69,9 +69,10 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
 
   Widget _subscriptionTile(MessageIndex m) {
     final isDone = _unsubscribedIds.contains(m.id);
+    final isMobile = MediaQuery.of(context).size.width < 900;
     return ListTile(
       dense: true,
-      leading: const Icon(Icons.unsubscribe, size: 18),
+      leading: isMobile ? null : const Icon(Icons.unsubscribe, size: 18),
       title: Text(
         m.subject, 
         maxLines: 2, 

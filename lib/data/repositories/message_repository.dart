@@ -113,11 +113,14 @@ class MessageRepository {
     String folderLabel,
   ) async {
     final db = await _dbProvider.database;
+    // Check if CATEGORY_PURCHASES is in gmailCategories to set shoppingLocal
+    final shoppingLocal = gmailCategories.contains('CATEGORY_PURCHASES');
     await db.update(
       'messages',
       {
         'gmailCategories': jsonEncode(gmailCategories),
         'gmailSmartLabels': jsonEncode(gmailSmartLabels),
+        'shoppingLocal': shoppingLocal ? 1 : 0,
         'isRead': isRead ? 1 : 0,
         'isStarred': isStarred ? 1 : 0,
         'isImportant': isImportant ? 1 : 0,
