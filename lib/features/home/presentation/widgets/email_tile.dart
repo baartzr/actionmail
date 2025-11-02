@@ -43,6 +43,7 @@ class _EmailTileState extends State<EmailTile> {
   int _revealDir = 0; // -1 left swipe, 1 right swipe, 0 none
   DateTime? _actionDate;
   String? _actionText;
+  bool _showActionLine = true; // Visibility of action line
 
   @override
   void initState() {
@@ -51,6 +52,8 @@ class _EmailTileState extends State<EmailTile> {
     _starred = widget.message.isStarred;
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
+    // Default: show action if action date exists, hide if no action date
+    _showActionLine = widget.message.actionDate != null;
   }
 
   bool _hasLeftActions(String folder) {
@@ -368,7 +371,7 @@ class _EmailTileState extends State<EmailTile> {
                           color: theme.colorScheme.primary,
                         ),
                         label: Text(
-                          'Email Full View',
+                          'Full View',
                           style: TextStyle(color: theme.colorScheme.primary),
                         ),
                         style: TextButton.styleFrom(
@@ -379,6 +382,22 @@ class _EmailTileState extends State<EmailTile> {
                         ),
                       ),
                       const Spacer(),
+                      // Action line toggle button
+                      IconButton(
+                        iconSize: 20,
+                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        icon: Icon(
+                          _showActionLine ? Icons.visibility : Icons.visibility_off,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                        onPressed: () {
+                          setState(() {
+                            _showActionLine = !_showActionLine;
+                          });
+                        },
+                        tooltip: _showActionLine ? 'Hide action' : 'Show action',
+                      ),
+                      const SizedBox(width: 4),
                       _buildCategoryIconSwitch(context),
                       const SizedBox(width: 4),
                       IconButton(
@@ -409,7 +428,7 @@ class _EmailTileState extends State<EmailTile> {
                 ],
 
                 // Action row - show in all folders, but disable when not in INBOX
-                ...[
+                if (_showActionLine) ...[
                   const SizedBox(height: 8),
                   Opacity(
                     opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
@@ -480,22 +499,11 @@ class _EmailTileState extends State<EmailTile> {
                                       TextSpan(text: dateLabel),
                                       const TextSpan(text: '  •  '),
                                     ],
-                                      if (display.isNotEmpty) TextSpan(text: '$display  '),
-                                      TextSpan(
-                                        text: 'Edit',
-                                        style: theme.textTheme.bodySmall?.copyWith(
-                                          color: isInbox 
-                                              ? theme.colorScheme.secondary
-                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                          decoration: TextDecoration.none,
-                                          fontStyle: FontStyle.normal,
-                                          fontWeight: FontWeight.w600,
-                                        ),
-                                      ),
+                                      if (display.isNotEmpty) TextSpan(text: display),
                                       if (!isComplete) ...[
                                         const TextSpan(text: '  '),
                                         TextSpan(
-                                          text: 'Mark as complete',
+                                          text: 'Mark Complete',
                                           style: theme.textTheme.bodySmall?.copyWith(
                                             color: isInbox 
                                                 ? theme.colorScheme.tertiary
@@ -571,54 +579,66 @@ class _EmailTileState extends State<EmailTile> {
     final isPersonal = _localState == 'Personal';
     final isBusiness = _localState == 'Business';
     Color colorFor(bool selected) => selected ? cs.primary : cs.onSurfaceVariant;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          decoration: isPersonal
-              ? BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(8),
-                )
-              : null,
-          child: IconButton(
-            iconSize: 20,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: 'Personal',
-            icon: Icon(isPersonal ? Icons.person : Icons.person_outline, color: colorFor(isPersonal)),
-            onPressed: () {
-              setState(() {
-                _localState = isPersonal ? null : 'Personal';
-              });
-              if (widget.onLocalStateChanged != null) {
-                widget.onLocalStateChanged!(_localState);
-              }
-            },
+    
+    // Create a connected switch appearance
+    return Container(
+      decoration: BoxDecoration(
+        color: cs.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.4)),
+      ),
+      padding: const EdgeInsets.all(2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Material(
+            color: isPersonal ? cs.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () {
+                setState(() {
+                  _localState = isPersonal ? null : 'Personal';
+                });
+                if (widget.onLocalStateChanged != null) {
+                  widget.onLocalStateChanged!(_localState);
+                }
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Icon(
+                  isPersonal ? Icons.person : Icons.person_outline,
+                  size: 20,
+                  color: isPersonal ? cs.onPrimary : colorFor(false),
+                ),
+              ),
+            ),
           ),
-        ),
-        Container(
-          decoration: isBusiness
-              ? BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(8),
-                )
-              : null,
-          child: IconButton(
-            iconSize: 20,
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-            tooltip: 'Business',
-            icon: Icon(isBusiness ? Icons.business_center : Icons.business_center_outlined, color: colorFor(isBusiness)),
-            onPressed: () {
-              setState(() {
-                _localState = isBusiness ? null : 'Business';
-              });
-              if (widget.onLocalStateChanged != null) {
-                widget.onLocalStateChanged!(_localState);
-              }
-            },
+          Material(
+            color: isBusiness ? cs.primary : Colors.transparent,
+            borderRadius: BorderRadius.circular(6),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () {
+                setState(() {
+                  _localState = isBusiness ? null : 'Business';
+                });
+                if (widget.onLocalStateChanged != null) {
+                  widget.onLocalStateChanged!(_localState);
+                }
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Icon(
+                  isBusiness ? Icons.business_center : Icons.business_center_outlined,
+                  size: 20,
+                  color: isBusiness ? cs.onPrimary : colorFor(false),
+                ),
+              ),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 

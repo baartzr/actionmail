@@ -12,6 +12,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:window_to_front/window_to_front.dart';
 
 class GoogleAuthService {
   static const _prefsKeyAccounts = 'accounts_json';
@@ -156,7 +157,7 @@ class GoogleAuthService {
             photoUrl = data['picture'] as String?;
           }
         }
-        return GoogleAccount(
+        final account = GoogleAccount(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           email: email,
           displayName: displayName,
@@ -166,6 +167,15 @@ class GoogleAuthService {
           tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
           idToken: idToken,
         );
+        // Bring window to front after successful sign-in
+        if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+          try {
+            await WindowToFront.activate();
+          } catch (_) {
+            // Ignore if it fails
+          }
+        }
+        return account;
       } catch (_) {
         // continue
       }
@@ -253,7 +263,7 @@ class GoogleAuthService {
             }
           }
           
-          return GoogleAccount(
+          final account = GoogleAccount(
             id: DateTime.now().millisecondsSinceEpoch.toString(),
             email: email,
             displayName: displayName,
@@ -263,6 +273,15 @@ class GoogleAuthService {
             tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
             idToken: idToken,
           );
+          // Bring window to front after successful sign-in (for desktop/emulator)
+          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+            try {
+              await WindowToFront.activate();
+            } catch (_) {
+              // Ignore if it fails
+            }
+          }
+          return account;
         } else {
           // iOS: Use flutter_web_auth_2 with custom scheme
           final redirectUri = AppConstants.oauthRedirectUriForMobile;
@@ -324,7 +343,7 @@ class GoogleAuthService {
             }
           }
           
-          return GoogleAccount(
+          final account = GoogleAccount(
             id: DateTime.now().millisecondsSinceEpoch.toString(),
             email: email,
             displayName: displayName,
@@ -334,6 +353,15 @@ class GoogleAuthService {
             tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
             idToken: idToken,
           );
+          // Bring window to front after successful sign-in (for desktop)
+          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+            try {
+              await WindowToFront.activate();
+            } catch (_) {
+              // Ignore if it fails
+            }
+          }
+          return account;
         }
       } catch (_) {
         // continue to fallback
@@ -380,7 +408,7 @@ class GoogleAuthService {
             photoUrl = data['picture'] as String?;
           }
         }
-        return GoogleAccount(
+        final account = GoogleAccount(
           id: DateTime.now().millisecondsSinceEpoch.toString(),
           email: email,
           displayName: displayName,
@@ -390,6 +418,15 @@ class GoogleAuthService {
           tokenExpiryMs: result.accessTokenExpirationDateTime?.millisecondsSinceEpoch,
           idToken: result.idToken ?? '',
         );
+        // Bring window to front after successful sign-in (for desktop)
+        if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+          try {
+            await WindowToFront.activate();
+          } catch (_) {
+            // Ignore if it fails
+          }
+        }
+        return account;
       } catch (_) {
         // fall through to google_sign_in if available
       }
@@ -399,7 +436,7 @@ class GoogleAuthService {
       final account = await _googleSignIn.signIn();
       if (account == null) return null;
       final auth = await account.authentication;
-      return GoogleAccount(
+      final googleAccount = GoogleAccount(
         id: account.id,
         email: account.email,
         displayName: account.displayName ?? account.email,
@@ -409,6 +446,15 @@ class GoogleAuthService {
         tokenExpiryMs: null,
         idToken: auth.idToken ?? '',
       );
+      // Bring window to front after successful sign-in (for desktop)
+      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+        try {
+          await WindowToFront.activate();
+        } catch (_) {
+          // Ignore if it fails
+        }
+      }
+      return googleAccount;
     }
     return null;
   }
