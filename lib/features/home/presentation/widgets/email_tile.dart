@@ -16,8 +16,10 @@ class EmailTile extends StatefulWidget {
   final VoidCallback? onTrash;
   final VoidCallback? onArchive;
   final VoidCallback? onRestore;
+  final VoidCallback? onMoveToInbox;
   final void Function(DateTime? date, String? text)? onActionUpdated;
   final VoidCallback? onActionCompleted;
+  final VoidCallback? onMarkRead;
 
   const EmailTile({
     super.key,
@@ -28,8 +30,10 @@ class EmailTile extends StatefulWidget {
     this.onTrash,
     this.onArchive,
     this.onRestore,
+    this.onMoveToInbox,
     this.onActionUpdated,
     this.onActionCompleted,
+    this.onMarkRead,
   });
 
   @override
@@ -60,6 +64,7 @@ class _EmailTileState extends State<EmailTile> {
     // Shown on right swipe (left side)
     if (folder == 'TRASH') return true; // Restore
     if (folder == 'ARCHIVE') return true; // Restore on right swipe as well
+    if (folder == 'SPAM') return true; // Move to Inbox
     return false;
   }
 
@@ -71,20 +76,46 @@ class _EmailTileState extends State<EmailTile> {
   }
 
   Widget _buildLeftActions(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final folder = widget.message.folderLabel;
     if (folder == 'TRASH' || folder == 'ARCHIVE') {
       return Container(
-        color: cs.secondaryContainer,
-        child: Center(
-          child: AppButton(
-            label: 'Restore',
-            variant: AppButtonVariant.tonal,
-            leadingIcon: Icons.restore,
-            onPressed: () {
-              setState(() => _revealDir = 0);
-              if (widget.onRestore != null) widget.onRestore!();
-            },
+        color: cs.secondary,
+        child: InkWell(
+          onTap: () {
+            setState(() => _revealDir = 0);
+            if (widget.onRestore != null) widget.onRestore!();
+          },
+          child: Center(
+            child: Text(
+              'Restore',
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: cs.onSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    if (folder == 'SPAM') {
+      // Right swipe shows Move to Inbox
+      return Container(
+        color: cs.primary,
+        child: InkWell(
+          onTap: () {
+            setState(() => _revealDir = 0);
+            if (widget.onMoveToInbox != null) widget.onMoveToInbox!();
+          },
+          child: Center(
+            child: Text(
+              'Inbox',
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: cs.onPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ),
       );
@@ -94,39 +125,94 @@ class _EmailTileState extends State<EmailTile> {
 
   Widget _buildRightActions(BuildContext context) {
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final folder = widget.message.folderLabel;
-    if (folder == 'INBOX' || folder == 'SENT' || folder == 'SPAM') {
+    if (folder == 'SPAM') {
+      // SPAM folder: left swipe shows Trash and Archive
       return Row(
         children: [
           Expanded(
             child: Container(
-              color: theme.colorScheme.errorContainer,
-              child: Center(
-                child: AppButton(
-                  label: AppConstants.swipeActionTrash,
-                  variant: AppButtonVariant.filled,
-                  isDestructive: true,
-                  leadingIcon: Icons.delete_outline,
-                  onPressed: () {
-                    setState(() => _revealDir = 0);
-                    if (widget.onTrash != null) widget.onTrash!();
-                  },
+              color: cs.error,
+              child: InkWell(
+                onTap: () {
+                  setState(() => _revealDir = 0);
+                  if (widget.onTrash != null) widget.onTrash!();
+                },
+                child: Center(
+                  child: Text(
+                    AppConstants.swipeActionTrash,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: cs.onError,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
           Expanded(
             child: Container(
-              color: theme.colorScheme.secondaryContainer,
-              child: Center(
-                child: AppButton(
-                  label: AppConstants.swipeActionArchive,
-                  variant: AppButtonVariant.tonal,
-                  leadingIcon: Icons.archive_outlined,
-                  onPressed: () {
-                    setState(() => _revealDir = 0);
-                    if (widget.onArchive != null) widget.onArchive!();
-                  },
+              color: cs.secondary,
+              child: InkWell(
+                onTap: () {
+                  setState(() => _revealDir = 0);
+                  if (widget.onArchive != null) widget.onArchive!();
+                },
+                child: Center(
+                  child: Text(
+                    AppConstants.swipeActionArchive,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: cs.onSecondary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    if (folder == 'INBOX' || folder == 'SENT') {
+      return Row(
+        children: [
+          Expanded(
+            child: Container(
+              color: cs.error,
+              child: InkWell(
+                onTap: () {
+                  setState(() => _revealDir = 0);
+                  if (widget.onTrash != null) widget.onTrash!();
+                },
+                child: Center(
+                  child: Text(
+                    AppConstants.swipeActionTrash,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: cs.onError,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Container(
+              color: cs.secondary,
+              child: InkWell(
+                onTap: () {
+                  setState(() => _revealDir = 0);
+                  if (widget.onArchive != null) widget.onArchive!();
+                },
+                child: Center(
+                  child: Text(
+                    AppConstants.swipeActionArchive,
+                    style: theme.textTheme.bodyLarge?.copyWith(
+                      color: cs.onSecondary,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -137,17 +223,20 @@ class _EmailTileState extends State<EmailTile> {
     if (folder == 'ARCHIVE') {
       // Left swipe should show Trash only
       return Container(
-        color: theme.colorScheme.errorContainer,
-        child: Center(
-          child: AppButton(
-            label: AppConstants.swipeActionTrash,
-            variant: AppButtonVariant.filled,
-            isDestructive: true,
-            leadingIcon: Icons.delete_outline,
-            onPressed: () {
-              setState(() => _revealDir = 0);
-              if (widget.onTrash != null) widget.onTrash!();
-            },
+        color: cs.error,
+        child: InkWell(
+          onTap: () {
+            setState(() => _revealDir = 0);
+            if (widget.onTrash != null) widget.onTrash!();
+          },
+          child: Center(
+            child: Text(
+              AppConstants.swipeActionTrash,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: cs.onError,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ),
       );
@@ -197,8 +286,13 @@ class _EmailTileState extends State<EmailTile> {
               // left swipe → show right actions if defined
               if (_hasRightActions(folder)) setState(() => _revealDir = -1);
             } else if (details.primaryDelta! > 6) {
-              // right swipe → show left actions if defined
-              if (_hasLeftActions(folder)) setState(() => _revealDir = 1);
+              // right swipe → show left actions if defined OR cancel left swipe
+              if (_hasLeftActions(folder)) {
+                setState(() => _revealDir = 1);
+              } else if (_revealDir == -1) {
+                // Cancel left swipe by swiping right
+                setState(() => _revealDir = 0);
+              }
             }
           },
           onHorizontalDragEnd: (details) {},
@@ -265,9 +359,14 @@ class _EmailTileState extends State<EmailTile> {
                         return;
                       }
                       // Update state immediately for instant response
+                      final wasExpanded = _expanded;
                       setState(() {
                         _expanded = !_expanded;
                       });
+                      // Mark as read when expanded (not when collapsing)
+                      if (!wasExpanded && _expanded && !widget.message.isRead && widget.onMarkRead != null) {
+                        widget.onMarkRead!();
+                      }
                     },
                     onDoubleTap: () {
                       // Double tap to open email viewer

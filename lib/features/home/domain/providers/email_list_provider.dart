@@ -286,6 +286,19 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     }
   }
 
+  void setRead(String messageId, bool isRead) {
+    final current = state;
+    if (current is AsyncData<List<MessageIndex>>) {
+      final list = current.value;
+      final idx = list.indexWhere((m) => m.id == messageId);
+      if (idx != -1) {
+        final updated = List<MessageIndex>.from(list);
+        updated[idx] = updated[idx].copyWith(isRead: isRead);
+        state = AsyncValue.data(updated);
+      }
+    }
+  }
+
   void setFolder(String messageId, String newFolderLabel) {
     final current = state;
     if (current is AsyncData<List<MessageIndex>>) {

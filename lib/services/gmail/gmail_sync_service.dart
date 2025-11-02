@@ -407,6 +407,10 @@ class GmailSyncService {
         return {'addLabelIds': ['STARRED']};
       case 'unstar':
         return {'removeLabelIds': ['STARRED']};
+      case 'markRead':
+        return {'removeLabelIds': ['UNREAD']};
+      case 'moveToInbox':
+        return {'removeLabelIds': ['SPAM'], 'addLabelIds': ['INBOX']};
       default:
         return {};
     }

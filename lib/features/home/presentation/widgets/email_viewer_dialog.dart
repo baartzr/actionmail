@@ -11,11 +11,13 @@ import 'package:http/http.dart' as http;
 class EmailViewerDialog extends StatefulWidget {
   final MessageIndex message;
   final String accountId;
+  final VoidCallback? onMarkRead;
 
   const EmailViewerDialog({
     super.key,
     required this.message,
     required this.accountId,
+    this.onMarkRead,
   });
 
   @override
@@ -33,6 +35,12 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   void initState() {
     super.initState();
     _loadEmailBody();
+    // Mark as read when dialog opens
+    if (!widget.message.isRead && widget.onMarkRead != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.onMarkRead!();
+      });
+    }
   }
 
   Future<void> _loadEmailBody() async {

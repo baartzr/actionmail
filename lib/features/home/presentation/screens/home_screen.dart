@@ -1682,8 +1682,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       builder: (ctx) => EmailViewerDialog(
                         message: message,
                         accountId: _selectedAccountId!,
+                        onMarkRead: () async {
+                          if (!message.isRead) {
+                            await MessageRepository().updateRead(message.id, true);
+                            ref.read(emailListProvider.notifier).setRead(message.id, true);
+                            _enqueueGmailUpdate('markRead', message.id);
+                          }
+                        },
                       ),
                     );
+                  }
+                },
+                onMarkRead: () async {
+                  if (!message.isRead) {
+                    await MessageRepository().updateRead(message.id, true);
+                    ref.read(emailListProvider.notifier).setRead(message.id, true);
+                    _enqueueGmailUpdate('markRead', message.id);
                   }
                 },
                 onStarToggle: (newValue) async {
@@ -1733,6 +1747,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   }
                   final src = message.folderLabel.toUpperCase();
                   _enqueueGmailUpdate('archive:$src', message.id);
+                },
+                onMoveToInbox: () async {
+                  // Optimistically move to INBOX: update folder immediately
+                  await MessageRepository().updateFolderWithPrev(
+                    message.id,
+                    'INBOX',
+                    prevFolderLabel: message.folderLabel,
+                  );
+                  // Remove from current view if not in INBOX folder
+                  if (_selectedFolder != 'INBOX') {
+                    ref.read(emailListProvider.notifier).removeMessage(message.id);
+                  } else {
+                    ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
+                  }
+                  // Gmail label change in background
+                  _enqueueGmailUpdate('moveToInbox', message.id);
                 },
                 onRestore: () async {
                   // Restore to previous folder

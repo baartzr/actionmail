@@ -101,6 +101,16 @@ class MessageRepository {
     );
   }
 
+  Future<void> updateRead(String messageId, bool isRead) async {
+    final db = await _dbProvider.database;
+    await db.update(
+      'messages',
+      {'isRead': isRead ? 1 : 0},
+      where: 'id=?',
+      whereArgs: [messageId],
+    );
+  }
+
   /// Update only label-related fields (categories, flags, folder) without replacing entire message
   /// This is used during incremental sync when only labels change
   Future<void> updateMessageLabelsAndFlags(

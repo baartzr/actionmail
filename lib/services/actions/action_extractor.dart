@@ -1,16 +1,17 @@
+import 'dart:math' as math;
+
 class ActionExtractor {
   static final RegExp _numericDate = RegExp(r'\b(\d{1,2})\s*(?:\/|\-|\.)\s*(\d{1,2})(?:\s*(?:\/|\-|\.)\s*(\d{2,4}))?\b');
   static final RegExp _monthDay = RegExp(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b', caseSensitive: false);
   static final RegExp _weekdayMonthDay = RegExp(r'\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s*,?\s*(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b', caseSensitive: false);
   static final RegExp _isoDate = RegExp(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b');
-  static final RegExp _phrases = RegExp(r'\b(due|by|on|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment|party|event|birthday|gathering|celebration|wedding|dinner|lunch|breakfast|conference|call|webinar|seminar)\b', caseSensitive: false);
+  static final RegExp _phrases = RegExp(r'\b(due|by|on|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment|party|event|birthday|gathering|celebration|wedding|dinner|lunch|breakfast|conference|call|webinar|seminar|join|live|attend|watch|show|stream|broadcast|session|workshop|training|class|lesson)\b', caseSensitive: false);
   static final RegExp _relativeDate = RegExp(r'\b(tomorrow|today|next\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|new\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', caseSensitive: false);
 
   /// Quick heuristic check on subject/snippet only (lightweight, no body download)
-  /// Returns true only if both an action phrase AND a date are found (to avoid false positives)
+  /// Returns true if action phrase is found (date extraction happens later in body for better accuracy)
   static bool isActionCandidate(String subject, String snippet) {
     final text = '$subject $snippet'.toLowerCase();
-    final now = DateTime.now();
     
     // Exclude common non-action emails
     if (text.contains('unsubscribe') && 
@@ -20,13 +21,35 @@ class ActionExtractor {
       return false;
     }
     
-    // Require both action phrase AND date for candidate status
+    // Check for action phrase - if found, consider it a candidate
+    // Date extraction will happen in the body for more accurate detection
     final hasActionPhrase = _phrases.hasMatch(text);
-    // Also check relative dates (e.g., "next wednesday")
-    DateTime? date = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
-    final hasDate = date != null;
     
-    return hasActionPhrase && hasDate;
+    // Also check for time mentions (e.g., "6 p.m.", "at 3pm") which might indicate events happening today
+    final hasTime = RegExp(r'\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?|am|pm)\b', caseSensitive: false).hasMatch(text);
+    
+    // If we have an action phrase, it's a candidate (even without explicit date)
+    // The body content will be checked for dates during deep detection
+    if (hasActionPhrase) {
+      // If there's also a time mention, it's likely happening today/soon
+      if (hasTime) {
+        return true;
+      }
+      // Also check for relative dates or explicit dates
+      final now = DateTime.now();
+      DateTime? date = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
+      if (date != null) {
+        return true;
+      }
+      // For action phrases like "join", "live", "attend", "watch" without explicit date,
+      // still consider it a candidate - the body might have the date
+      final eventPhrases = RegExp(r'\b(join|live|attend|watch|show|stream|broadcast|session|workshop|training|class|lesson)\b', caseSensitive: false);
+      if (eventPhrases.hasMatch(text)) {
+        return true;
+      }
+    }
+    
+    return false;
   }
 
   /// Deep detection with full body content (higher confidence)
@@ -35,8 +58,18 @@ class ActionExtractor {
     final text = '$subject $snippet $bodyContent';
     final now = DateTime.now();
 
-    // Try relative dates if numeric extraction fails
-    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
+    // Check relative dates FIRST (they're more explicit and should take priority)
+    // Only fall back to numeric/extracted dates if no relative date is found
+    DateTime? detectedDate = _extractRelativeDate(text, now) ?? _extractDate(text, now, fallbackYear: now.year);
+    
+    // If no date found but there's a time mention (e.g., "6 p.m.", "at 3pm"), assume today
+    if (detectedDate == null) {
+      final hasTime = RegExp(r'\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?|am|pm)\b', caseSensitive: false).hasMatch(text);
+      if (hasTime && _phrases.hasMatch(text)) {
+        // Time mentions with action phrases likely mean "today"
+        detectedDate = DateTime(now.year, now.month, now.day);
+      }
+    }
 
     if (detectedDate == null) return null;
 
@@ -63,8 +96,19 @@ class ActionExtractor {
     final text = '$subject $snippet';
     final now = DateTime.now();
 
-    // Also try relative dates (e.g., "next wednesday")
-    DateTime? detectedDate = _extractDate(text, now, fallbackYear: now.year) ?? _extractRelativeDate(text, now);
+    // Check relative dates FIRST (they're more explicit and should take priority)
+    // Only fall back to numeric/extracted dates if no relative date is found
+    DateTime? detectedDate = _extractRelativeDate(text, now) ?? _extractDate(text, now, fallbackYear: now.year);
+    
+    // If no date found but there's a time mention (e.g., "6 p.m.", "at 3pm"), assume today
+    if (detectedDate == null) {
+      final hasTime = RegExp(r'\b\d{1,2}\s*(?:a\.?m\.?|p\.?m\.?|am|pm)\b', caseSensitive: false).hasMatch(text);
+      if (hasTime && _phrases.hasMatch(text)) {
+        // Time mentions with action phrases likely mean "today"
+        detectedDate = DateTime(now.year, now.month, now.day);
+      }
+    }
+    
     if (detectedDate == null) return null;
 
     detectedDate = DateTime(detectedDate.year, detectedDate.month, detectedDate.day);
@@ -237,15 +281,40 @@ class ActionExtractor {
       }
     }
 
-    // 4) Numeric MM/DD[/YYYY]
+    // 4) Numeric MM/DD[/YYYY] - but skip if it looks like a URL, code, or version number
     final nd = _numericDate.firstMatch(text);
     if (nd != null) {
-      final m = int.tryParse(nd.group(1)!);
-      final d = int.tryParse(nd.group(2)!);
-      final y = nd.group(3) != null ? int.tryParse(nd.group(3)!) : null;
-      if (m != null && d != null) {
-        final year = y ?? _inferYear(m, d, now, fallbackYear);
-        return DateTime(year, m, d);
+      final matchStart = nd.start;
+      final matchEnd = nd.end;
+      // Check context - if surrounded by URL-like characters, skip it
+      if (matchStart > 0 && matchEnd < text.length) {
+        final before = text.substring(math.max(0, matchStart - 3), matchStart);
+        final after = text.substring(matchEnd, math.min(text.length, matchEnd + 3));
+        // Skip if it's part of a URL (http, www, .com, etc.) or code (contains letters before/after)
+        if (before.toLowerCase().contains('http') || 
+            before.toLowerCase().contains('www') ||
+            after.toLowerCase().contains('.com') ||
+            after.toLowerCase().contains('.org') ||
+            RegExp(r'[a-z]', caseSensitive: false).hasMatch(before) && RegExp(r'[a-z]', caseSensitive: false).hasMatch(after)) {
+          // Skip this match, continue to next check
+        } else {
+          final m = int.tryParse(nd.group(1)!);
+          final d = int.tryParse(nd.group(2)!);
+          final y = nd.group(3) != null ? int.tryParse(nd.group(3)!) : null;
+          if (m != null && d != null && m <= 12 && d <= 31) {
+            final year = y ?? _inferYear(m, d, now, fallbackYear);
+            return DateTime(year, m, d);
+          }
+        }
+      } else {
+        // No context to check, proceed normally
+        final m = int.tryParse(nd.group(1)!);
+        final d = int.tryParse(nd.group(2)!);
+        final y = nd.group(3) != null ? int.tryParse(nd.group(3)!) : null;
+        if (m != null && d != null && m <= 12 && d <= 31) {
+          final year = y ?? _inferYear(m, d, now, fallbackYear);
+          return DateTime(year, m, d);
+        }
       }
     }
 
