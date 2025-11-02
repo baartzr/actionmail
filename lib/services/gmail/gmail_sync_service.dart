@@ -1147,6 +1147,71 @@ class GmailSyncService {
     return true;
   }
 
+  /// Get attachment download URL for a specific filename
+  /// Returns both the URL and attachmentId for direct download
+  Future<Map<String, dynamic>?> getAttachmentDownloadInfo(String accountId, String messageId, String filename) async {
+    final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+    if (account == null || account.accessToken.isEmpty) {
+      return null;
+    }
+
+    // Fetch the full message to find the attachment part
+    final resp = await http.get(
+      Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId?format=full'),
+      headers: {'Authorization': 'Bearer ${account.accessToken}'},
+    );
+    if (resp.statusCode != 200) return null;
+
+    final map = jsonDecode(resp.body) as Map<String, dynamic>;
+    final gm = GmailMessage.fromJson(map);
+
+    // Find the attachment part matching the filename
+    String? attachmentId = _findAttachmentIdByFilename(gm.payload, filename);
+    if (attachmentId == null) return null;
+
+    // Return URL, attachmentId, and access token to avoid double token check
+    return {
+      'url': Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/attachments/$attachmentId'),
+      'attachmentId': attachmentId,
+      'accessToken': account.accessToken,
+    };
+  }
+
+  /// Recursively find attachmentId for a given filename
+  String? _findAttachmentIdByFilename(MessagePayload? payload, String targetFilename) {
+    if (payload == null) return null;
+
+    // Check payload parts recursively
+    if (payload.parts != null) {
+      for (final part in payload.parts!) {
+        final result = _findAttachmentIdInPart(part, targetFilename);
+        if (result != null) return result;
+      }
+    }
+
+    return null;
+  }
+
+  /// Recursively search a message part for matching attachment
+  String? _findAttachmentIdInPart(MessagePart part, String targetFilename) {
+    // Check if this part matches
+    if (part.filename != null && 
+        part.filename!.toLowerCase() == targetFilename.toLowerCase() &&
+        part.body?.attachmentId != null) {
+      return part.body!.attachmentId;
+    }
+
+    // Check nested parts
+    if (part.parts != null) {
+      for (final nestedPart in part.parts!) {
+        final result = _findAttachmentIdInPart(nestedPart, targetFilename);
+        if (result != null) return result;
+      }
+    }
+
+    return null;
+  }
+
   Future<void> _runBackgroundTaggingInSyncMessages(String accountId, List<GmailMessage> gmailMessages) async {
     debugPrint('[Gmail] starting background tagging for ${gmailMessages.length} messages in syncMessages');
     try {

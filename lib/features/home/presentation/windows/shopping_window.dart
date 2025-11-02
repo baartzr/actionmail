@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/shared/widgets/app_segmented_bar.dart';
+import 'package:actionmail/shared/widgets/personal_business_filter.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
 import 'package:actionmail/data/models/message_index.dart';
 
@@ -23,9 +23,7 @@ class _ShoppingWindowState extends ConsumerState<ShoppingWindow> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          AppSegmentedBar<String?>(
-            values: const [null, 'Personal', 'Business'],
-            labelBuilder: (v) => v ?? 'All',
+          PersonalBusinessFilter(
             selected: _filterLocal,
             onChanged: (v) => setState(() => _filterLocal = v),
           ),

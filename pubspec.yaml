@@ -29,6 +29,7 @@ dependencies:
   sqflite: ^2.3.0
   sqflite_common_ffi: ^2.3.0  # For desktop platforms
   path: ^1.8.3
+  path_provider: ^2.1.1
   shared_preferences: ^2.2.2
   
   # HTTP and API
@@ -51,6 +52,8 @@ dependencies:
   
   # File picker for attachments
   file_picker: ^8.0.0+1
+  # Open files on mobile platforms
+  open_file: ^3.3.2
   
   # Reuse inboxiq auth and Gmail services as local dependency
   # inboxiq:

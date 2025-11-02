@@ -1,11 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/shared/widgets/app_segmented_bar.dart';
+import 'package:actionmail/shared/widgets/personal_business_filter.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
+import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:intl/intl.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'dart:io';
+import 'dart:convert';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'package:open_file/open_file.dart';
 
 class AttachmentsWindow extends ConsumerStatefulWidget {
   const AttachmentsWindow({super.key});
@@ -30,9 +39,7 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          AppSegmentedBar<String?>(
-            values: const [null, 'Personal', 'Business'],
-            labelBuilder: (v) => v ?? 'All',
+          PersonalBusinessFilter(
             selected: _filterLocal,
             onChanged: (v) => setState(() => _filterLocal = v),
           ),
@@ -144,11 +151,17 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
     
     return ListTile(
       leading: isMobile ? null : const Icon(Icons.attachment),
-      title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
+      title: InkWell(
+        onTap: () => _openEmail(m),
+        child: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
+      ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(m.from, maxLines: 1, overflow: TextOverflow.ellipsis),
+          InkWell(
+            onTap: () => _openEmail(m),
+            child: Text(m.from, maxLines: 1, overflow: TextOverflow.ellipsis),
+          ),
           Text(dateStr, style: const TextStyle(fontSize: 12)),
           const SizedBox(height: 4),
           if (isLoading)
@@ -165,25 +178,184 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
               spacing: 8,
               runSpacing: 4,
               children: attachments.map((filename) {
-                return Chip(
-                  label: Text(
-                    filename,
-                    style: const TextStyle(fontSize: 12),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+                return InkWell(
+                  onTap: () => _openAttachment(m, filename),
+                  child: Chip(
+                    label: Text(
+                      filename,
+                      style: const TextStyle(fontSize: 12),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    avatar: const Icon(Icons.insert_drive_file, size: 16),
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
                   ),
-                  avatar: const Icon(Icons.insert_drive_file, size: 16),
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
                 );
               }).toList(),
             ),
         ],
       ),
-      onTap: () {
-        // TODO: open email detail
-      },
     );
+  }
+
+  void _openEmail(MessageIndex message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => EmailViewerDialog(
+        message: message,
+        accountId: message.accountId,
+      ),
+    );
+  }
+
+  Future<void> _openAttachment(MessageIndex message, String filename) async {
+    try {
+      debugPrint('[Attachments] Starting to open attachment: $filename');
+      
+      // Get attachment download info (includes URL and access token to avoid double token check)
+      final info = await _syncService.getAttachmentDownloadInfo(message.accountId, message.id, filename);
+      if (info == null) {
+        debugPrint('[Attachments] Attachment info is null');
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Attachment not found')),
+        );
+        return;
+      }
+
+      final url = info['url'] as Uri;
+      final accessToken = info['accessToken'] as String;
+      debugPrint('[Attachments] Got attachment URL: ${url.toString()}');
+
+      // Download the attachment using Gmail API with auth token
+      final resp = await http.get(
+        url,
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+      
+      debugPrint('[Attachments] Download response status: ${resp.statusCode}');
+      
+      if (resp.statusCode == 200) {
+        // Gmail API returns JSON with base64url-encoded data
+        final json = jsonDecode(resp.body) as Map<String, dynamic>;
+        final base64Data = json['data'] as String?;
+        if (base64Data == null || base64Data.isEmpty) {
+          debugPrint('[Attachments] Attachment data is empty');
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Attachment data is empty')),
+          );
+          return;
+        }
+
+        // Decode base64url data (Gmail API uses base64url encoding)
+        // Convert base64url to base64 for decoding
+        String base64 = base64Data.replaceAll('-', '+').replaceAll('_', '/');
+        // Add padding if needed
+        switch (base64.length % 4) {
+          case 1:
+            base64 += '===';
+            break;
+          case 2:
+            base64 += '==';
+            break;
+          case 3:
+            base64 += '=';
+            break;
+        }
+        final bytes = base64Decode(base64);
+        debugPrint('[Attachments] Decoded ${bytes.length} bytes');
+
+        // Save to file - use external storage directory on Android for shareability
+        Directory targetDir;
+        if (Platform.isAndroid) {
+          // On Android, try external files directory first, then external storage, then temp
+          targetDir = await getExternalStorageDirectory() ?? await getTemporaryDirectory();
+          debugPrint('[Attachments] Android targetDir: ${targetDir.path}');
+        } else {
+          // On desktop, use temporary directory
+          targetDir = await getTemporaryDirectory();
+          debugPrint('[Attachments] Desktop targetDir: ${targetDir.path}');
+        }
+        
+        // Sanitize filename to avoid issues with special characters
+        final sanitizedFilename = filename.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
+        final file = File(path.join(targetDir.path, sanitizedFilename));
+        await file.writeAsBytes(bytes);
+        debugPrint('[Attachments] Saved file to: ${file.path}');
+        debugPrint('[Attachments] File exists: ${await file.exists()}');
+        debugPrint('[Attachments] File size: ${await file.length()}');
+
+        // Open the file using platform-specific method
+        if (Platform.isAndroid || Platform.isIOS) {
+          // On mobile, use open_file package which handles FileProvider automatically
+          try {
+            debugPrint('[Attachments] Attempting to open file with open_file: ${file.path}');
+            final result = await OpenFile.open(file.path);
+            debugPrint('[Attachments] open_file result: type=${result.type}, message=${result.message}');
+            if (result.type != ResultType.done) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Cannot open file: ${result.message ?? 'Unknown error'}')),
+              );
+            }
+          } catch (e) {
+            debugPrint('[Attachments] Error opening file with open_file: $e');
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error opening file: $e')),
+            );
+          }
+        } else {
+          // Desktop platforms
+          try {
+            final uri = Uri.file(file.path);
+            debugPrint('[Attachments] Attempting to open file URI: ${uri.toString()}');
+            final canLaunch = await canLaunchUrl(uri);
+            debugPrint('[Attachments] canLaunchUrl result: $canLaunch');
+            if (canLaunch) {
+              await launchUrl(uri, mode: LaunchMode.externalApplication);
+              debugPrint('[Attachments] launchUrl completed');
+            } else {
+              // Fallback to Process.run for Windows if url_launcher fails
+              if (Platform.isWindows) {
+                debugPrint('[Attachments] Trying Windows Process.run fallback');
+                final quotedPath = '"${file.path.replaceAll('"', '""')}"';
+                await Process.run(
+                  'cmd.exe',
+                  ['/c', 'start', '', quotedPath],
+                  runInShell: true,
+                );
+                debugPrint('[Attachments] Windows Process.run completed');
+              } else {
+                debugPrint('[Attachments] Cannot open file: no handler available');
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Cannot open file: $filename')),
+                );
+              }
+            }
+          } catch (e) {
+            debugPrint('[Attachments] Error opening file: $e');
+            if (!mounted) return;
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error opening file: $e')),
+            );
+          }
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to download attachment: ${resp.statusCode}')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error opening attachment: $e')),
+      );
+    }
   }
 
   Future<void> _loadAttachments(MessageIndex message) async {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:actionmail/shared/widgets/personal_business_filter.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/data/models/message_index.dart';
@@ -96,23 +97,36 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       title: 'Actions Summary',
       size: AppWindowSize.large,
       bodyPadding: const EdgeInsets.all(16.0),
-      headerActions: [
-        _buildCategoryIconSwitch(),
-        const SizedBox(width: 8),
-      ],
-      child: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _accountMessages.isEmpty
-              ? const Center(child: Text('No actions found'))
-              : SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: _accounts
-                        .where((account) => _accountMessages.containsKey(account.id))
-                        .map((account) => _buildAccountSection(account))
-                        .toList(),
-                  ),
-                ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          PersonalBusinessFilter(
+            selected: _selectedLocalState,
+            onChanged: (v) {
+              setState(() {
+                _selectedLocalState = v;
+                _accountMessages = _applyLocalStateFilter(_allAccountMessages);
+              });
+            },
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _accountMessages.isEmpty
+                    ? const Center(child: Text('No actions found'))
+                    : SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: _accounts
+                              .where((account) => _accountMessages.containsKey(account.id))
+                              .map((account) => _buildAccountSection(account))
+                              .toList(),
+                        ),
+                      ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -131,72 +145,6 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     return filtered;
   }
 
-  Widget _buildCategoryIconSwitch() {
-    final cs = Theme.of(context).colorScheme;
-    final isPersonal = _selectedLocalState == 'Personal';
-    final isBusiness = _selectedLocalState == 'Business';
-
-    Color colorFor(bool selected) {
-      return selected ? cs.onSurface : cs.onSurfaceVariant.withValues(alpha: 0.7);
-    }
-
-    // Create a connected switch appearance
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.4)),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Material(
-            color: isPersonal ? cs.primary.withValues(alpha: 0.5) : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () {
-                setState(() {
-                  _selectedLocalState = isPersonal ? null : 'Personal';
-                  _accountMessages = _applyLocalStateFilter(_allAccountMessages);
-                });
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Icon(
-                  isPersonal ? Icons.person : Icons.person_outline,
-                  size: 20,
-                  color: isPersonal ? cs.onPrimary : colorFor(false),
-                ),
-              ),
-            ),
-          ),
-          Material(
-            color: isBusiness ? cs.primary.withValues(alpha: 0.5) : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(6),
-              onTap: () {
-                setState(() {
-                  _selectedLocalState = isBusiness ? null : 'Business';
-                  _accountMessages = _applyLocalStateFilter(_allAccountMessages);
-                });
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Icon(
-                  isBusiness ? Icons.business_center : Icons.business_center_outlined,
-                  size: 20,
-                  color: isBusiness ? cs.onPrimary : colorFor(false),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 
   Widget _buildAccountSection(GoogleAccount account) {
     final messages = _accountMessages[account.id] ?? [];
