@@ -19,7 +19,7 @@ class AppDatabase {
     final path = p.join(dbPath, 'actionmail.db');
     return openDatabase(
       path,
-      version: 10,
+      version: 11,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -90,6 +90,9 @@ class AppDatabase {
             timestamp INTEGER NOT NULL
           )
         ''');
+        // Create indexes for faster queries
+        await db.execute('CREATE INDEX idx_messages_account_folder_date ON messages(accountId, folderLabel, internalDate DESC)');
+        await db.execute('CREATE INDEX idx_messages_account_date ON messages(accountId, internalDate DESC)');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -155,6 +158,11 @@ class AppDatabase {
               timestamp INTEGER NOT NULL
             )
           ''');
+        }
+        if (oldVersion < 11) {
+          // Add indexes for faster queries
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_account_folder_date ON messages(accountId, folderLabel, internalDate DESC)');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(accountId, internalDate DESC)');
         }
       },
     );

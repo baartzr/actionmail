@@ -178,6 +178,14 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // ignore: avoid_print
         print('[sync] historyID exists, doing incremental sync');
         newInboxMessages = await _syncService.incrementalSync(accountId);
+        // Reload from local DB after incremental sync to show updated emails in UI
+        // Only update if we're viewing INBOX and NOT viewing a local folder
+        if (_currentAccountId == accountId && _folderLabel == 'INBOX' && !_isViewingLocalFolder) {
+          final local = await _syncService.loadLocal(accountId, folderLabel: 'INBOX');
+          // ignore: avoid_print
+          print('[sync] incremental sync done, reloading INBOX, count=${local.length}');
+          state = AsyncValue.data(local);
+        }
       } else {
         // If no historyID: do initial full sync for all folders sequentially
         // ignore: avoid_print
