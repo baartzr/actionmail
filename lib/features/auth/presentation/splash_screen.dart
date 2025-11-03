@@ -102,6 +102,9 @@ class _SplashScreenState extends State<SplashScreen> {
 
   void _showSplashWindow() async {
     print('[splash] _showSplashWindow() called');
+    // Capture navigators/messenger before awaiting dialog
+    final dialogNavigator = Navigator.of(context);
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
     final result = await AppWindowDialog.show(
       context: context,
       title: _forceAdd ? 'Add Account' : 'Welcome to ActionMail',
@@ -157,28 +160,27 @@ class _SplashScreenState extends State<SplashScreen> {
                           final svc = GoogleAuthService();
                           final acc = await svc.signIn();
                           print('[splash] signIn returned, mounted=$mounted, acc=${acc != null}');
-                          if (!mounted) return;
+                          if (!context.mounted) return;
                           if (acc != null) {
                             print('[splash] calling upsertAccount');
                             final stored = await svc.upsertAccount(acc);
                             print('[splash] upsertAccount done, mounted=$mounted');
-                            if (!mounted) return;
+                            if (!context.mounted) return;
                             // Save as last active account
                             print('[splash] saving last active account');
                             await _saveLastActiveAccount(stored.id);
                             print('[splash] saved, mounted=$mounted');
-                            if (!mounted) return;
+                            if (!context.mounted) return;
                             // Bring app to front after sign-in
                             await _bringAppToFront();
-                            if (!mounted) return;
+                            if (!context.mounted) return;
                             
                             if (_forceAdd) {
                               // For add account flow, pop with account ID (this will pop AppWindowDialog)
-                              Navigator.of(context).pop(stored.id);
+                              dialogNavigator.pop(stored.id);
                             } else {
                               // For normal sign-in, navigate to home
-                              final navigator = Navigator.of(context, rootNavigator: true);
-                              navigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                              rootNavigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
                             }
                           } else {
                             print('[splash] sign-in failed, showing snackbar');
@@ -233,10 +235,10 @@ class _SplashScreenState extends State<SplashScreen> {
     );
     print('[splash] AppWindowDialog.show() returned, result=$result');
     // If user dismissed the dialog without signing in, pop the route
-    if (!mounted) return;
+    if (!context.mounted) return;
     if (_forceAdd) {
       print('[splash] forceAdd=true, popping SplashScreen route with result=$result');
-      Navigator.of(context).pop(result);
+      dialogNavigator.pop(result);
     }
   }
 

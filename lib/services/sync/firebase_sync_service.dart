@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+// import 'dart:io'; // unused
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -15,6 +15,7 @@ class FirebaseSyncService {
   FirebaseSyncService._internal();
   
   static const String _prefsKeySyncEnabled = 'firebase_sync_enabled';
+  // ignore: unused_field
   static const String _prefsKeyUserId = 'firebase_user_id';
   
   FirebaseFirestore? _firestore;
@@ -494,13 +495,13 @@ class FirebaseSyncService {
 
   /// Sender preferences are no longer synced from Firebase
   /// This method is kept for backward compatibility but does nothing
+  // ignore: unused_element
   @Deprecated('Sender preferences are no longer synced. They are derived from emailMeta.')
-  Future<void> _handleSenderPrefsUpdate(Map<Object?, Object?> data) async {
-    // No-op: sender preferences are derived locally from emailMeta changes
-    return;
-  }
+  // ignore: unused_element
+  Future<void> _handleSenderPrefsUpdate(Map<Object?, Object?> data) async {}
 
   /// Helper to compare two maps for equality (deep comparison)
+  // ignore: unused_element
   bool _mapsEqual(Map<String, dynamic> map1, Map<String, dynamic> map2) {
     if (map1.length != map2.length) return false;
     

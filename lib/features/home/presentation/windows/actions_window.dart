@@ -7,6 +7,8 @@ import 'package:actionmail/features/home/domain/providers/email_list_provider.da
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
+import 'package:actionmail/services/actions/ml_action_extractor.dart';
+import 'package:actionmail/services/actions/action_extractor.dart';
 import 'package:intl/intl.dart';
 
 class ActionsWindow extends ConsumerStatefulWidget {
@@ -215,6 +217,45 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
                 ],
               ),
               actions: [
+                // Remove button (only show if action exists)
+                if (message.actionDate != null || message.actionInsightText != null)
+                  TextButton.icon(
+                    onPressed: () async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Remove Action'),
+                          content: const Text('Are you sure you want to remove this action?'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Theme.of(ctx).colorScheme.error,
+                                foregroundColor: Theme.of(ctx).colorScheme.onError,
+                              ),
+                              child: const Text('Remove'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed == true) {
+                        if (!context.mounted) return;
+                        Navigator.of(context).pop({
+                          'actionDate': null,
+                          'actionText': null,
+                        });
+                      }
+                    },
+                    icon: Icon(Icons.delete_outline, size: 18, color: Theme.of(context).colorScheme.error),
+                    label: Text(
+                      'Remove',
+                      style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    ),
+                  ),
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(null),
                   child: const Text('Cancel'),
@@ -223,7 +264,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
                   onPressed: () {
                     Navigator.of(context).pop({
                       'actionDate': tempDate,
-                      'actionText': textController.text.trim(),
+                      'actionText': textController.text.trim().isEmpty ? null : textController.text.trim(),
                     });
                   },
                   child: const Text('Save'),
@@ -238,6 +279,16 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
     if (result != null) {
       final actionDate = result['actionDate'] as DateTime?;
       final actionText = result['actionText'] as String?;
+      
+      // Capture original detected action for feedback
+      final originalAction = message.actionDate != null || message.actionInsightText != null
+          ? ActionResult(
+              actionDate: message.actionDate ?? DateTime.now(),
+              confidence: message.actionConfidence ?? 0.0,
+              insightText: message.actionInsightText ?? '',
+            )
+          : null;
+      
       // Persist to database
       await MessageRepository().updateAction(message.id, actionDate, actionText);
       // Update in-memory state
@@ -246,6 +297,46 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
         actionDate,
         actionText,
       );
+      
+      // Record feedback for ML training
+      final userAction = actionDate != null || actionText != null
+          ? ActionResult(
+              actionDate: actionDate ?? DateTime.now(),
+              confidence: 1.0, // User-provided actions have max confidence
+              insightText: actionText ?? '',
+            )
+          : null;
+      
+      // Determine feedback type
+      FeedbackType? feedbackType = _determineFeedbackType(originalAction, userAction);
+      
+      if (feedbackType != null) {
+        await MLActionExtractor.recordFeedback(
+          messageId: message.id,
+          subject: message.subject,
+          snippet: message.snippet ?? '',
+          detectedResult: originalAction,
+          userCorrectedResult: userAction,
+          feedbackType: feedbackType,
+        );
+      }
+    }
+  }
+  
+  /// Determine feedback type based on original and user actions
+  FeedbackType? _determineFeedbackType(ActionResult? original, ActionResult? user) {
+    if (original == null && user == null) return null; // No change
+    if (original == null && user != null) return FeedbackType.falseNegative; // User added action
+    if (original != null && user == null) return FeedbackType.falsePositive; // User removed action
+    
+    // Both exist - check if they're different
+    final originalStr = '${original!.actionDate.toIso8601String()}_${original.insightText}';
+    final userStr = '${user!.actionDate.toIso8601String()}_${user.insightText}';
+    
+    if (originalStr == userStr) {
+      return FeedbackType.confirmation; // User confirmed
+    } else {
+      return FeedbackType.correction; // User corrected
     }
   }
 

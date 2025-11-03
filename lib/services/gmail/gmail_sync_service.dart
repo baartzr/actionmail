@@ -384,24 +384,32 @@ class GmailSyncService {
     final meta = parts.length > 1 ? parts[1] : null;
     switch (base) {
       case 'trash':
-        // Add TRASH and remove exactly the source primary label
+        // Trash: add TRASH label and remove source label
         if (meta == 'SENT') return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['SENT']};
         if (meta == 'SPAM') return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['SPAM']};
-        // Default to INBOX
+        // Default to INBOX - remove INBOX and add TRASH
         return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['INBOX']};
       case 'archive':
-        // Remove exactly the source primary label (default INBOX)
-        if (meta == 'SENT') return {'removeLabelIds': ['SENT']};
+        // Archive: only applies to INBOX and SPAM - remove the respective label
+        // Cannot archive SENT or TRASH emails
+        if (meta == 'SENT') return {}; // SENT emails can't be archived
+        if (meta == 'TRASH') return {}; // TRASH emails can't be archived
         if (meta == 'SPAM') return {'removeLabelIds': ['SPAM']};
-        if (meta == 'TRASH') return {'removeLabelIds': ['TRASH']};
+        // Default to INBOX - remove INBOX label to archive
         return {'removeLabelIds': ['INBOX']};
       case 'restore':
+        // Restore from trash: remove TRASH and add back the original label
         if (meta == 'INBOX') {
           return {'removeLabelIds': ['TRASH'], 'addLabelIds': ['INBOX']};
         }
+        if (meta == 'SPAM') {
+          return {'removeLabelIds': ['TRASH'], 'addLabelIds': ['SPAM']};
+        }
         if (meta == 'SENT') {
+          // Note: SENT might be automatically restored by Gmail, but we try to add it explicitly
           return {'removeLabelIds': ['TRASH'], 'addLabelIds': ['SENT']};
         }
+        // Default: just remove TRASH
         return {'removeLabelIds': ['TRASH']};
       case 'star':
         return {'addLabelIds': ['STARRED']};
@@ -1151,8 +1159,175 @@ class GmailSyncService {
     return true;
   }
 
-  /// Get attachment download URL for a specific filename
-  /// Returns both the URL and attachmentId for direct download
+  /// Get full email body as HTML document (similar to email viewer)
+  /// Returns complete HTML with styling for saving to local files
+  Future<String?> getEmailBody(String messageId, String accessToken) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId?format=full'),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+
+      if (resp.statusCode != 200) {
+        debugPrint('[GmailSyncService] Failed to get email body: ${resp.statusCode}');
+        return null;
+      }
+
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final payload = map['payload'] as Map<String, dynamic>?;
+      
+      String? htmlBody;
+      String? plainBody;
+      final headers = (payload?['headers'] as List<dynamic>?) ?? [];
+      
+      // Extract From, To, Subject from headers
+      String from = '';
+      String to = '';
+      String subject = '';
+      for (final h in headers) {
+        final header = h as Map<String, dynamic>;
+        final name = (header['name'] as String? ?? '').toLowerCase();
+        final value = header['value'] as String? ?? '';
+        if (name == 'from') from = value;
+        if (name == 'to') to = value;
+        if (name == 'subject') subject = value;
+      }
+      
+      // Extract date
+      final internalDate = map['internalDate'];
+      final dateMs = internalDate is String ? int.tryParse(internalDate) ?? 0 : (internalDate is int ? internalDate : 0);
+      final date = DateTime.fromMillisecondsSinceEpoch(dateMs);
+      
+      // Walk through the payload structure to find HTML and plain text parts
+      void extractBody(dynamic part) {
+        if (part is! Map<String, dynamic>) return;
+        
+        final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+        final body = part['body'] as Map<String, dynamic>?;
+        final data = body?['data'] as String?;
+        
+        if (data != null) {
+          try {
+            final decoded = utf8.decode(
+              base64Url.decode(data.replaceAll('-', '+').replaceAll('_', '/')),
+            );
+            if (mimeType.contains('text/html')) {
+              htmlBody = decoded;
+            } else if (mimeType.contains('text/plain')) {
+              plainBody = decoded;
+            }
+          } catch (e) {
+            // Continue to next part
+          }
+        }
+        
+        // Recursively check nested parts
+        final parts = part['parts'] as List<dynamic>?;
+        if (parts != null) {
+          for (final p in parts) {
+            extractBody(p);
+          }
+        }
+      }
+
+      extractBody(payload ?? {});
+
+      // Prefer HTML over plain text
+      final bodyContent = htmlBody ?? plainBody ?? '';
+      final bodyHtml = htmlBody != null 
+          ? bodyContent 
+          : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
+
+      // Create a complete HTML document
+      final fullHtml = '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background-color: #ffffff;
+    }
+    .email-header {
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+    }
+    .email-header h2 {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .email-header .meta {
+      color: #666;
+      font-size: 12px;
+    }
+    .email-body {
+      max-width: 100%;
+      overflow-wrap: break-word;
+    }
+    .email-body img {
+      max-width: 100%;
+      height: auto;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+      }
+      .email-header {
+        border-bottom-color: #333;
+      }
+      .email-header .meta {
+        color: #999;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="email-header">
+    <h2>${_escapeHtml(subject)}</h2>
+    <div class="meta">
+      <div><strong>From:</strong> ${_escapeHtml(from)}</div>
+      <div><strong>To:</strong> ${_escapeHtml(to)}</div>
+      <div><strong>Date:</strong> ${_formatDate(date)}</div>
+    </div>
+  </div>
+  <div class="email-body">
+    $bodyHtml
+  </div>
+</body>
+</html>
+      ''';
+      
+      return fullHtml;
+    } catch (e) {
+      debugPrint('[GmailSyncService] Error getting email body: $e');
+      return null;
+    }
+  }
+  
+  String _escapeHtml(String text) {
+    return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} '
+           '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
   Future<Map<String, dynamic>?> getAttachmentDownloadInfo(String accountId, String messageId, String filename) async {
     final account = await GoogleAuthService().ensureValidAccessToken(accountId);
     if (account == null || account.accessToken.isEmpty) {

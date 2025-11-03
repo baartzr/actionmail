@@ -4,6 +4,7 @@ import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:actionmail/services/local_folders/local_folder_service.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -12,12 +13,14 @@ class EmailViewerDialog extends StatefulWidget {
   final MessageIndex message;
   final String accountId;
   final VoidCallback? onMarkRead;
+  final String? localFolderName; // If provided, load from local folder instead of Gmail
 
   const EmailViewerDialog({
     super.key,
     required this.message,
     required this.accountId,
     this.onMarkRead,
+    this.localFolderName,
   });
 
   @override
@@ -30,6 +33,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   String? _htmlContent;
   bool _isLoading = true;
   String? _error;
+  bool _isFullscreen = false;
 
   @override
   void initState() {
@@ -45,6 +49,27 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
   Future<void> _loadEmailBody() async {
     try {
+      // If viewing from local folder, load from saved file
+      if (widget.localFolderName != null) {
+        final folderService = LocalFolderService();
+        final body = await folderService.loadEmailBody(widget.localFolderName!, widget.message.id);
+        if (!mounted) return;
+        if (body != null) {
+          setState(() {
+            _htmlContent = body;
+            _isLoading = false;
+          });
+          return;
+        } else {
+          setState(() {
+            _error = 'Email body not found in local folder';
+            _isLoading = false;
+          });
+          return;
+        }
+      }
+      
+      // Otherwise load from Gmail API
       final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
       final accessToken = account?.accessToken;
       if (accessToken == null || accessToken.isEmpty) {
@@ -269,11 +294,18 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     );
   }
 
+  void _toggleFullscreen() {
+    setState(() {
+      _isFullscreen = !_isFullscreen;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AppWindowDialog(
       title: 'Email',
+      fullscreen: _isFullscreen,
       headerActions: [
         IconButton(
           tooltip: 'Reply',
@@ -292,6 +324,12 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           icon: const Icon(Icons.forward, size: 20),
           color: theme.appBarTheme.foregroundColor,
           onPressed: _handleForward,
+        ),
+        IconButton(
+          tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
+          icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),
+          color: theme.appBarTheme.foregroundColor,
+          onPressed: _toggleFullscreen,
         ),
       ],
       child: _isLoading

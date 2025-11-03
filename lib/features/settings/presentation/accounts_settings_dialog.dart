@@ -5,7 +5,8 @@ import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:actionmail/data/repositories/action_feedback_repository.dart';
+// import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
   const AccountsSettingsDialog({super.key});
@@ -153,6 +154,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                       return Switch(
                                         value: isEnabled,
                                         onChanged: (value) async {
+                                          final messenger = ScaffoldMessenger.of(context);
                                           final syncService = FirebaseSyncService();
                                           await syncService.setSyncEnabled(value);
                                           
@@ -165,15 +167,14 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                             }
                                           }
                                           
-                                          if (mounted) {
-                                            setState(() {});
-                                            ScaffoldMessenger.of(context).showSnackBar(
+                                          if (!context.mounted) return;
+                                          setState(() {});
+                                          messenger.showSnackBar(
                                               SnackBar(
                                                 content: Text(value ? 'Firebase sync enabled' : 'Firebase sync disabled'),
                                                 duration: const Duration(seconds: 2),
                                               ),
                                             );
-                                          }
                                         },
                                       );
                                     },
@@ -181,6 +182,78 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 },
                               ),
                             ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // Action Extraction Debug section
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    child: Text(
+                      'Action Extraction (Debug)',
+                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600, color: theme.colorScheme.primary),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Card(
+                    elevation: 0,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Feedback Collection Statistics',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Phase 1: Collecting feedback when you edit actions',
+                            style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 12),
+                          FutureBuilder<int>(
+                            future: ActionFeedbackRepository().getFeedbackCount(),
+                            builder: (context, snapshot) {
+                              final count = snapshot.data ?? 0;
+                              return Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'Total feedback entries:',
+                                    style: theme.textTheme.bodyLarge,
+                                  ),
+                                  Text(
+                                    '$count',
+                                    style: theme.textTheme.bodyLarge?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                      color: theme.colorScheme.primary,
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          TextButton.icon(
+                            onPressed: () async {
+                              final messenger = ScaffoldMessenger.of(context);
+                              final repo = ActionFeedbackRepository();
+                              final count = await repo.getFeedbackCount();
+                              if (!context.mounted) return;
+                              messenger.showSnackBar(
+                                SnackBar(
+                                  content: Text('Feedback entries: $count'),
+                                  duration: const Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.refresh),
+                            label: const Text('Refresh Count'),
                           ),
                         ],
                       ),

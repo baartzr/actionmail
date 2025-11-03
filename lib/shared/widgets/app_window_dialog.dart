@@ -13,6 +13,7 @@ class AppWindowDialog extends StatelessWidget {
   final EdgeInsetsGeometry bodyPadding;
   final List<Widget>? headerActions;
   final AppWindowSize size;
+  final bool fullscreen;
 
   const AppWindowDialog({
     super.key,
@@ -21,6 +22,7 @@ class AppWindowDialog extends StatelessWidget {
     this.bodyPadding = const EdgeInsets.all(24.0),
     this.headerActions,
     this.size = AppWindowSize.large,
+    this.fullscreen = false,
   });
 
   static Future<T?> show<T>({
@@ -53,10 +55,13 @@ class AppWindowDialog extends StatelessWidget {
     final appBarBg = theme.appBarTheme.backgroundColor ?? const Color(0xFF00695C);
     final appBarFg = theme.appBarTheme.foregroundColor ?? const Color(0xFFB2DFDB);
 
-    // Determine dimensions based on size
+    // Determine dimensions based on size and fullscreen mode
     final double targetWidth;
     final double? targetHeight;
-    if (size == AppWindowSize.small) {
+    if (fullscreen) {
+      targetWidth = media.size.width;
+      targetHeight = media.size.height;
+    } else if (size == AppWindowSize.small) {
       targetWidth = math.min(media.size.width * 0.5, 500.0);
       targetHeight = math.min(media.size.height * 0.6, 600.0);
     } else {
@@ -65,7 +70,7 @@ class AppWindowDialog extends StatelessWidget {
     }
 
     return Dialog(
-      insetPadding: const EdgeInsets.all(24),
+      insetPadding: fullscreen ? EdgeInsets.zero : const EdgeInsets.all(24),
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
       clipBehavior: Clip.antiAlias,
       child: SizedBox(

@@ -102,7 +102,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isDesktop = constraints.maxWidth >= 900;
+        // final isDesktop = constraints.maxWidth >= 900; // not used
         return AppWindowDialog(
           title: 'Select Account',
           size: AppWindowSize.small,
@@ -254,7 +254,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                               ),
                             ),
                           );
-                          if (!mounted) return;
+                          if (!context.mounted) return;
                           // Close this dialog and return the new account ID to the parent
                           final newAccountId = result is String ? result : null;
                           final navigator = Navigator.of(context);

@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'dart:io';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:intl/intl.dart';
 import 'package:actionmail/shared/widgets/app_switch_button.dart';
-import 'package:actionmail/shared/widgets/app_button.dart';
 import 'package:actionmail/services/domain_icon_service.dart';
 
 /// Email tile widget with action insight line
@@ -20,6 +20,8 @@ class EmailTile extends StatefulWidget {
   final void Function(DateTime? date, String? text)? onActionUpdated;
   final VoidCallback? onActionCompleted;
   final VoidCallback? onMarkRead;
+  final void Function(String folderName)? onSaveToFolder;
+  final bool isLocalFolder; // Whether this email is from a local folder (not Gmail)
 
   const EmailTile({
     super.key,
@@ -34,6 +36,8 @@ class EmailTile extends StatefulWidget {
     this.onActionUpdated,
     this.onActionCompleted,
     this.onMarkRead,
+    this.onSaveToFolder,
+    this.isLocalFolder = false,
   });
 
   @override
@@ -71,7 +75,8 @@ class _EmailTileState extends State<EmailTile> {
   bool _hasRightActions(String folder) {
     // Shown on left swipe (right side)
     if (folder == 'ARCHIVE') return true; // Trash
-    if (folder == 'INBOX' || folder == 'SENT' || folder == 'SPAM') return true; // Trash/Archive
+    if (folder == 'INBOX' || folder == 'SPAM') return true; // Trash/Archive
+    if (folder == 'SENT') return true; // Trash only (cannot archive)
     return false;
   }
 
@@ -174,7 +179,8 @@ class _EmailTileState extends State<EmailTile> {
         ],
       );
     }
-    if (folder == 'INBOX' || folder == 'SENT') {
+    if (folder == 'INBOX') {
+      // INBOX: left swipe shows Trash and Archive
       return Row(
         children: [
           Expanded(
@@ -218,6 +224,27 @@ class _EmailTileState extends State<EmailTile> {
             ),
           ),
         ],
+      );
+    }
+    if (folder == 'SENT') {
+      // SENT: left swipe shows Trash only (cannot archive)
+      return Container(
+        color: cs.error,
+        child: InkWell(
+          onTap: () {
+            setState(() => _revealDir = 0);
+            if (widget.onTrash != null) widget.onTrash!();
+          },
+          child: Center(
+            child: Text(
+              AppConstants.swipeActionTrash,
+              style: theme.textTheme.bodyLarge?.copyWith(
+                color: cs.onError,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ),
       );
     }
     if (folder == 'ARCHIVE') {
@@ -350,29 +377,31 @@ class _EmailTileState extends State<EmailTile> {
                       width: 0.5,
                     ),
                   ),
-                  child: GestureDetector(
-                    onTap: () {
-                      if (_revealDir != 0) {
+                  child: _buildDraggableWrapper(
+                    context,
+                    child: GestureDetector(
+                      onTap: () {
+                        if (_revealDir != 0) {
+                          setState(() {
+                            _revealDir = 0;
+                          });
+                          return;
+                        }
+                        // Update state immediately for instant response
+                        final wasExpanded = _expanded;
                         setState(() {
-                          _revealDir = 0;
+                          _expanded = !_expanded;
                         });
-                        return;
-                      }
-                      // Update state immediately for instant response
-                      final wasExpanded = _expanded;
-                      setState(() {
-                        _expanded = !_expanded;
-                      });
-                      // Mark as read when expanded (not when collapsing)
-                      if (!wasExpanded && _expanded && !widget.message.isRead && widget.onMarkRead != null) {
-                        widget.onMarkRead!();
-                      }
-                    },
-                    onDoubleTap: () {
-                      // Double tap to open email viewer
-                      if (widget.onTap != null) widget.onTap!();
-                    },
-                    child: Material(
+                        // Mark as read when expanded (not when collapsing)
+                        if (!wasExpanded && _expanded && !widget.message.isRead && widget.onMarkRead != null) {
+                          widget.onMarkRead!();
+                        }
+                      },
+                      onDoubleTap: () {
+                        // Double tap to open email viewer
+                        if (widget.onTap != null) widget.onTap!();
+                      },
+                      child: Material(
                       color: Colors.transparent,
                       child: InkWell(
                         splashColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
@@ -635,22 +664,104 @@ class _EmailTileState extends State<EmailTile> {
                     ),
                   ),
                 ],
-
                     ],
                   ),
                 ),
                       ),
                     ),
+                  ),
+                    ),
               ),
             ),
-          ),
           ],
         ),
       ),
     );
-  },
+      },
     );
   }
+
+  /// Get allowed Gmail folders based on swipe actions for the current folder
+  // Removed unused _getAllowedGmailFolders
+
+  /// Wraps the child in a Draggable widget (desktop only)
+  Widget _buildDraggableWrapper(BuildContext context, {required Widget child}) {
+    final isDesktop = Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+    
+    // Only enable drag on desktop
+    if (!isDesktop) {
+      return child;
+    }
+    
+    // Local folder emails: can only drag to other local folders (onSaveToFolder must be provided)
+    // Gmail emails: can drag to local folders (onSaveToFolder) or allowed Gmail folders
+    if (widget.isLocalFolder) {
+      // Local folder emails can only drag to local folders
+      if (widget.onSaveToFolder == null) {
+        return child;
+      }
+    } else {
+      // Gmail emails can drag to local folders or allowed Gmail folders
+      // If no handlers are provided, disable drag
+      if (widget.onSaveToFolder == null) {
+        return child;
+      }
+    }
+    
+    return Draggable<MessageIndex>(
+      data: widget.message,
+      onDragStarted: () {
+        // Notify parent that drag started
+        // We'll use a notification or callback if needed
+      },
+      onDragEnd: (details) {
+        // Notify parent that drag ended
+      },
+      feedback: Material(
+        elevation: 8,
+        borderRadius: BorderRadius.circular(12),
+        child: Opacity(
+          opacity: 0.8,
+          child: Container(
+            width: 300,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surface,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.message.subject,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.message.from,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(
+        opacity: 0.3,
+        child: child,
+      ),
+      child: child,
+    );
+  }
+
+  // (removed) _isAllowedGmailFolder was unused
 
   // ignore: unused_element
   Widget _buildCategorySwitch(BuildContext context) {

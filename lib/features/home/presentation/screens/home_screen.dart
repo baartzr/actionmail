@@ -8,12 +8,11 @@ import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_tile.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/features/settings/presentation/accounts_settings_dialog.dart';
-import 'package:actionmail/features/home/presentation/windows/actions_window.dart';
 import 'package:actionmail/features/home/presentation/windows/actions_summary_window.dart';
 import 'package:actionmail/features/home/presentation/windows/attachments_window.dart';
 import 'package:actionmail/features/home/presentation/windows/subscriptions_window.dart';
 import 'package:actionmail/features/home/presentation/windows/shopping_window.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+// import 'package:actionmail/features/home/presentation/windows/actions_window.dart'; // unused
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
@@ -21,7 +20,14 @@ import 'package:actionmail/features/home/presentation/widgets/compose_email_dial
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
+import 'package:actionmail/features/home/presentation/widgets/gmail_folder_tree.dart';
+import 'package:actionmail/features/home/presentation/widgets/local_folder_tree.dart';
+import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+import 'package:actionmail/services/local_folders/local_folder_service.dart';
+// duplicate import removed: gmail_sync_service.dart
+import 'package:actionmail/data/models/message_index.dart';
 import 'dart:async';
+import 'dart:io';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -35,6 +41,8 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   // Selected folder (default to Inbox)
   String _selectedFolder = AppConstants.folderInbox;
+  // Whether viewing a local backup folder (vs Gmail folder)
+  bool _isLocalFolder = false;
   // Accounts
   String? _selectedAccountId;
   List<GoogleAccount> _accounts = [];
@@ -57,6 +65,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final TextEditingController _searchController = TextEditingController();
   
   final FirebaseSyncService _firebaseSync = FirebaseSyncService();
+  final LocalFolderService _localFolderService = LocalFolderService();
 
   Future<void> _loadAccounts() async {
     final svc = GoogleAuthService();
@@ -294,23 +303,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         padding: const EdgeInsets.symmetric(horizontal: 24.0),
                         child: Row(
                           children: [
-                            // Folder dropdown on left
-                            AppDropdown<String>(
-                              value: _selectedFolder,
-                              items: const ['INBOX','SENT','TRASH','SPAM','ARCHIVE'],
-                              itemBuilder: (folder) => AppConstants.folderDisplayNames[folder] ?? folder,
-                              textColor: Theme.of(context).appBarTheme.foregroundColor,
-                              onChanged: (value) async {
-                                if (value != null) {
-                                  setState(() {
-                                    _selectedFolder = value;
-                                  });
-                                  if (_selectedAccountId != null) {
-                                    await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+                            // Folder dropdown on left (only show for Gmail folders)
+                            if (!_isLocalFolder)
+                              AppDropdown<String>(
+                                value: _selectedFolder,
+                                items: const ['INBOX','SENT','TRASH','SPAM','ARCHIVE'],
+                                itemBuilder: (folder) => AppConstants.folderDisplayNames[folder] ?? folder,
+                                textColor: Theme.of(context).appBarTheme.foregroundColor,
+                                onChanged: (value) async {
+                                  if (value != null) {
+                                    setState(() {
+                                      _selectedFolder = value;
+                                      _isLocalFolder = false; // Reset to Gmail folder when using dropdown
+                                    });
+                                    if (_selectedAccountId != null) {
+                                      await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+                                    }
                                   }
-                                }
-                              },
-                            ),
+                                },
+                              )
+                            else
+                              // Show local folder name as text when viewing local folder
+                              Text(
+                                _selectedFolder,
+                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
                             const Spacer(),
                             // Personal/Business/All switch
                             _buildAppBarLocalStateSwitch(context),
@@ -507,25 +527,184 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  // Left panel for desktop
+  // Left panel for desktop - Gmail folder tree
   Widget _buildLeftPanel(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      color: cs.surfaceContainerHighest,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            child: Text('Filters', style: Theme.of(context).textTheme.titleSmall),
-          ),
-          const SizedBox(height: 8),
-          // Reuse existing controls if desired later
-          // Placeholder for future nav/filters
-        ],
-      ),
+    // Only show on desktop (Windows, macOS, Linux)
+    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
+      final cs = Theme.of(context).colorScheme;
+      return Container(
+        color: cs.surfaceContainerHighest,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: Text('Filters', style: Theme.of(context).textTheme.titleSmall),
+            ),
+            const SizedBox(height: 8),
+            // Placeholder for future filters
+          ],
+        ),
+      );
+    }
+    
+    return GmailFolderTree(
+      selectedFolder: _selectedFolder,
+      isViewingLocalFolder: _isLocalFolder,
+      onFolderSelected: (folderId) async {
+        setState(() {
+          _selectedFolder = folderId;
+          _isLocalFolder = false; // Reset to Gmail folder
+        });
+        if (_selectedAccountId != null) {
+          await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+        }
+      },
+      onEmailDropped: (folderId, message) async {
+        // Handle Gmail folder drops (move email to target Gmail folder)
+        if (_selectedAccountId == null) return;
+        
+        try {
+          // Get the appropriate callback based on target folder
+          if (folderId == 'TRASH') {
+            await MessageRepository().updateFolderWithPrev(
+              message.id,
+              'TRASH',
+              prevFolderLabel: message.folderLabel,
+            );
+            if (_selectedFolder != 'TRASH') {
+              ref.read(emailListProvider.notifier).removeMessage(message.id);
+            } else {
+              ref.read(emailListProvider.notifier).setFolder(message.id, 'TRASH');
+            }
+            final src = message.folderLabel.toUpperCase();
+            _enqueueGmailUpdate('trash:$src', message.id);
+          } else if (folderId == 'ARCHIVE') {
+            await MessageRepository().updateFolderWithPrev(
+              message.id,
+              'ARCHIVE',
+              prevFolderLabel: message.folderLabel,
+            );
+            if (_selectedFolder != 'ARCHIVE') {
+              ref.read(emailListProvider.notifier).removeMessage(message.id);
+            } else {
+              ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
+            }
+            final src = message.folderLabel.toUpperCase();
+            _enqueueGmailUpdate('archive:$src', message.id);
+          } else if (folderId == 'INBOX') {
+            // Move to Inbox (from SPAM or Restore)
+            await MessageRepository().updateFolderWithPrev(
+              message.id,
+              'INBOX',
+              prevFolderLabel: message.folderLabel,
+            );
+            if (_selectedFolder != 'INBOX') {
+              ref.read(emailListProvider.notifier).removeMessage(message.id);
+            } else {
+              ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
+            }
+            _enqueueGmailUpdate('moveToInbox', message.id);
+          } else {
+            // Restore to previous folder (if prevFolderLabel matches target)
+            final prevFolder = message.prevFolderLabel;
+            if (prevFolder != null && prevFolder.toUpperCase() == folderId.toUpperCase()) {
+              await MessageRepository().restoreToPrev(message.id);
+              if (_selectedAccountId != null) {
+                final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
+                final restored = updated[message.id];
+                if (restored != null) {
+                  final dest = restored.folderLabel;
+                  if (_selectedFolder != dest) {
+                    ref.read(emailListProvider.notifier).removeMessage(message.id);
+                  } else {
+                    ref.read(emailListProvider.notifier).setFolder(message.id, dest);
+                  }
+                  _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
+                }
+              }
+            }
+          }
+          
+          if (!context.mounted) return;
+          {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
+            );
+          }
+        } catch (e) {
+          debugPrint('[HomeScreen] Error moving email to Gmail folder: $e');
+          if (!context.mounted) return;
+          {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: $e')),
+            );
+          }
+        }
+      },
     );
+  }
+  
+  // Right panel for desktop - local folder tree
+  Widget _buildRightPanel(BuildContext context) {
+    // Only show on desktop (Windows, macOS, Linux)
+    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
+      final cs = Theme.of(context).colorScheme;
+      return Container(
+        color: cs.surfaceContainerHighest,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8.0),
+              child: Text('Details', style: Theme.of(context).textTheme.titleSmall),
+            ),
+            const SizedBox(height: 8),
+            // Placeholder for details
+          ],
+        ),
+      );
+    }
+    
+    return LocalFolderTree(
+      selectedFolder: _isLocalFolder ? _selectedFolder : null,
+      onFolderSelected: (folderPath) async {
+        setState(() {
+          _selectedFolder = folderPath;
+          _isLocalFolder = true;
+        });
+        await _loadFolderEmails(folderPath, true);
+      },
+      onEmailDropped: (folderPath, message) async {
+        // Determine if this is a local-to-local move or Gmail-to-local save
+        // If we're currently viewing a local folder, the email is from a local folder
+        if (_isLocalFolder) {
+          // Local email -> Local folder: move within local storage
+          await _moveLocalEmailToFolder(folderPath, message);
+        } else {
+          // Gmail email -> Local folder: save and archive
+          await _saveEmailToFolder(folderPath, message);
+        }
+      },
+    );
+  }
+  
+  /// Load emails for the selected folder (Gmail or local)
+  Future<void> _loadFolderEmails(String folderLabel, bool isLocal) async {
+    if (isLocal) {
+      // Load from local folder service
+      final emails = await _localFolderService.loadFolderEmails(folderLabel);
+      if (mounted) {
+        ref.read(emailListProvider.notifier).setEmails(emails);
+      }
+    } else {
+      // Load from Gmail
+      if (_selectedAccountId != null) {
+        await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: folderLabel);
+      }
+    }
   }
 
   // Main content column extracted from previous body
@@ -533,6 +712,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // Saved List indicator when viewing local folder
+        if (_isLocalFolder) _buildSavedListIndicator(),
+        
         // Top filter row: Personal/Business, Action buttons, Filter toggle
         _buildTopFilterRow(),
         
@@ -547,6 +729,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           child: _buildEmailList(),
         ),
       ],
+    );
+  }
+  
+  /// Indicator showing we're viewing a saved list
+  Widget _buildSavedListIndicator() {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: cs.primaryContainer.withValues(alpha: 0.3),
+        border: Border(
+          bottom: BorderSide(
+            color: cs.outline.withValues(alpha: 0.1),
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.folder_outlined, size: 18, color: cs.primary),
+          const SizedBox(width: 8),
+          Text(
+            'Saved List: $_selectedFolder',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: cs.primary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
   
@@ -1005,24 +1218,179 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-  // Right panel for desktop
-  Widget _buildRightPanel(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Container(
-      color: cs.surfaceContainerHighest,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: 8),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8.0),
-            child: Text('Details', style: Theme.of(context).textTheme.titleSmall),
-          ),
-          const SizedBox(height: 8),
-          // Placeholder for preview/details
-        ],
-      ),
-    );
+
+  /// Save email to local folder and move to Archive
+  Future<void> _saveEmailToFolder(String folderName, MessageIndex message) async {
+    // Save email with body and attachments to local folder
+    // Then move email to Archive in Gmail
+    if (_selectedAccountId == null) return;
+    
+    try {
+      // Get access token for downloading email body and attachments
+      final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
+      final accessToken = account?.accessToken;
+      
+      if (accessToken == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to save: No access token')),
+          );
+        }
+        return;
+      }
+      
+      // Fetch full email body
+      final gmailService = GmailSyncService();
+      final emailBody = await gmailService.getEmailBody(message.id, accessToken);
+      
+      if (emailBody == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to save: Could not fetch email body')),
+          );
+        }
+        return;
+      }
+      
+      // Save to local folder
+      final saved = await _localFolderService.saveEmailToFolder(
+        folderName: folderName,
+        message: message,
+        emailBodyHtml: emailBody,
+        accountId: _selectedAccountId!,
+        accessToken: accessToken,
+      );
+      
+      if (saved) {
+        final isArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
+        
+        if (!isArchive) {
+          // Move email to Archive in Gmail (remove primary label)
+          await MessageRepository().updateFolderWithPrev(
+            message.id,
+            'ARCHIVE',
+            prevFolderLabel: message.folderLabel,
+          );
+          
+          // Update provider state
+          ref.read(emailListProvider.notifier).removeMessage(message.id);
+          
+          // Enqueue Gmail update to remove primary label
+          final src = message.folderLabel.toUpperCase();
+          _enqueueGmailUpdate('archive:$src', message.id);
+        }
+        // If already Archive, just copy to local (no DB or Gmail update needed)
+      }
+      
+      if (mounted) {
+        if (saved) {
+          final isArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(isArchive 
+                ? 'Email copied to "$folderName"' 
+                : 'Email saved to "$folderName" and moved to Archive')),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to save email')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[HomeScreen] Error saving email to folder: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
+
+  /// Move email between local folders
+  Future<void> _moveLocalEmailToFolder(String targetFolderPath, MessageIndex message) async {
+    if (_selectedAccountId == null) return;
+    
+    try {
+      // Get the source folder path (from current selection)
+      final sourceFolderPath = _isLocalFolder ? _selectedFolder : null;
+      
+      if (sourceFolderPath == null || sourceFolderPath.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to move: Source folder not found')),
+          );
+        }
+        return;
+      }
+      
+      // Load email body from source folder
+      final emailBody = await _localFolderService.loadEmailBody(sourceFolderPath, message.id);
+      
+      if (emailBody == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to move: Could not load email body')),
+          );
+        }
+        return;
+      }
+      
+      // Get access token for downloading attachments if needed
+      final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
+      final accessToken = account?.accessToken;
+      
+      if (accessToken == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to move: No access token')),
+          );
+        }
+        return;
+      }
+      
+      // Save to target folder
+      final saved = await _localFolderService.saveEmailToFolder(
+        folderName: targetFolderPath,
+        message: message,
+        emailBodyHtml: emailBody,
+        accountId: _selectedAccountId!,
+        accessToken: accessToken,
+      );
+      
+      if (saved) {
+        // Remove from source folder
+        await _localFolderService.removeEmailFromFolder(sourceFolderPath, message.id);
+        
+        // Update provider state if viewing source folder
+        if (_isLocalFolder && _selectedFolder == sourceFolderPath) {
+          ref.read(emailListProvider.notifier).removeMessage(message.id);
+        }
+        
+        // If viewing target folder, reload
+        if (_isLocalFolder && _selectedFolder == targetFolderPath) {
+          await _loadFolderEmails(targetFolderPath, true);
+        }
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Email moved to "$targetFolderPath"')),
+          );
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to move email')),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('[HomeScreen] Error moving local email: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
   }
 
   // Placeholder for background Gmail update scheduling
@@ -1102,8 +1470,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildAppBarLocalStateSwitch(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
     
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1113,7 +1479,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // Business button: icon (16) + spacing (4) + text (~65) + padding (20) ≈ 105
         // Business text width: ~65
         const double personalButtonWidth = 95.0;
-        const double businessButtonWidth = 100.0;
         const double personalTextWidth = 55.0;
         const double businessTextWidth = 60.0;
         const double iconAndSpacing = 20.0; // icon (16) + spacing (4)
@@ -1195,7 +1560,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     VoidCallback onTap,
   ) {
     final theme = Theme.of(context);
-    final cs = theme.colorScheme;
     
     // Color for icons and text - white for better visibility on teal background
     const Color iconColor = Colors.white;
@@ -1231,106 +1595,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  Widget _buildSophisticatedLocalStateButtons(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final isPersonal = _selectedLocalState == 'Personal';
-    final isBusiness = _selectedLocalState == 'Business';
-    
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cs.outlineVariant.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildSophisticatedStateButton(
-            context,
-            'Personal',
-            Icons.person_outline,
-            Icons.person,
-            isPersonal,
-          ),
-          _buildSophisticatedStateButton(
-            context,
-            'Business',
-            Icons.business_center_outlined,
-            Icons.business,
-            isBusiness,
-          ),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildSophisticatedStateButton(
-    BuildContext context,
-    String state,
-    IconData outlinedIcon,
-    IconData filledIcon,
-    bool selected,
-  ) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final isMobile = MediaQuery.of(context).size.width < 900;
-    
-    // Color for Personal/Business icons
-    Color iconColor;
-    if (selected) {
-      iconColor = cs.onPrimaryContainer;
-    } else {
-      iconColor = state == 'Personal' 
-          ? const Color(0xFF2196F3) // Blue for Personal
-          : const Color(0xFF9C27B0); // Purple for Business
-    }
-    
-    return Material(
-      color: selected ? cs.primaryContainer : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: () {
-          setState(() {
-            // Toggle: if already selected, deselect; otherwise select
-            _selectedLocalState = selected ? null : state;
-          });
-        },
-        child: Container(
-          padding: EdgeInsets.symmetric(
-            horizontal: isMobile ? 8 : 12, 
-            vertical: 6
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                selected ? filledIcon : outlinedIcon,
-                size: 18,
-                color: iconColor,
-              ),
-              // Hide text on mobile
-              if (!isMobile) ...[
-                const SizedBox(width: 6),
-                Text(
-                  state,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
+  // (removed) _buildSophisticatedStateButton was unused
 
   // ignore: unused_element
   Widget _buildCategoryCarousel() {
@@ -1759,6 +2025,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           final message = filtered[index];
                           return EmailTile(
                             message: message,
+                            isLocalFolder: _isLocalFolder,
                 onTap: () {
                   if (_selectedAccountId != null) {
                     showDialog(
@@ -1766,8 +2033,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       builder: (ctx) => EmailViewerDialog(
                         message: message,
                         accountId: _selectedAccountId!,
+                        localFolderName: _isLocalFolder ? _selectedFolder : null,
                         onMarkRead: () async {
-                          if (!message.isRead) {
+                          if (!message.isRead && !_isLocalFolder) {
                             await MessageRepository().updateRead(message.id, true);
                             ref.read(emailListProvider.notifier).setRead(message.id, true);
                             _enqueueGmailUpdate('markRead', message.id);
@@ -1842,6 +2110,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   }
                   final src = message.folderLabel.toUpperCase();
                   _enqueueGmailUpdate('archive:$src', message.id);
+                },
+                onSaveToFolder: (folderName) async {
+                  await _saveEmailToFolder(folderName, message);
                 },
                 onMoveToInbox: () async {
                   // Optimistically move to INBOX: update folder immediately

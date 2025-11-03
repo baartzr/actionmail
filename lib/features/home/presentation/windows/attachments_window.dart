@@ -6,7 +6,7 @@ import 'package:actionmail/features/home/domain/providers/email_list_provider.da
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
+// import 'package:actionmail/services/auth/google_auth_service.dart'; // unused
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
@@ -297,7 +297,7 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
             if (result.type != ResultType.done) {
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Cannot open file: ${result.message ?? 'Unknown error'}')),
+                SnackBar(content: Text('Cannot open file: ${result.message}')),
               );
             }
           } catch (e) {

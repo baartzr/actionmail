@@ -26,6 +26,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   String _folderLabel = 'INBOX';
   Timer? _timer;
   bool _isInitialSyncing = false;
+  bool _isViewingLocalFolder = false; // Track if viewing local folder (prevents sync overwrites)
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
 
   EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading());
@@ -34,6 +35,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   Future<void> loadEmails(String accountId, {String folderLabel = 'INBOX'}) async {
     _currentAccountId = accountId;
     _folderLabel = folderLabel;
+    _isViewingLocalFolder = false; // Reset flag when loading Gmail folder
 
     // 1) Load Inbox from local DB (display immediately - will be empty if no historyID)
     try {
@@ -62,6 +64,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     if (folderLabel != null) {
       _folderLabel = folderLabel;
     }
+    _isViewingLocalFolder = false; // Reset flag when loading Gmail folder
     try {
       // ignore: avoid_print
       print('[sync] loadFolder account=$accountId folder=$_folderLabel');
@@ -113,12 +116,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // Run incremental sync (always uses latest historyID from DB)
         final newInboxMessages = await _syncService.incrementalSync(_currentAccountId!);
         // Reload Inbox from local DB to show updated emails
-        if (_folderLabel == 'INBOX') {
+        // Only update if we're viewing INBOX and NOT viewing a local folder
+        if (_folderLabel == 'INBOX' && !_isViewingLocalFolder) {
           final local = await _syncService.loadLocal(_currentAccountId!, folderLabel: 'INBOX');
           state = AsyncValue.data(local);
           final syncDuration = DateTime.now().difference(syncStart);
           // ignore: avoid_print
           print('[sync] incremental done count=${local.length}, total time=${syncDuration.inMilliseconds}ms');
+        } else if (_isViewingLocalFolder) {
+          // ignore: avoid_print
+          print('[sync] incremental sync skipped - viewing local folder');
         }
         // Turn off loading indicator
         _ref.read(emailSyncingProvider.notifier).state = false;
@@ -360,6 +367,12 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   void clearEmails() {
     state = const AsyncValue.data([]);
     _currentAccountId = null;
+  }
+
+  /// Set emails directly (used for local folder emails)
+  void setEmails(List<MessageIndex> emails) {
+    state = AsyncValue.data(emails);
+    _isViewingLocalFolder = true; // Mark that we're viewing local folder
   }
 }
 

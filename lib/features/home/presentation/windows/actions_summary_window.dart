@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
+// import 'package:flutter/gestures.dart'; // unused
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/shared/widgets/personal_business_filter.dart';
@@ -8,6 +8,8 @@ import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
+import 'package:actionmail/services/actions/ml_action_extractor.dart';
+import 'package:actionmail/services/actions/action_extractor.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,7 +26,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   Map<String, List<MessageIndex>> _allAccountMessages = {}; // Store all messages before filtering
   bool _loading = true;
   // Track completion state for each message (true = complete, false = incomplete)
-  Map<String, bool> _completionState = {};
+  final Map<String, bool> _completionState = {};
   // Personal/Business filter state
   String? _selectedLocalState;
 
@@ -522,6 +524,45 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                 ],
               ),
               actions: [
+                // Remove button (only show if action exists)
+                if (message.actionDate != null || message.actionInsightText != null)
+                  TextButton.icon(
+                    onPressed: () async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Remove Action'),
+                          content: const Text('Are you sure you want to remove this action?'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.of(ctx).pop(false),
+                              child: const Text('Cancel'),
+                            ),
+                            FilledButton(
+                              onPressed: () => Navigator.of(ctx).pop(true),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Theme.of(ctx).colorScheme.error,
+                                foregroundColor: Theme.of(ctx).colorScheme.onError,
+                              ),
+                              child: const Text('Remove'),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirmed == true) {
+                        if (!context.mounted) return;
+                        Navigator.of(context).pop({
+                          'actionDate': null,
+                          'actionText': null,
+                        });
+                      }
+                    },
+                    icon: Icon(Icons.delete_outline, size: 18, color: Theme.of(context).colorScheme.error),
+                    label: Text(
+                      'Remove',
+                      style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    ),
+                  ),
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(null),
                   child: const Text('Cancel'),
@@ -530,7 +571,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                   onPressed: () {
                     Navigator.of(context).pop({
                       'actionDate': tempDate,
-                      'actionText': textController.text.trim(),
+                      'actionText': textController.text.trim().isEmpty ? null : textController.text.trim(),
                     });
                   },
                   child: const Text('Save'),
@@ -545,6 +586,16 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     if (result != null) {
       final actionDate = result['actionDate'] as DateTime?;
       final actionText = result['actionText'] as String?;
+      
+      // Capture original detected action for feedback
+      final originalAction = message.actionDate != null || message.actionInsightText != null
+          ? ActionResult(
+              actionDate: message.actionDate ?? DateTime.now(),
+              confidence: message.actionConfidence ?? 0.0,
+              insightText: message.actionInsightText ?? '',
+            )
+          : null;
+      
       // Persist to database
       await MessageRepository().updateAction(message.id, actionDate, actionText);
       // Update in-memory state
@@ -553,6 +604,30 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         actionDate,
         actionText,
       );
+      
+      // Record feedback for ML training
+      final userAction = actionDate != null || actionText != null
+          ? ActionResult(
+              actionDate: actionDate ?? DateTime.now(),
+              confidence: 1.0, // User-provided actions have max confidence
+              insightText: actionText ?? '',
+            )
+          : null;
+      
+      // Determine feedback type
+      FeedbackType? feedbackType = _determineFeedbackType(originalAction, userAction);
+      
+      if (feedbackType != null) {
+        await MLActionExtractor.recordFeedback(
+          messageId: message.id,
+          subject: message.subject,
+          snippet: message.snippet ?? '',
+          detectedResult: originalAction,
+          userCorrectedResult: userAction,
+          feedbackType: feedbackType,
+        );
+      }
+      
       // Update message in _allAccountMessages and reapply filter
       for (final accountId in _allAccountMessages.keys) {
         final messages = _allAccountMessages[accountId];
@@ -571,6 +646,23 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         // Reapply filter to update _accountMessages
         _accountMessages = _applyLocalStateFilter(_allAccountMessages);
       });
+    }
+  }
+  
+  /// Determine feedback type based on original and user actions
+  FeedbackType? _determineFeedbackType(ActionResult? original, ActionResult? user) {
+    if (original == null && user == null) return null; // No change
+    if (original == null && user != null) return FeedbackType.falseNegative; // User added action
+    if (original != null && user == null) return FeedbackType.falsePositive; // User removed action
+    
+    // Both exist - check if they're different
+    final originalStr = '${original!.actionDate.toIso8601String()}_${original.insightText}';
+    final userStr = '${user!.actionDate.toIso8601String()}_${user.insightText}';
+    
+    if (originalStr == userStr) {
+      return FeedbackType.confirmation; // User confirmed
+    } else {
+      return FeedbackType.correction; // User corrected
     }
   }
 }
