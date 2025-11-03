@@ -19,6 +19,8 @@ import 'package:actionmail/features/home/presentation/widgets/account_selector_d
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
+import 'package:actionmail/services/actions/ml_action_extractor.dart';
+import 'package:actionmail/services/actions/action_extractor.dart';
 import 'dart:async';
 
 /// Main home screen for ActionMail
@@ -92,6 +94,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } else if (syncEnabled && _selectedAccountId == null) {
       // No account selected - stop Firebase sync
       await _firebaseSync.initializeUser(null);
+    }
+  }
+
+  /// Determine feedback type based on original and user actions
+  FeedbackType? _determineFeedbackType(ActionResult? original, ActionResult? user) {
+    if (original == null && user == null) return null; // No change
+    if (original == null && user != null) return FeedbackType.falseNegative; // User added action
+    if (original != null && user == null) return FeedbackType.falsePositive; // User removed action
+    
+    // Both exist - check if they're different
+    final originalStr = '${original!.actionDate.toIso8601String()}_${original.insightText}';
+    final userStr = '${user!.actionDate.toIso8601String()}_${user.insightText}';
+    
+    if (originalStr == userStr) {
+      return FeedbackType.confirmation; // User confirmed
+    } else {
+      return FeedbackType.correction; // User corrected
     }
   }
 
@@ -1863,8 +1882,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   }
                 },
                 onActionUpdated: (date, text) async {
+                  // Capture original detected action for feedback
+                  final originalAction = message.actionDate != null || message.actionInsightText != null
+                      ? ActionResult(
+                          actionDate: message.actionDate ?? DateTime.now(),
+                          confidence: message.actionConfidence ?? 0.0,
+                          insightText: message.actionInsightText ?? '',
+                        )
+                      : null;
+                  
                   await MessageRepository().updateAction(message.id, date, text);
                   ref.read(emailListProvider.notifier).setAction(message.id, date, text);
+                  
+                  // Record feedback for ML training
+                  final userAction = date != null || text != null
+                      ? ActionResult(
+                          actionDate: date ?? DateTime.now(),
+                          confidence: 1.0, // User-provided actions have max confidence
+                          insightText: text ?? '',
+                        )
+                      : null;
+                  
+                  // Determine feedback type
+                  final feedbackType = _determineFeedbackType(originalAction, userAction);
+                  
+                  if (feedbackType != null) {
+                    await MLActionExtractor.recordFeedback(
+                      messageId: message.id,
+                      subject: message.subject,
+                      snippet: message.snippet ?? '',
+                      detectedResult: originalAction,
+                      userCorrectedResult: userAction,
+                      feedbackType: feedbackType,
+                    );
+                  }
                   
                   // Sync to Firebase if enabled (only if changed from initial value)
                   final syncEnabled = await _firebaseSync.isSyncEnabled();

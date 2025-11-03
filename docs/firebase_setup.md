@@ -17,6 +17,8 @@ flutterfire configure
 ```
 This will create `lib/firebase_options.dart` with your Firebase project configuration.
 
+**IMPORTANT**: This file contains API keys and should NOT be committed to git. It's already in `.gitignore`.
+
 ### 3. Add google-services.json file
 
 **Location**: Place the `google-services.json` file in:

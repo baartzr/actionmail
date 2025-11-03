@@ -46,3 +46,9 @@ app.*.map.json
 
 # OAuth Configuration (contains secrets)
 lib/config/oauth_config.dart
+
+# Firebase Configuration (contains API keys)
+android/app/google-services.json
+ios/firebase_options.dart
+web/firebase_options.dart
+lib/firebase_options.dart

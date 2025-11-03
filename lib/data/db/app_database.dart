@@ -19,7 +19,7 @@ class AppDatabase {
     final path = p.join(dbPath, 'actionmail.db');
     return openDatabase(
       path,
-      version: 9,
+      version: 10,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -73,6 +73,23 @@ class AppDatabase {
             lastHistoryId TEXT
           )
         ''');
+        await db.execute('''
+          CREATE TABLE action_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            messageId TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            snippet TEXT NOT NULL,
+            bodyContent TEXT,
+            detectedActionDate INTEGER,
+            detectedActionConfidence REAL,
+            detectedActionText TEXT,
+            userActionDate INTEGER,
+            userActionConfidence REAL,
+            userActionText TEXT,
+            feedbackType TEXT NOT NULL,
+            timestamp INTEGER NOT NULL
+          )
+        ''');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -119,6 +136,25 @@ class AppDatabase {
         }
         if (oldVersion < 9) {
           await db.execute('ALTER TABLE messages ADD COLUMN unsubscribedLocal INTEGER NOT NULL DEFAULT 0');
+        }
+        if (oldVersion < 10) {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS action_feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              messageId TEXT NOT NULL,
+              subject TEXT NOT NULL,
+              snippet TEXT NOT NULL,
+              bodyContent TEXT,
+              detectedActionDate INTEGER,
+              detectedActionConfidence REAL,
+              detectedActionText TEXT,
+              userActionDate INTEGER,
+              userActionConfidence REAL,
+              userActionText TEXT,
+              feedbackType TEXT NOT NULL,
+              timestamp INTEGER NOT NULL
+            )
+          ''');
         }
       },
     );

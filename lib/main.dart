@@ -7,6 +7,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:actionmail/firebase_options.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
+import 'package:actionmail/services/actions/ml_action_extractor.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,6 +51,19 @@ void main() async {
       if (!syncInitialized) {
         debugPrint('[Main] Firebase sync service initialization failed');
       }
+    }
+    
+    // Initialize ML Action Extractor (Phase 1: Infrastructure)
+    try {
+      final mlInitialized = await MLActionExtractor.initialize();
+      if (mlInitialized) {
+        debugPrint('[Main] ML Action Extractor initialized successfully');
+      } else {
+        debugPrint('[Main] ML Action Extractor initialized (model not available - using rule-based)');
+      }
+    } catch (e) {
+      debugPrint('[Main] ML Action Extractor initialization error: $e');
+      debugPrint('[Main] Continuing with rule-based action extraction only');
     }
   } on PlatformException catch (e) {
     // Firebase platform channel errors
