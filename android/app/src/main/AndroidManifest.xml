@@ -26,13 +26,12 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
-            <!-- OAuth redirect intent filter for flutter_appauth -->
-            <!-- Web client requires HTTP redirect URI -->
-            <intent-filter>
+            <!-- HTTPS App Link for OAuth redirect (Web OAuth client) - autoVerify prevents app chooser -->
+            <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
-                <data android:scheme="http" android:host="127.0.0.1" android:port="8400" android:path="/oauth2redirect"/>
+                <data android:scheme="https" android:host="inboxiq--api.web.app" android:pathPrefix="/__/auth/handler"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
