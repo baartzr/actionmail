@@ -1,0 +1,13 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.seagreen.inboxiq1",
+      "sha256_cert_fingerprints": [
+        "EC:14:20:6E:E4:41:C8:BB:36:9F:F2:82:F4:C9:45:25:F8:D3:44:38:00:34:FA:F5:56:23:81:DA:E2:DA:C7:68"
+      ]
+    }
+  }
+]
+

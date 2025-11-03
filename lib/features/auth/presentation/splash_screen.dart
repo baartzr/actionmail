@@ -13,17 +13,162 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver {
   List<GoogleAccount> _accounts = [];
   bool _signingIn = false;
   bool _forceAdd = false;
   bool _dialogShown = false;
+  bool _navigatedAway = false; // Track if we've already navigated away
+  String? _processedAppLink; // Track which App Link we've already processed
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _checkAppLinkAndCompleteSignIn();
     _load();
     // No longer resize native window; open add-account as modal instead
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Check for App Link when app resumes from background (after browser OAuth)
+    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+      // ignore: avoid_print
+      print('[splash] app resumed, checking for App Link...');
+      _checkAppLinkAndCompleteSignIn();
+    }
+  }
+
+  Future<void> _checkAppLinkAndCompleteSignIn() async {
+    if (!Platform.isAndroid) return;
+    
+    // ignore: avoid_print
+    print('[splash] _checkAppLinkAndCompleteSignIn() called');
+    
+    try {
+      final methodChannel = MethodChannel('com.actionmail.actionmail/bringToFront');
+      // ignore: avoid_print
+      print('[splash] calling getInitialAppLink...');
+      final appLink = await methodChannel.invokeMethod<String>('getInitialAppLink');
+      // ignore: avoid_print
+      print('[splash] getInitialAppLink returned: $appLink');
+      
+      if (appLink != null && appLink.isNotEmpty && appLink.contains('code=')) {
+        // Check if we've already processed this App Link
+        if (_processedAppLink == appLink) {
+          // ignore: avoid_print
+          print('[splash] App Link already processed, skipping: $appLink');
+          return;
+        }
+        
+        // App was opened via OAuth redirect - complete sign-in
+        // ignore: avoid_print
+        print('[splash] detected OAuth App Link on startup: $appLink');
+        
+        // Extract code from URL
+        final uri = Uri.parse(appLink);
+        final code = uri.queryParameters['code'];
+        final error = uri.queryParameters['error'];
+        
+        if (error != null) {
+          // ignore: avoid_print
+          print('[splash] OAuth error in App Link: $error');
+          _processedAppLink = appLink; // Mark as processed even on error
+          return;
+        }
+        
+        if (code != null) {
+          // Check if we've already processed this exact App Link
+          if (_processedAppLink == appLink) {
+            // ignore: avoid_print
+            print('[splash] App Link already processed, skipping');
+            return;
+          }
+          
+          // We need to get the verifier from SharedPreferences (stored before browser launch)
+          final prefs = await SharedPreferences.getInstance();
+          final verifier = prefs.getString('oauth_pkce_verifier');
+          final redirectUri = prefs.getString('oauth_redirect_uri');
+          final clientId = prefs.getString('oauth_client_id');
+          final clientSecret = prefs.getString('oauth_client_secret');
+          
+          if (verifier != null && redirectUri != null && clientId != null && clientSecret != null) {
+            // Mark as processing to prevent duplicate
+            _processedAppLink = appLink;
+            // ignore: avoid_print
+            print('[splash] completing OAuth with stored verifier');
+            
+            // Exchange code for tokens
+            final svc = GoogleAuthService();
+            final account = await svc.completeOAuthFlow(code, verifier, redirectUri, clientId, clientSecret);
+            
+            // Clear stored OAuth state
+            await prefs.remove('oauth_pkce_verifier');
+            await prefs.remove('oauth_redirect_uri');
+            await prefs.remove('oauth_client_id');
+            await prefs.remove('oauth_client_secret');
+            
+            if (account != null && mounted) {
+              // ignore: avoid_print
+              print('[splash] OAuth completed, saving account');
+              final stored = await svc.upsertAccount(account);
+              await _saveLastActiveAccount(stored.id);
+              
+              // Clear the App Link from intent after successful processing
+              try {
+                await methodChannel.invokeMethod('clearAppLink');
+              } catch (_) {
+                // Ignore if method not available
+              }
+              
+              if (mounted) {
+                // ignore: avoid_print
+                print('[splash] navigating to home with account ${stored.id}');
+                _navigatedAway = true; // Mark as navigated to prevent pop attempts
+                // Use pushReplacementNamed to avoid Navigator history issues
+                Navigator.of(context, rootNavigator: true)
+                    .pushReplacementNamed('/home', arguments: stored.id);
+                return; // Exit early after successful navigation
+              }
+            } else {
+              // ignore: avoid_print
+              print('[splash] OAuth completed but account is null or widget not mounted');
+              // Clear processed link so we can retry
+              _processedAppLink = null;
+            }
+          } else {
+            // ignore: avoid_print
+            print('[splash] OAuth state missing - this App Link is from a previous attempt');
+            // Clear the App Link so it doesn't interfere with new sign-in attempts
+            try {
+              await methodChannel.invokeMethod('clearAppLink');
+            } catch (_) {
+              // Ignore if method not available
+            }
+            // Clear processed link
+            _processedAppLink = null;
+          }
+        } else {
+          // ignore: avoid_print
+          print('[splash] No App Link found or no code parameter');
+        }
+      }
+    } catch (e, stackTrace) {
+      // ignore: avoid_print
+      print('[splash] error checking App Link: $e');
+      // ignore: avoid_print
+      print('[splash] stack trace: $stackTrace');
+      // Clear processed link on error so we can retry
+      _processedAppLink = null;
+    }
   }
 
   Future<String?> _loadLastActiveAccount() async {
@@ -102,6 +247,14 @@ class _SplashScreenState extends State<SplashScreen> {
 
   void _showSplashWindow() async {
     print('[splash] _showSplashWindow() called');
+    // Check for App Link right before showing dialog (in case app was resumed)
+    if (Platform.isAndroid) {
+      // ignore: avoid_print
+      print('[splash] checking for App Link before showing dialog');
+      await _checkAppLinkAndCompleteSignIn();
+      if (!mounted) return; // If we navigated away, don't show dialog
+    }
+    
     // Capture navigators/messenger before awaiting dialog
     final dialogNavigator = Navigator.of(context);
     final rootNavigator = Navigator.of(context, rootNavigator: true);
@@ -180,14 +333,22 @@ class _SplashScreenState extends State<SplashScreen> {
                               dialogNavigator.pop(stored.id);
                             } else {
                               // For normal sign-in, navigate to home
-                              rootNavigator.pushNamedAndRemoveUntil('/home', (route) => false, arguments: stored.id);
+                              _navigatedAway = true; // Mark as navigated to prevent pop attempts
+                              rootNavigator.pushReplacementNamed('/home', arguments: stored.id);
                             }
                           } else {
-                            print('[splash] sign-in failed, showing snackbar');
-                            scaffoldMessenger.showSnackBar(
-                              const SnackBar(content: Text('Google sign-in not supported on this platform.')),
-                            );
-                            setState(() => _signingIn = false);
+                            // On Android, null might mean browser was launched and app will restart
+                            // Don't show error - the app will restart and complete sign-in via App Link
+                            if (Platform.isAndroid) {
+                              print('[splash] Android sign-in: browser launched, waiting for app restart');
+                              // Keep signing state - app will restart and complete sign-in
+                            } else {
+                              print('[splash] sign-in failed, showing snackbar');
+                              scaffoldMessenger.showSnackBar(
+                                const SnackBar(content: Text('Google sign-in not supported on this platform.')),
+                              );
+                              setState(() => _signingIn = false);
+                            }
                           }
                         },
                   icon: const Icon(Icons.login),
@@ -235,7 +396,14 @@ class _SplashScreenState extends State<SplashScreen> {
     );
     print('[splash] AppWindowDialog.show() returned, result=$result');
     // If user dismissed the dialog without signing in, pop the route
-    if (!context.mounted) return;
+    // But don't pop if we've already navigated away (e.g., from App Link completion)
+    if (!context.mounted || _navigatedAway) {
+      if (_navigatedAway) {
+        // ignore: avoid_print
+        print('[splash] already navigated away, skipping pop');
+      }
+      return;
+    }
     if (_forceAdd) {
       print('[splash] forceAdd=true, popping SplashScreen route with result=$result');
       dialogNavigator.pop(result);

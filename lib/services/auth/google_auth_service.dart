@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -12,6 +13,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
 import 'package:window_to_front/window_to_front.dart';
 
 class GoogleAuthService {
@@ -31,6 +33,8 @@ class GoogleAuthService {
 
   // Cache for ongoing ensureValidAccessToken calls to prevent duplicate checks
   final Map<String, Future<GoogleAccount?>> _tokenCheckCache = {};
+  // Prevent parallel/duplicate interactive sign-ins
+  Future<GoogleAccount?>? _signInInProgress;
 
   Future<List<GoogleAccount>> loadAccounts() async {
     final prefs = await SharedPreferences.getInstance();
@@ -76,18 +80,36 @@ class GoogleAuthService {
   }
 
   Future<GoogleAccount?> signIn() async {
+    if (_signInInProgress != null) return _signInInProgress;
+    final future = _signInDo();
+    _signInInProgress = future;
+    try {
+      final result = await future;
+      return result;
+    } finally {
+      _signInInProgress = null;
+    }
+  }
+
+  Future<GoogleAccount?> _signInDo() async {
     // Desktop Windows/Linux: use flutter_web_auth_2 with PKCE and installed redirect
     if (Platform.isWindows || Platform.isLinux) {
       try {
         final verifier = _randomString(64);
         final challenge = _codeChallenge(verifier);
         final redirect = Uri.parse(AppConstants.oauthRedirectUri);
+        final redirectUri = AppConstants.oauthRedirectUri;
+        // Debug logging
+        // ignore: avoid_print
+        print('[auth][desktop] using redirect_uri=$redirectUri');
+        // ignore: avoid_print
+        print('[auth][desktop] using client_id=${OAuthConfig.clientId}');
         // Use 'consent' to force consent screen and ensure refresh token is returned
         // This is necessary because Google only returns refresh_token on first authorization
         // or when consent is explicitly requested
         final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
           'client_id': OAuthConfig.clientId,
-          'redirect_uri': AppConstants.oauthRedirectUri,
+          'redirect_uri': redirectUri,
           'response_type': 'code',
           'scope': AppConstants.oauthScopes.join(' '),
           'prompt': 'consent',  // Force consent to get refresh token
@@ -183,8 +205,8 @@ class GoogleAuthService {
     // Use PKCE (code) flow for mobile
     if (OAuthConfig.clientId.isNotEmpty && (Platform.isAndroid || Platform.isIOS)) {
       try {
-        // For Android with web client and HTTP redirect, use local HTTP server approach
-        // (same as desktop, since flutter_web_auth_2 doesn't handle HTTP localhost well)
+        // Android: Launch browser directly and handle HTTPS App Links manually
+        // App Links auto-open app without chooser when domain is verified
         if (Platform.isAndroid) {
           final redirectUri = AppConstants.oauthRedirectUriForMobile;
           final verifier = _randomString(64);
@@ -202,86 +224,107 @@ class GoogleAuthService {
             'code_challenge_method': 'S256',
           });
           
-          // Use local HTTP server for Android (like desktop) since HTTP redirect needs to be caught
-          final redirect = Uri.parse(redirectUri);
-          final port = redirect.port == 0 ? 8400 : redirect.port;
-          final listener = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
+          // Debug the exact auth request
+          // ignore: avoid_print
+          print('[auth][android] launching browser with redirect_uri=$redirectUri');
+          // ignore: avoid_print
+          print('[auth][android] full auth URL: $authUrl');
+          // ignore: avoid_print
+          print('[auth][android] client_id: ${OAuthConfig.clientId}');
           
-          // Launch browser
-          await launchUrl(authUrl, mode: LaunchMode.externalApplication);
+          // Check for initial App Link (in case app was restarted)
+          final methodChannel = MethodChannel('com.actionmail.actionmail/bringToFront');
+          String? callbackUrl;
           
-          // Wait for callback
-          final request = await listener.first;
-          final callbackUri = request.uri;
-          final code = callbackUri.queryParameters['code'];
+          try {
+            // ignore: avoid_print
+            print('[auth][android] checking for initial app link...');
+            final initialLink = await methodChannel.invokeMethod<String>('getInitialAppLink');
+            // ignore: avoid_print
+            print('[auth][android] getInitialAppLink returned: $initialLink');
+            if (initialLink != null && initialLink.isNotEmpty) {
+              callbackUrl = initialLink;
+              // ignore: avoid_print
+              print('[auth][android] got initial app link: $callbackUrl');
+            }
+          } catch (e) {
+            // ignore: avoid_print
+            print('[auth][android] no initial link (expected on first launch): $e');
+          }
           
-          // Send response to browser
-          request.response
-            ..statusCode = 200
-            ..headers.set('Content-Type', 'text/html')
-            ..write('<html><body><p>Authentication complete. You can close this window.</p></body></html>');
-          await request.response.close();
-          await listener.close(force: true);
-          
-          if (code == null) return null;
-        
-          // Exchange code for tokens
-          final resp = await http.post(
-            Uri.parse('https://oauth2.googleapis.com/token'),
-            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: {
-              'client_id': OAuthConfig.clientId,
-              'redirect_uri': redirectUri,
-              'grant_type': 'authorization_code',
-              'code': code,
-              'code_verifier': verifier,
-              'client_secret': OAuthConfig.clientSecret,
-            },
-          );
-          
-          if (resp.statusCode != 200) return null;
-          final tok = jsonDecode(resp.body) as Map<String, dynamic>;
-          final accessToken = tok['access_token'] as String? ?? '';
-          final refreshToken = tok['refresh_token'] as String?;
-          final expiresIn = (tok['expires_in'] as num?)?.toInt();
-          final idToken = tok['id_token'] as String? ?? '';
-          
-          // Fetch user info
-          String displayName = 'Google Account';
-          String email = 'unknown@email';
-          String? photoUrl;
-          if (accessToken.isNotEmpty) {
-            final ui = await http.get(
-              Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
-              headers: {'Authorization': 'Bearer $accessToken'},
-            );
-            if (ui.statusCode == 200) {
-              final data = jsonDecode(ui.body) as Map<String, dynamic>;
-              email = (data['email'] as String?) ?? email;
-              displayName = (data['name'] as String?) ?? displayName;
-              photoUrl = data['picture'] as String?;
+          // If we have initial link, check if it has matching OAuth state
+          if (callbackUrl != null) {
+            // ignore: avoid_print
+            print('[auth][android] found initial App Link, checking for OAuth state...');
+            final callbackUri = Uri.parse(callbackUrl);
+            final code = callbackUri.queryParameters['code'];
+            final error = callbackUri.queryParameters['error'];
+            
+            if (error != null) {
+              // ignore: avoid_print
+              print('[auth][android] OAuth error in App Link: $error');
+              // Clear the intent data so it doesn't get reused
+              await methodChannel.invokeMethod('clearAppLink');
+              return null;
+            }
+            
+            if (code == null) {
+              // ignore: avoid_print
+              print('[auth][android] No code in App Link');
+              await methodChannel.invokeMethod('clearAppLink');
+              return null;
+            }
+            
+            // Get stored OAuth state
+            final prefs = await SharedPreferences.getInstance();
+            final storedVerifier = prefs.getString('oauth_pkce_verifier');
+            final storedRedirectUri = prefs.getString('oauth_redirect_uri');
+            final storedClientId = prefs.getString('oauth_client_id');
+            final storedClientSecret = prefs.getString('oauth_client_secret');
+            
+            if (storedVerifier != null && storedRedirectUri != null && storedClientId != null && storedClientSecret != null) {
+              // ignore: avoid_print
+              print('[auth][android] OAuth state found, completing sign-in...');
+              // Clear stored state
+              await prefs.remove('oauth_pkce_verifier');
+              await prefs.remove('oauth_redirect_uri');
+              await prefs.remove('oauth_client_id');
+              await prefs.remove('oauth_client_secret');
+              
+              // Clear the intent data
+              await methodChannel.invokeMethod('clearAppLink');
+              
+              // Complete OAuth flow
+              return await completeOAuthFlow(code, storedVerifier, storedRedirectUri, storedClientId, storedClientSecret);
+            } else {
+              // ignore: avoid_print
+              print('[auth][android] OAuth state missing - this App Link is from a previous attempt');
+              // Clear the intent data so it doesn't interfere with new sign-in
+              await methodChannel.invokeMethod('clearAppLink');
+              // Continue with normal flow (launch browser)
+              callbackUrl = null;
             }
           }
           
-          final account = GoogleAccount(
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
-            email: email,
-            displayName: displayName,
-            photoUrl: photoUrl,
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
-            idToken: idToken,
-          );
-          // Bring window to front after successful sign-in (for desktop/emulator)
-          if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-            try {
-              await WindowToFront.activate();
-            } catch (_) {
-              // Ignore if it fails
-            }
-          }
-          return account;
+          // No initial link - store OAuth state and launch browser
+          // App will restart when Google redirects, and splash screen will complete sign-in
+          // ignore: avoid_print
+          print('[auth][android] storing OAuth state and launching browser...');
+          
+          // Store OAuth state for when app restarts
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('oauth_pkce_verifier', verifier);
+          await prefs.setString('oauth_redirect_uri', redirectUri);
+          await prefs.setString('oauth_client_id', OAuthConfig.clientId);
+          await prefs.setString('oauth_client_secret', OAuthConfig.clientSecret);
+          
+          // Launch browser - app will restart when Google redirects
+          final launched = await launchUrl(authUrl, mode: LaunchMode.externalApplication);
+          // ignore: avoid_print
+          print('[auth][android] browser launched: $launched');
+          
+          // Return null - splash screen will detect App Link on restart and complete sign-in
+          return null;
         } else {
           // iOS: Use flutter_web_auth_2 with custom scheme
           final redirectUri = AppConstants.oauthRedirectUriForMobile;
@@ -657,6 +700,70 @@ class GoogleAuthService {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Complete OAuth flow by exchanging code for tokens and fetching user info
+  /// Used when app restarts via App Link after browser OAuth
+  Future<GoogleAccount?> completeOAuthFlow(
+    String code,
+    String verifier,
+    String redirectUri,
+    String clientId,
+    String clientSecret,
+  ) async {
+    // Exchange code for tokens
+    final resp = await http.post(
+      Uri.parse('https://oauth2.googleapis.com/token'),
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {
+        'client_id': clientId,
+        'redirect_uri': redirectUri,
+        'grant_type': 'authorization_code',
+        'code': code,
+        'code_verifier': verifier,
+        'client_secret': clientSecret,
+      },
+    );
+    
+    if (resp.statusCode != 200) {
+      // ignore: avoid_print
+      print('[auth] token exchange failed: ${resp.statusCode} ${resp.body}');
+      return null;
+    }
+    
+    final tok = jsonDecode(resp.body) as Map<String, dynamic>;
+    final accessToken = tok['access_token'] as String? ?? '';
+    final refreshToken = tok['refresh_token'] as String?;
+    final expiresIn = (tok['expires_in'] as num?)?.toInt();
+    final idToken = tok['id_token'] as String? ?? '';
+    
+    // Fetch user info
+    String displayName = 'Google Account';
+    String email = 'unknown@email';
+    String? photoUrl;
+    if (accessToken.isNotEmpty) {
+      final ui = await http.get(
+        Uri.parse('https://www.googleapis.com/oauth2/v3/userinfo'),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+      if (ui.statusCode == 200) {
+        final data = jsonDecode(ui.body) as Map<String, dynamic>;
+        email = (data['email'] as String?) ?? email;
+        displayName = (data['name'] as String?) ?? displayName;
+        photoUrl = data['picture'] as String?;
+      }
+    }
+    
+    return GoogleAccount(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      email: email,
+      displayName: displayName,
+      photoUrl: photoUrl,
+      accessToken: accessToken,
+      refreshToken: refreshToken,
+      tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : null,
+      idToken: idToken,
+    );
   }
 
   Future<GoogleAccount?> refreshAccessToken(String accountId) async {
