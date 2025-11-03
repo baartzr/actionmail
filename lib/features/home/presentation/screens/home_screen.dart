@@ -18,6 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'dart:async';
 
 /// Main home screen for ActionMail
@@ -52,6 +53,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _showSearch = false;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
+  
+  final FirebaseSyncService _firebaseSync = FirebaseSyncService();
 
   Future<void> _loadAccounts() async {
     final svc = GoogleAuthService();
@@ -60,6 +63,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     setState(() {
       _accounts = list;
     });
+    
+    // Initialize Firebase sync if enabled and an account is selected
+    final syncEnabled = await _firebaseSync.isSyncEnabled();
+    if (syncEnabled && _selectedAccountId != null && list.isNotEmpty) {
+      // Find the selected account's email
+      try {
+        final selectedAccount = list.firstWhere((acc) => acc.id == _selectedAccountId);
+        // Set callback to update provider state when Firebase updates are applied
+        _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
+          // Update provider state to reflect Firebase changes in UI
+          if (localTag != null) {
+            ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
+          }
+          if (actionDate != null || actionText != null) {
+            ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
+          }
+        };
+        
+        await _firebaseSync.initializeUser(selectedAccount.email);
+        // Load sender preferences from Firebase on startup
+        await _loadSenderPrefsFromFirebase();
+      } catch (e) {
+        // Selected account not found in list - stop Firebase sync
+        debugPrint('[HomeScreen] Selected account $_selectedAccountId not found, stopping Firebase sync');
+        await _firebaseSync.initializeUser(null);
+      }
+    } else if (syncEnabled && _selectedAccountId == null) {
+      // No account selected - stop Firebase sync
+      await _firebaseSync.initializeUser(null);
+    }
+  }
+
+  Future<void> _loadSenderPrefsFromFirebase() async {
+    if (!await _firebaseSync.isSyncEnabled()) return;
+    
+    try {
+      // This will be handled by the Firebase listener in the sync service
+      // We just need to ensure it's initialized
+      debugPrint('[HomeScreen] Firebase sync initialized, sender prefs will sync automatically');
+    } catch (e) {
+      debugPrint('[HomeScreen] Error loading sender prefs from Firebase: $e');
+    }
   }
 
   Future<String?> _loadLastActiveAccount() async {
@@ -92,6 +137,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _selectedAccountId = selectedAccount;
         });
         await _saveLastActiveAccount(selectedAccount);
+        
+        // Re-initialize Firebase sync with the new account's email
+        final syncEnabled = await _firebaseSync.isSyncEnabled();
+        if (syncEnabled) {
+          final selectedAccountObj = _accounts.firstWhere((acc) => acc.id == selectedAccount);
+          
+          // Set callback to update provider state when Firebase updates are applied
+          _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
+            // Update provider state to reflect Firebase changes in UI
+            if (localTag != null) {
+              ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
+            }
+            if (actionDate != null || actionText != null) {
+              ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
+            }
+          };
+          
+          await _firebaseSync.initializeUser(selectedAccountObj.email);
+        }
+        
         if (_selectedAccountId != null) {
           // Use loadEmails for account switch to trigger full initial sync if needed
           await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
@@ -1708,11 +1773,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 onLocalStateChanged: (state) async {
                   // Persist local tag for this message
                   await MessageRepository().updateLocalTag(message.id, state);
+                  
+                  // Sync to Firebase if enabled (only if changed from initial value)
+                  final syncEnabled = await _firebaseSync.isSyncEnabled();
+                  if (syncEnabled) {
+                    // Always sync the localTagPersonal value (even if null, it represents a change)
+                    await _firebaseSync.syncEmailMeta(message.id, localTagPersonal: state);
+                  }
+                  
                   // Persist a sender preference (future emails rule)
+                  // Note: Sender preferences are NOT synced to Firebase - they are derived
+                  // locally from emailMeta changes on other devices
                   final senderEmail = _extractEmail(message.from);
                   if (senderEmail.isNotEmpty) {
                     await MessageRepository().setSenderDefaultLocalTag(senderEmail, state);
                   }
+                  
                   // Silent update: do not trigger a provider loading state
                   ref.read(emailListProvider.notifier).setLocalTag(message.id, state);
                 },
@@ -1789,6 +1865,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 onActionUpdated: (date, text) async {
                   await MessageRepository().updateAction(message.id, date, text);
                   ref.read(emailListProvider.notifier).setAction(message.id, date, text);
+                  
+                  // Sync to Firebase if enabled (only if changed from initial value)
+                  final syncEnabled = await _firebaseSync.isSyncEnabled();
+                  if (syncEnabled) {
+                    // Get current message to check if action actually changed
+                    final currentDate = message.actionDate;
+                    final currentText = message.actionInsightText;
+                    if (currentDate != date || currentText != text) {
+                      await _firebaseSync.syncEmailMeta(
+                        message.id,
+                        actionDate: date,
+                        actionInsightText: text,
+                      );
+                    }
+                  }
                 },
                 onActionCompleted: () async {
                   await MessageRepository().updateAction(message.id, null, null);

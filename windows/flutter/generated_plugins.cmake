@@ -3,7 +3,9 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  cloud_firestore
   desktop_webview_window
+  firebase_core
   flutter_inappwebview_windows
   screen_retriever
   url_launcher_windows

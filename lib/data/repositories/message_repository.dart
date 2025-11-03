@@ -58,6 +58,18 @@ class MessageRepository {
     return rows.map(_fromRow).toList();
   }
 
+  Future<MessageIndex?> getById(String messageId) async {
+    final db = await _dbProvider.database;
+    final rows = await db.query(
+      'messages',
+      where: 'id=?',
+      whereArgs: [messageId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return _fromRow(rows.first);
+  }
+
   Future<void> clearAll() async {
     await _dbProvider.clearAll();
   }

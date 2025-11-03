@@ -4,6 +4,8 @@ import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
+import 'package:actionmail/services/sync/firebase_sync_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
   const AccountsSettingsDialog({super.key});
@@ -99,6 +101,86 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 _FeatureItem(icon: Icons.sync, text: '2‑minute background sync with Gmail'),
                               ],
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  // Sync section
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                    child: Text(
+                      'Sync',
+                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600, color: theme.colorScheme.primary),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Card(
+                    elevation: 0,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Firebase Sync',
+                                      style: theme.textTheme.titleMedium,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Sync email metadata across devices (personal/business tags, actions)',
+                                      style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Consumer(
+                                builder: (context, ref, child) {
+                                  return FutureBuilder<bool>(
+                                    future: FirebaseSyncService().isSyncEnabled(),
+                                    builder: (context, snapshot) {
+                                      final isEnabled = snapshot.data ?? false;
+                                      return Switch(
+                                        value: isEnabled,
+                                        onChanged: (value) async {
+                                          final syncService = FirebaseSyncService();
+                                          await syncService.setSyncEnabled(value);
+                                          
+                                          // Initialize user if enabling
+                                          if (value) {
+                                            final accounts = await GoogleAuthService().loadAccounts();
+                                            if (accounts.isNotEmpty) {
+                                              // Use account email as user ID
+                                              await syncService.initializeUser(accounts.first.email);
+                                            }
+                                          }
+                                          
+                                          if (mounted) {
+                                            setState(() {});
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(value ? 'Firebase sync enabled' : 'Firebase sync disabled'),
+                                                duration: const Duration(seconds: 2),
+                                              ),
+                                            );
+                                          }
+                                        },
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                            ],
                           ),
                         ],
                       ),
