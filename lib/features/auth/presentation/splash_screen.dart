@@ -370,18 +370,22 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                   ),
                   textAlign: TextAlign.center,
                 ),
-                const SizedBox(height: 32),
+                const SizedBox(height: 16),
+
                 Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 400), // adjust width as needed
+                  child: Align(
+                    alignment: Alignment.center,
                     child: Card(
                       elevation: 0,
-                      color: theme.colorScheme.surfaceContainerHighest,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      color: Colors.transparent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
                       child: const Padding(
                         padding: EdgeInsets.all(20.0),
                         child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,       // shrink to fit content
+                          crossAxisAlignment: CrossAxisAlignment.start, // left-align text within the block
                           children: [
                             _Benefit(icon: Icons.label_important_outline, text: 'Set and manage email actions'),
                             _Benefit(icon: Icons.swipe, text: 'Sort and store email, your way'),
@@ -391,7 +395,10 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                       ),
                     ),
                   ),
+
+
                 ),
+
               ],
             ),
           );
@@ -490,20 +497,20 @@ class _Benefit extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6.0),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min, // shrink to fit content
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(icon, size: 20, color: theme.colorScheme.primary),
           const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              text,
-              style: theme.textTheme.bodyMedium,
-            ),
+          Text(
+            text,
+            style: theme.textTheme.bodyMedium,
           ),
         ],
       ),
     );
   }
 }
+
 
 

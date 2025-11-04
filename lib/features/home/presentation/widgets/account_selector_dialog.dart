@@ -122,7 +122,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                           final theme = Theme.of(context);
                           final cs = theme.colorScheme;
                           return Padding(
-                            padding: const EdgeInsets.only(bottom: 8.0),
+                            padding: const EdgeInsets.only(bottom: 2.0),
                             child: Card(
                               elevation: 1,
                               shape: RoundedRectangleBorder(
@@ -282,7 +282,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                     ),
                     const Divider(height: 1),
                     Padding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.all(20),
                       child: FilledButton.icon(
                         onPressed: () async {
                           // Navigate to splash screen with forceAdd flag using rootNavigator
@@ -311,6 +311,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                         label: const Text('Add Account'),
                       ),
                     ),
+                    const SizedBox(height: 8),
                   ],
                 ),
         );

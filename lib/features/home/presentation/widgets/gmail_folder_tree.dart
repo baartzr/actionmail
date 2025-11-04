@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
+import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
 
 /// Gmail folder navigation tree for desktop left panel
-class GmailFolderTree extends StatefulWidget {
+class GmailFolderTree extends ConsumerStatefulWidget {
   final String selectedFolder;
   final ValueChanged<String> onFolderSelected;
   final void Function(String folderId, MessageIndex message)? onEmailDropped;
@@ -21,17 +23,21 @@ class GmailFolderTree extends StatefulWidget {
   });
 
   @override
-  State<GmailFolderTree> createState() => _GmailFolderTreeState();
+  ConsumerState<GmailFolderTree> createState() => _GmailFolderTreeState();
 }
 
-class _GmailFolderTreeState extends State<GmailFolderTree> {
+class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
   MessageIndex? _draggedMessage;
   final MessageRepository _messageRepo = MessageRepository();
   Map<String, int> _unreadCounts = {};
+  String? _lastAccountId;
+  String? _lastSelectedFolder;
 
   @override
   void initState() {
     super.initState();
+    _lastAccountId = widget.accountId;
+    _lastSelectedFolder = widget.selectedFolder;
     _loadUnreadCounts();
   }
 
@@ -40,7 +46,16 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
     super.didUpdateWidget(oldWidget);
     // Reload counts if account changed
     if (oldWidget.accountId != widget.accountId) {
+      _lastAccountId = widget.accountId;
       _loadUnreadCounts();
+    }
+    // Reload counts if folder selection changed (to reflect immediate updates)
+    if (oldWidget.selectedFolder != widget.selectedFolder) {
+      _lastSelectedFolder = widget.selectedFolder;
+      // Refresh counts when folder changes to show updated counts immediately
+      if (widget.accountId != null) {
+        _loadUnreadCounts();
+      }
     }
   }
 
@@ -63,8 +78,27 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
     }
   }
 
+  // Listen to email list changes and refresh counts for active account
   @override
   Widget build(BuildContext context) {
+    // Watch the email list provider - when emails change, refresh counts for the active account
+    ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider, (previous, next) {
+      // Only refresh if we have data and account ID matches
+      if (next.hasValue && widget.accountId != null && _lastAccountId == widget.accountId) {
+        // Refresh counts when email list changes (emails marked as read/unread)
+        // Use post-frame callback to avoid updating during build
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _loadUnreadCounts();
+          }
+        });
+      }
+    });
+
+    return _buildFolderTree(context);
+  }
+
+  Widget _buildFolderTree(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
 
@@ -82,7 +116,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
         children: [
           // Header
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),   
             decoration: BoxDecoration(
               border: Border(
                 bottom: BorderSide(
@@ -116,50 +150,50 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.inbox,
                   label: AppConstants.folderDisplayNames[AppConstants.folderInbox] ?? AppConstants.folderInbox,
                   folderId: AppConstants.folderInbox,
-                  unreadCount: _unreadCounts[AppConstants.folderInbox] ?? 0,
+                  unreadCount: _unreadCounts[AppConstants.folderInbox] ?? 0,    
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
-                  onDragEnd: () => setState(() => _draggedMessage = null),
+                  onDragEnd: () => setState(() => _draggedMessage = null),      
                 ),
                 _buildFolderItem(
                   context: context,
                   icon: Icons.send,
                   label: AppConstants.folderDisplayNames[AppConstants.folderSent] ?? AppConstants.folderSent,
                   folderId: AppConstants.folderSent,
-                  unreadCount: _unreadCounts[AppConstants.folderSent] ?? 0,
+                  unreadCount: _unreadCounts[AppConstants.folderSent] ?? 0,     
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
-                  onDragEnd: () => setState(() => _draggedMessage = null),
+                  onDragEnd: () => setState(() => _draggedMessage = null),      
                 ),
                 _buildFolderItem(
                   context: context,
                   icon: Icons.archive,
                   label: AppConstants.folderDisplayNames[AppConstants.folderArchive] ?? AppConstants.folderArchive,
                   folderId: AppConstants.folderArchive,
-                  unreadCount: _unreadCounts[AppConstants.folderArchive] ?? 0,
+                  unreadCount: _unreadCounts[AppConstants.folderArchive] ?? 0,  
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
-                  onDragEnd: () => setState(() => _draggedMessage = null),
+                  onDragEnd: () => setState(() => _draggedMessage = null),      
                 ),
                 _buildFolderItem(
                   context: context,
                   icon: Icons.delete,
                   label: AppConstants.folderDisplayNames[AppConstants.folderTrash] ?? AppConstants.folderTrash,
                   folderId: AppConstants.folderTrash,
-                  unreadCount: _unreadCounts[AppConstants.folderTrash] ?? 0,
+                  unreadCount: _unreadCounts[AppConstants.folderTrash] ?? 0,    
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
-                  onDragEnd: () => setState(() => _draggedMessage = null),
+                  onDragEnd: () => setState(() => _draggedMessage = null),      
                 ),
                 _buildFolderItem(
                   context: context,
                   icon: Icons.block,
                   label: AppConstants.folderDisplayNames[AppConstants.folderSpam] ?? AppConstants.folderSpam,
                   folderId: AppConstants.folderSpam,
-                  unreadCount: _unreadCounts[AppConstants.folderSpam] ?? 0,
+                  unreadCount: _unreadCounts[AppConstants.folderSpam] ?? 0,     
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
-                  onDragEnd: () => setState(() => _draggedMessage = null),
+                  onDragEnd: () => setState(() => _draggedMessage = null),      
                 ),
                 // Add helper text when dragging - below folders
                 if (_draggedMessage != null)

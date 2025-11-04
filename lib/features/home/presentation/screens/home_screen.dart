@@ -326,6 +326,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       });
       _initializedFromRoute = true;
     }
+
+    // Listen to email list changes and refresh active account's unread count
+    ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider, (previous, next) {
+      // Only refresh if we have data and an active account
+      if (next.hasValue && _selectedAccountId != null && mounted) {
+        // Refresh active account's unread count from local DB when emails change
+        // Use post-frame callback to avoid updating during build
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _selectedAccountId != null) {
+            _refreshAccountUnreadCountLocal(_selectedAccountId!);
+          }
+        });
+      }
+    });
+
     return Scaffold(
       appBar: PreferredSize(
         preferredSize: Size.fromHeight((kToolbarHeight * 1.5) + MediaQuery.of(context).padding.top),
@@ -599,11 +614,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
-      body: LayoutBuilder(
+            body: LayoutBuilder(
         builder: (context, constraints) {
           final isDesktop = constraints.maxWidth >= 900;
-          final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
-          final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
+          final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);  
+          final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0); 
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -2675,11 +2690,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-  /// Refresh unread counts for all accounts using Gmail API
+    /// Refresh unread counts for all accounts
+  /// Active account: uses local data only (no API calls)
+  /// Inactive accounts: uses local data first, then refreshes from API in background
   Future<void> _refreshAccountUnreadCounts() async {
     if (_accounts.isEmpty) return;
-    
-    // First, load from local DB for instant display (non-blocking)
+
+    // Load from local DB for all accounts (instant display)
     final localCounts = <String, int>{};
     for (final account in _accounts) {
       try {
@@ -2689,18 +2706,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         localCounts[account.id] = 0;
       }
     }
-    
+
     // Update UI immediately with local counts
     if (mounted) {
       setState(() {
         _accountUnreadCounts = localCounts;
       });
     }
-    
-    // Then refresh from API in background (non-blocking, won't block startup)
-    // Refresh all accounts in parallel - just fire off the background tasks
+
+    // Then refresh from API in background for inactive accounts only (non-blocking)
+    // Active account uses local data only - no API calls needed
     for (final account in _accounts) {
-      // Fire off background refresh for each account (non-blocking)
+      // Skip API call for active account - it uses local data only
+      if (account.id == _selectedAccountId) {
+        continue;
+      }
+      
+      // Fire off background refresh for inactive accounts (non-blocking)
       unawaited(() async {
         try {
           final count = await _getGmailUnreadCount(account.id);
@@ -2713,6 +2735,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Keep local count if API fails - counts already set from local DB above
         }
       }());
+    }
+  }
+
+  /// Refresh unread count for a specific account from local DB
+  Future<void> _refreshAccountUnreadCountLocal(String accountId) async {
+    try {
+      final localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      if (mounted) {
+        setState(() {
+          _accountUnreadCounts[accountId] = localCount;
+        });
+      }
+    } catch (_) {
+      // Keep existing count if refresh fails
     }
   }
 
