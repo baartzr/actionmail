@@ -387,13 +387,14 @@ class GmailSyncService {
         // Trash: add TRASH label and remove source label
         if (meta == 'SENT') return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['SENT']};
         if (meta == 'SPAM') return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['SPAM']};
+        if (meta == 'ARCHIVE') return {'addLabelIds': ['TRASH']}; // Gmail has no ARCHIVE label
         // Default to INBOX - remove INBOX and add TRASH
         return {'addLabelIds': ['TRASH'], 'removeLabelIds': ['INBOX']};
       case 'archive':
         // Archive: only applies to INBOX and SPAM - remove the respective label
         // Cannot archive SENT or TRASH emails
         if (meta == 'SENT') return {}; // SENT emails can't be archived
-        if (meta == 'TRASH') return {}; // TRASH emails can't be archived
+        if (meta == 'TRASH') return {'removeLabelIds': ['TRASH']}; // Restore from trash
         if (meta == 'SPAM') return {'removeLabelIds': ['SPAM']};
         // Default to INBOX - remove INBOX label to archive
         return {'removeLabelIds': ['INBOX']};

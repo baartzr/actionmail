@@ -184,6 +184,19 @@ class MessageRepository {
     );
   }
 
+  /// Update folder without modifying prevFolderLabel (used for ARCHIVE<->TRASH moves)
+  Future<void> updateFolderNoPrev(String messageId, String newFolderLabel) async {
+    final db = await _dbProvider.database;
+    await db.update(
+      'messages',
+      {
+        'folderLabel': newFolderLabel,
+      },
+      where: 'id=?',
+      whereArgs: [messageId],
+    );
+  }
+
   Future<void> restoreToPrev(String messageId) async {
     final db = await _dbProvider.database;
     // Set folderLabel back to prevFolderLabel (or INBOX if null), then clear prevFolderLabel

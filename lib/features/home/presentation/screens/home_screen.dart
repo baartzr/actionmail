@@ -613,77 +613,86 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
       },
       onEmailDropped: (folderId, message) async {
-        // Handle Gmail folder drops (move email to target Gmail folder)
         if (_selectedAccountId == null) return;
-        
         try {
-          // Get the appropriate callback based on target folder
+          // Optimistic UI update first
           if (folderId == 'TRASH') {
-            await MessageRepository().updateFolderWithPrev(
-              message.id,
-              'TRASH',
-              prevFolderLabel: message.folderLabel,
-            );
             if (_selectedFolder != 'TRASH') {
               ref.read(emailListProvider.notifier).removeMessage(message.id);
             } else {
               ref.read(emailListProvider.notifier).setFolder(message.id, 'TRASH');
             }
-            final src = message.folderLabel.toUpperCase();
-            _enqueueGmailUpdate('trash:$src', message.id);
+            final prev = message.folderLabel;
+            if (prev.toUpperCase() == 'ARCHIVE') {
+              // ARCHIVE -> TRASH: do not change prevFolderLabel
+              unawaited(MessageRepository().updateFolderNoPrev(message.id, 'TRASH'));
+            } else {
+              unawaited(MessageRepository().updateFolderWithPrev(
+                message.id,
+                'TRASH',
+                prevFolderLabel: prev,
+              ));
+            }
+            _enqueueGmailUpdate('trash:${prev.toUpperCase()}', message.id);
           } else if (folderId == 'ARCHIVE') {
-            await MessageRepository().updateFolderWithPrev(
-              message.id,
-              'ARCHIVE',
-              prevFolderLabel: message.folderLabel,
-            );
             if (_selectedFolder != 'ARCHIVE') {
               ref.read(emailListProvider.notifier).removeMessage(message.id);
             } else {
               ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
             }
-            final src = message.folderLabel.toUpperCase();
-            _enqueueGmailUpdate('archive:$src', message.id);
+            final prev = message.folderLabel;
+            if (prev.toUpperCase() == 'TRASH') {
+              // TRASH -> ARCHIVE: do not change prevFolderLabel
+              unawaited(MessageRepository().updateFolderNoPrev(message.id, 'ARCHIVE'));
+            } else {
+              unawaited(MessageRepository().updateFolderWithPrev(
+                message.id,
+                'ARCHIVE',
+                prevFolderLabel: prev,
+              ));
+            }
+            _enqueueGmailUpdate('archive:${prev.toUpperCase()}', message.id);
           } else if (folderId == 'INBOX') {
-            // Move to Inbox (from SPAM or Restore)
-            await MessageRepository().updateFolderWithPrev(
-              message.id,
-              'INBOX',
-              prevFolderLabel: message.folderLabel,
-            );
             if (_selectedFolder != 'INBOX') {
               ref.read(emailListProvider.notifier).removeMessage(message.id);
             } else {
               ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
             }
+            final prev = message.folderLabel;
+            unawaited(MessageRepository().updateFolderWithPrev(
+              message.id,
+              'INBOX',
+              prevFolderLabel: prev,
+            ));
             _enqueueGmailUpdate('moveToInbox', message.id);
           } else {
             // Restore to previous folder (if prevFolderLabel matches target)
             final prevFolder = message.prevFolderLabel;
             if (prevFolder != null && prevFolder.toUpperCase() == folderId.toUpperCase()) {
-              await MessageRepository().restoreToPrev(message.id);
-              if (_selectedAccountId != null) {
-                final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
-                final restored = updated[message.id];
-                if (restored != null) {
-                  final dest = restored.folderLabel;
-                  if (_selectedFolder != dest) {
-                    ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  } else {
-                    ref.read(emailListProvider.notifier).setFolder(message.id, dest);
+              // Optimistic: assume restore succeeded; we'll adjust based on refreshed value
+              // Remove from current view if destination differs, else update folder
+              unawaited(() async {
+                await MessageRepository().restoreToPrev(message.id);
+                if (_selectedAccountId != null) {
+                  final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
+                  final restored = updated[message.id];
+                  if (restored != null) {
+                    final dest = restored.folderLabel;
+                    if (_selectedFolder != dest) {
+                      ref.read(emailListProvider.notifier).removeMessage(message.id);
+                    } else {
+                      ref.read(emailListProvider.notifier).setFolder(message.id, dest);
+                    }
+                    _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
                   }
-                  _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
                 }
-              }
+              }());
             }
           }
-          
           if (!context.mounted) return;
-          {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
-            );
-          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
+          );
         } catch (e) {
           debugPrint('[HomeScreen] Error moving email to Gmail folder: $e');
           if (!context.mounted) return;
@@ -1272,89 +1281,96 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Save email to local folder and move to Archive
   Future<void> _saveEmailToFolder(String folderName, MessageIndex message) async {
-    // Save email with body and attachments to local folder
-    // Then move email to Archive in Gmail
+    // Optimistic UI: reflect archive intent immediately
     if (_selectedAccountId == null) return;
-    
-    try {
-      // Get access token for downloading email body and attachments
-      final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
-      final accessToken = account?.accessToken;
-      
-      if (accessToken == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to save: No access token')),
-          );
-        }
-        return;
-      }
-      
-      // Fetch full email body
-      final gmailService = GmailSyncService();
-      final emailBody = await gmailService.getEmailBody(message.id, accessToken);
-      
-      if (emailBody == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to save: Could not fetch email body')),
-          );
-        }
-        return;
-      }
-      
-      // Save to local folder
-      final saved = await _localFolderService.saveEmailToFolder(
-        folderName: folderName,
-        message: message,
-        emailBodyHtml: emailBody,
-        accountId: _selectedAccountId!,
-        accessToken: accessToken,
-      );
-      
-      if (saved) {
-        final isArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
-        
-        if (!isArchive) {
-          // Move email to Archive in Gmail (remove primary label)
-          await MessageRepository().updateFolderWithPrev(
-            message.id,
-            'ARCHIVE',
-            prevFolderLabel: message.folderLabel,
-          );
-          
-          // Update provider state
-          ref.read(emailListProvider.notifier).removeMessage(message.id);
-          
-          // Enqueue Gmail update to remove primary label
-          final src = message.folderLabel.toUpperCase();
-          _enqueueGmailUpdate('archive:$src', message.id);
-        }
-        // If already Archive, just copy to local (no DB or Gmail update needed)
-      }
-      
-      if (mounted) {
-        if (saved) {
-          final isArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text(isArchive 
-                ? 'Email copied to "$folderName"' 
-                : 'Email saved to "$folderName" and moved to Archive')),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Failed to save email')),
-          );
-        }
-      }
-    } catch (e) {
-      debugPrint('[HomeScreen] Error saving email to folder: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
+    final wasArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
+    if (!wasArchive) {
+      // Remove from current view if not ARCHIVE; otherwise set folder to ARCHIVE
+      if (_selectedFolder != 'ARCHIVE') {
+        ref.read(emailListProvider.notifier).removeMessage(message.id);
+      } else {
+        ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
       }
     }
+
+    // Defer heavy work (token check, body fetch, file IO, DB, Gmail) until after UI paints
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        // Get access token for downloading email body and attachments
+        final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
+        final accessToken = account?.accessToken;
+        if (accessToken == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Unable to save: No access token')),
+            );
+          }
+          return;
+        }
+
+        // Fetch full email body
+        final gmailService = GmailSyncService();
+        final emailBody = await gmailService.getEmailBody(message.id, accessToken);
+        if (emailBody == null) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Unable to save: Could not fetch email body')),
+            );
+          }
+          return;
+        }
+
+        // Save to local folder
+        final saved = await _localFolderService.saveEmailToFolder(
+          folderName: folderName,
+          message: message,
+          emailBodyHtml: emailBody,
+          accountId: _selectedAccountId!,
+          accessToken: accessToken,
+        );
+
+        if (saved) {
+          if (!wasArchive) {
+            // Persist archive intent and enqueue Gmail modify
+            await MessageRepository().updateFolderWithPrev(
+              message.id,
+              'ARCHIVE',
+              prevFolderLabel: message.folderLabel,
+            );
+            final src = message.folderLabel.toUpperCase();
+            _enqueueGmailUpdate('archive:$src', message.id);
+          }
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(wasArchive
+                  ? 'Email copied to "$folderName"'
+                  : 'Email saved to "$folderName" and moved to Archive')),
+            );
+          }
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Failed to save email')),
+            );
+            // Best-effort: refresh current folder to reconcile UI if save failed
+            if (_selectedAccountId != null) {
+              unawaited(ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder));
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('[HomeScreen] Error saving email to folder: $e');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e')),
+          );
+          // Best-effort reconcile
+          if (_selectedAccountId != null) {
+            unawaited(ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder));
+          }
+        }
+      }
+    });
   }
 
   /// Move email between local folders
@@ -1449,8 +1465,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (_selectedAccountId == null) return;
     // Enqueue to DB; processing is triggered by refresh/incremental sync
     MessageRepository().enqueuePendingOp(_selectedAccountId!, messageId, action);
-    // Also trigger immediate background processing so Gmail updates quickly
-    unawaited(GmailSyncService().processPendingOps());
+    // Trigger background processing after current frame to allow optimistic UI to paint first
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(GmailSyncService().processPendingOps());
+    });
   }
 
   Widget _buildTopFilterRow() {
@@ -2146,77 +2164,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ref.read(emailListProvider.notifier).setLocalTag(message.id, state);
                 },
                 onTrash: () async {
-                  // Move to TRASH: record previous and update folder
-                  await MessageRepository().updateFolderWithPrev(
-                    message.id,
-                    'TRASH',
-                    prevFolderLabel: message.folderLabel,
-                  );
-                  // Remove from current view if not TRASH folder
+                  // Optimistic UI update first
                   if (_selectedFolder != 'TRASH') {
                     ref.read(emailListProvider.notifier).removeMessage(message.id);
                   } else {
                     ref.read(emailListProvider.notifier).setFolder(message.id, 'TRASH');
                   }
-                  // Include source label so Gmail modify removes it appropriately (INBOX or SENT)
                   final src = message.folderLabel.toUpperCase();
+                  if (src == 'ARCHIVE') {
+                    unawaited(MessageRepository().updateFolderNoPrev(message.id, 'TRASH'));
+                  } else {
+                    unawaited(MessageRepository().updateFolderWithPrev(
+                      message.id,
+                      'TRASH',
+                      prevFolderLabel: message.folderLabel,
+                    ));
+                  }
                   _enqueueGmailUpdate('trash:$src', message.id);
                 },
                 onArchive: () async {
-                  // Move to ARCHIVE: remove any primary label
-                  await MessageRepository().updateFolderWithPrev(
-                    message.id,
-                    'ARCHIVE',
-                    prevFolderLabel: message.folderLabel,
-                  );
+                  // Optimistic UI update first
                   if (_selectedFolder != 'ARCHIVE') {
                     ref.read(emailListProvider.notifier).removeMessage(message.id);
                   } else {
                     ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
                   }
                   final src = message.folderLabel.toUpperCase();
+                  if (src == 'TRASH') {
+                    unawaited(MessageRepository().updateFolderNoPrev(message.id, 'ARCHIVE'));
+                  } else {
+                    unawaited(MessageRepository().updateFolderWithPrev(
+                      message.id,
+                      'ARCHIVE',
+                      prevFolderLabel: message.folderLabel,
+                    ));
+                  }
                   _enqueueGmailUpdate('archive:$src', message.id);
                 },
                 onSaveToFolder: (folderName) async {
                   await _saveEmailToFolder(folderName, message);
                 },
                 onMoveToInbox: () async {
-                  // Optimistically move to INBOX: update folder immediately
-                  await MessageRepository().updateFolderWithPrev(
-                    message.id,
-                    'INBOX',
-                    prevFolderLabel: message.folderLabel,
-                  );
-                  // Remove from current view if not in INBOX folder
+                  // Optimistic UI update first
                   if (_selectedFolder != 'INBOX') {
                     ref.read(emailListProvider.notifier).removeMessage(message.id);
                   } else {
                     ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
                   }
-                  // Gmail label change in background
+                  unawaited(MessageRepository().updateFolderWithPrev(
+                    message.id,
+                    'INBOX',
+                    prevFolderLabel: message.folderLabel,
+                  ));
                   _enqueueGmailUpdate('moveToInbox', message.id);
                 },
                 onRestore: () async {
-                  // Restore to previous folder
-                  await MessageRepository().restoreToPrev(message.id);
-                  // Fetch updated message to know the restored folder
-                  if (_selectedAccountId != null) {
-                    final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
-                    final restored = updated[message.id];
-                    if (restored != null) {
-                      final dest = restored.folderLabel;
-                      if (_selectedFolder != dest) {
-                        ref.read(emailListProvider.notifier).removeMessage(message.id);
-                      } else {
-                        ref.read(emailListProvider.notifier).setFolder(message.id, dest);
+                  // Optimistic: remove from current view immediately; background restore will adjust
+                  ref.read(emailListProvider.notifier).removeMessage(message.id);
+                  unawaited(() async {
+                    await MessageRepository().restoreToPrev(message.id);
+                    if (_selectedAccountId != null) {
+                      final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
+                      final restored = updated[message.id];
+                      if (restored != null) {
+                        final dest = restored.folderLabel;
+                        if (_selectedFolder == dest) {
+                          ref.read(emailListProvider.notifier).setFolder(message.id, dest);
+                        }
+                        _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
                       }
-                      _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
-                    } else {
-                      ref.read(emailListProvider.notifier).removeMessage(message.id);
                     }
-                  } else {
-                    ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  }
+                  }());
                 },
                 onActionUpdated: (date, text, {bool? actionComplete}) async {
                   // Capture original detected action for feedback
