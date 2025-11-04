@@ -1,8 +1,13 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:actionmail/firebase_options.dart';
+import 'package:actionmail/services/sync/firebase_sync_service.dart';
+import 'package:actionmail/services/auth/google_auth_service.dart';
 
 /// Provider for Gmail sync service
 final gmailSyncServiceProvider = Provider<GmailSyncService>((ref) {
@@ -28,6 +33,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   bool _isInitialSyncing = false;
   bool _isViewingLocalFolder = false; // Track if viewing local folder (prevents sync overwrites)
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
+  static bool _firebaseInitStarted = false;
 
   EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading());
 
@@ -43,8 +49,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // ignore: avoid_print
         print('[sync] loadEmails account=$accountId folder=$folderLabel (local first)');
         _ref.read(emailLoadingLocalProvider.notifier).state = true;
+        final t0 = DateTime.now();
         final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+        final dt = DateTime.now().difference(t0).inMilliseconds;
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('[perf] loadLocal($_folderLabel) returned ${local.length} in ${dt}ms');
+        }
         state = AsyncValue.data(local);
+        // Start Firebase init in background after local emails are visible
+        unawaited(_startFirebaseAfterLocalLoad(accountId));
         _ref.read(emailLoadingLocalProvider.notifier).state = false;
       } else {
         state = const AsyncValue.data([]);
@@ -58,6 +72,40 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     unawaited(_syncInboxOnStartup(accountId));
   }
 
+  Future<void> _startFirebaseAfterLocalLoad(String accountId) async {
+    if (_firebaseInitStarted) return;
+    _firebaseInitStarted = true;
+    try {
+      final t0 = DateTime.now();
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('[FirebaseInit] Firebase.initializeApp completed in ${ms}ms (post-local-load)');
+      }
+      final syncService = FirebaseSyncService();
+      final initialized = await syncService.initialize();
+      final enabled = await syncService.isSyncEnabled();
+      if (initialized && enabled) {
+        // Use account email as user ID
+        final acct = await GoogleAuthService().ensureValidAccessToken(accountId);
+        final email = acct?.email;
+        if (email != null && email.isNotEmpty) {
+          await syncService.initializeUser(email);
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('[FirebaseInit] Firebase user initialized for $email');
+          }
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('[FirebaseInit] Post-local-load initialization error: $e');
+      }
+    }
+  }
+
   /// Load emails for a folder: only reload from local DB, no sync
   Future<void> loadFolder(String accountId, {String? folderLabel}) async {
     _currentAccountId = accountId;
@@ -69,7 +117,13 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // ignore: avoid_print
       print('[sync] loadFolder account=$accountId folder=$_folderLabel');
       _ref.read(emailLoadingLocalProvider.notifier).state = true;
+      final t0 = DateTime.now();
       final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+      final dt = DateTime.now().difference(t0).inMilliseconds;
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('[perf] loadFolder $_folderLabel returned ${local.length} in ${dt}ms');
+      }
       state = AsyncValue.data(local);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -87,7 +141,13 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // ignore: avoid_print
       print('[sync] refresh account=$accountId folder=$_folderLabel');
       _ref.read(emailLoadingLocalProvider.notifier).state = true;
+      final t0 = DateTime.now();
       final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+      final dt = DateTime.now().difference(t0).inMilliseconds;
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('[perf] refresh loadLocal $_folderLabel returned ${local.length} in ${dt}ms');
+      }
       state = AsyncValue.data(local);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -118,8 +178,14 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // Reload Inbox from local DB to show updated emails
         // Only update if we're viewing INBOX and NOT viewing a local folder
         if (_folderLabel == 'INBOX' && !_isViewingLocalFolder) {
+          final t0 = DateTime.now();
           final local = await _syncService.loadLocal(_currentAccountId!, folderLabel: 'INBOX');
           state = AsyncValue.data(local);
+          final dt = DateTime.now().difference(t0).inMilliseconds;
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('[perf] incremental reload INBOX ${local.length} in ${dt}ms');
+          }
           final syncDuration = DateTime.now().difference(syncStart);
           // ignore: avoid_print
           print('[sync] incremental done count=${local.length}, total time=${syncDuration.inMilliseconds}ms');
@@ -181,10 +247,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // Reload from local DB after incremental sync to show updated emails in UI
         // Only update if we're viewing INBOX and NOT viewing a local folder
         if (_currentAccountId == accountId && _folderLabel == 'INBOX' && !_isViewingLocalFolder) {
+          final t0 = DateTime.now();
           final local = await _syncService.loadLocal(accountId, folderLabel: 'INBOX');
           // ignore: avoid_print
           print('[sync] incremental sync done, reloading INBOX, count=${local.length}');
           state = AsyncValue.data(local);
+          final dt = DateTime.now().difference(t0).inMilliseconds;
+          if (kDebugMode) {
+            // ignore: avoid_print
+            print('[perf] post-incremental reload INBOX in ${dt}ms');
+          }
         }
       } else {
         // If no historyID: do initial full sync for all folders sequentially
@@ -198,10 +270,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
             await _syncService.syncMessages(accountId, folderLabel: folder);
             // After each folder sync, reload current folder from local DB to show updated emails in UI
             if (_currentAccountId == accountId) {
+              final t0 = DateTime.now();
               final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
               // ignore: avoid_print
               print('[sync] initial sync: synced $folder, reloading $_folderLabel, count=${local.length}');
               state = AsyncValue.data(local);
+              final dt = DateTime.now().difference(t0).inMilliseconds;
+              if (kDebugMode) {
+                // ignore: avoid_print
+                print('[perf] initial sync reload $_folderLabel in ${dt}ms');
+              }
             }
           }
         } finally {
@@ -255,10 +333,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       
       // Reload local for current folder only if still on same folder
       if (_currentAccountId == accountId && _folderLabel == currentFolder) {
+        final t0 = DateTime.now();
         final local = await _syncService.loadLocal(accountId, folderLabel: currentFolder);
         state = AsyncValue.data(local);
         // ignore: avoid_print
         print('[sync] sync current done count=${local.length}');
+        final dt = DateTime.now().difference(t0).inMilliseconds;
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('[perf] sync current reload $currentFolder in ${dt}ms');
+        }
       }
       
       // Turn off loading indicator
@@ -339,10 +423,13 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       final idx = list.indexWhere((m) => m.id == messageId);
       if (idx != -1) {
         final updated = List<MessageIndex>.from(list);
+        // Determine if action exists (has date or text)
+        final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
         updated[idx] = updated[idx].copyWith(
           actionDate: actionDate,
           actionInsightText: actionText,
           actionComplete: actionComplete,
+          hasAction: hasAction,
         );
         state = AsyncValue.data(updated);
       }

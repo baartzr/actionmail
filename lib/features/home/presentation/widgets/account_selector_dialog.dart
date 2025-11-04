@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
@@ -100,13 +101,13 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final isMobile = Platform.isAndroid || Platform.isIOS;
     return LayoutBuilder(
       builder: (context, constraints) {
-        // final isDesktop = constraints.maxWidth >= 900; // not used
         return AppWindowDialog(
           title: 'Select Account',
-          size: AppWindowSize.small,
-          height: MediaQuery.of(context).size.height * 0.8,
+          size: isMobile ? AppWindowSize.large : AppWindowSize.small,
+          height: isMobile ? null : MediaQuery.of(context).size.height * 0.8,
           bodyPadding: EdgeInsets.zero,
           child: _loading
               ? const Center(child: CircularProgressIndicator())

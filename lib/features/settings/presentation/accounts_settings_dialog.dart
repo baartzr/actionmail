@@ -289,15 +289,21 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           ),
                           const SizedBox(height: 12),
                           FilledButton.icon(
+                            icon: const Icon(Icons.delete_forever),
+                            label: const Text('Delete Database'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: theme.colorScheme.error,
+                              foregroundColor: theme.colorScheme.onError,
+                            ),
                             onPressed: () async {
                               final scaffoldMessenger = ScaffoldMessenger.of(context);
                               final emailListRef = ref;
                               final confirmed = await showDialog<bool>(
                                 context: context,
                                 builder: (ctx) => AlertDialog(
-                                  title: const Text('Clear Database'),
+                                  title: const Text('Delete Database'),
                                   content: const Text(
-                                    'Are you sure you want to clear all emails from the database? This action cannot be undone.',
+                                    'This will completely delete the database file for a fresh start. You will need to re-sync all emails. Continue?',
                                   ),
                                   actions: [
                                     TextButton(
@@ -306,16 +312,20 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                     ),
                                     FilledButton(
                                       onPressed: () => Navigator.of(ctx).pop(true),
-                                      child: const Text('Clear'),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: Theme.of(ctx).colorScheme.error,
+                                        foregroundColor: Theme.of(ctx).colorScheme.onError,
+                                      ),
+                                      child: const Text('Delete'),
                                     ),
                                   ],
                                 ),
                               );
                               if (confirmed == true && mounted) {
-                                await MessageRepository().clearAll();
+                                await MessageRepository().deleteDatabase();
                                 if (!mounted) return;
                                 scaffoldMessenger.showSnackBar(
-                                  const SnackBar(content: Text('Database cleared')),
+                                  const SnackBar(content: Text('Database file deleted. Restart the app for a fresh start.')),
                                 );
                                 // Refresh email list if there's an active account
                                 final accounts = await GoogleAuthService().loadAccounts();
@@ -325,12 +335,6 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 }
                               }
                             },
-                            icon: const Icon(Icons.delete_sweep),
-                            label: const Text('Clear Database'),
-                            style: FilledButton.styleFrom(
-                              backgroundColor: theme.colorScheme.error,
-                              foregroundColor: theme.colorScheme.onError,
-                            ),
                           ),
                         ],
                       ),

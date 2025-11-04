@@ -23,6 +23,7 @@ class MessageIndex {
   final double? actionConfidence;
   final String? actionInsightText;
   final bool actionComplete; // Whether the action is marked as complete
+  final bool hasAction; // Whether this message has an action (date or text)
   final bool isRead;
   final bool isStarred;
   final bool isImportant;
@@ -50,6 +51,7 @@ class MessageIndex {
     this.actionConfidence,
     this.actionInsightText,
     this.actionComplete = false,
+    this.hasAction = false,
     this.isRead = false,
     this.isStarred = false,
     this.isImportant = false,
@@ -89,6 +91,7 @@ class MessageIndex {
     double? actionConfidence,
     String? actionInsightText,
     bool? actionComplete,
+    bool? hasAction,
     bool? isRead,
     bool? isStarred,
     bool? isImportant,
@@ -116,6 +119,7 @@ class MessageIndex {
       actionConfidence: actionConfidence ?? this.actionConfidence,
       actionInsightText: actionInsightText ?? this.actionInsightText,
       actionComplete: actionComplete ?? this.actionComplete,
+      hasAction: hasAction ?? this.hasAction,
       isRead: isRead ?? this.isRead,
       isStarred: isStarred ?? this.isStarred,
       isImportant: isImportant ?? this.isImportant,

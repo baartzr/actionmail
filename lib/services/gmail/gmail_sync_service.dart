@@ -590,7 +590,7 @@ class GmailSyncService {
       
       // === ACTION DETECTION ===
       // Skip if email already has an action (don't overwrite user edits)
-      if (existing == null || existing.actionDate == null) {
+      if (existing == null || !existing.hasAction) {
         // Quick check: is this an action candidate? (lightweight, no body download)
         final isActionCandidate = ActionExtractor.isActionCandidate(subj, snippet);
         

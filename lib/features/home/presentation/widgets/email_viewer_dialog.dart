@@ -7,6 +7,25 @@ import 'package:actionmail/features/home/presentation/widgets/compose_email_dial
 import 'package:actionmail/services/local_folders/local_folder_service.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+import 'package:open_file/open_file.dart';
+import 'dart:io';
+
+/// Information about an attachment
+class AttachmentInfo {
+  final String filename;
+  final String mimeType;
+  final String attachmentId;
+  final int? size;
+
+  AttachmentInfo({
+    required this.filename,
+    required this.mimeType,
+    required this.attachmentId,
+    this.size,
+  });
+}
 
 /// Dialog for viewing email content in a webview
 class EmailViewerDialog extends StatefulWidget {
@@ -34,6 +53,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   bool _isLoading = true;
   String? _error;
   bool _isFullscreen = false;
+  List<AttachmentInfo> _attachments = [];
 
   @override
   void initState() {
@@ -55,10 +75,31 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         final body = await folderService.loadEmailBody(widget.localFolderName!, widget.message.id);
         if (!mounted) return;
         if (body != null) {
+          debugPrint('[EmailViewer] Email body loaded from local folder, loading attachments...');
+          debugPrint('[EmailViewer] Message hasAttachments flag: ${widget.message.hasAttachments}');
+          
+          // Load attachments from local folder
+          final localAttachments = await folderService.loadAttachments(widget.localFolderName!, widget.message.id);
+          debugPrint('[EmailViewer] loadAttachments returned ${localAttachments.length} attachments');
+          
+          final attachments = localAttachments.map((att) {
+            debugPrint('[EmailViewer] Converting attachment: ${att['filename']}');
+            return AttachmentInfo(
+              filename: att['filename'] as String,
+              mimeType: att['mimeType'] as String,
+              attachmentId: att['attachmentId'] as String,
+              size: att['size'] as int?,
+            );
+          }).toList();
+          
+          debugPrint('[EmailViewer] Created ${attachments.length} AttachmentInfo objects');
+          
           setState(() {
             _htmlContent = body;
+            _attachments = attachments;
             _isLoading = false;
           });
+          debugPrint('[EmailViewer] Loaded from local folder - found ${attachments.length} attachments, setState called');
           return;
         } else {
           setState(() {
@@ -70,9 +111,11 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       }
       
       // Otherwise load from Gmail API
+      debugPrint('[EmailViewer] Starting to load email ${widget.message.id} from Gmail API');
       final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
       final accessToken = account?.accessToken;
       if (accessToken == null || accessToken.isEmpty) {
+        debugPrint('[EmailViewer] ERROR: No access token available');
         if (!mounted) return;
         setState(() {
           _error = 'No access token available';
@@ -81,10 +124,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         return;
       }
 
+      debugPrint('[EmailViewer] Fetching message from Gmail API...');
       final resp = await http.get(
         Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/${widget.message.id}?format=full'),
         headers: {'Authorization': 'Bearer $accessToken'},
       );
+      
+      debugPrint('[EmailViewer] Gmail API response status: ${resp.statusCode}');
 
       if (resp.statusCode != 200) {
         if (!mounted) return;
@@ -95,8 +141,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         return;
       }
 
+      debugPrint('[EmailViewer] Parsing response...');
       final map = jsonDecode(resp.body) as Map<String, dynamic>;
       final payload = map['payload'] as Map<String, dynamic>?;
+      debugPrint('[EmailViewer] Payload found: ${payload != null}');
       
       String? htmlBody;
       String? plainBody;
@@ -134,6 +182,133 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       }
 
       extractBody(payload ?? {});
+      debugPrint('[EmailViewer] Body extracted, starting attachment extraction...');
+      
+      // Extract real attachments from payload
+      final attachments = <AttachmentInfo>[];
+      void extractAttachments(dynamic part) {
+        if (part is! Map<String, dynamic>) return;
+        
+        final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+        var filename = part['filename'] as String?;
+        final body = part['body'] as Map<String, dynamic>?;
+        final attachmentId = body?['attachmentId'] as String?;
+        final size = body?['size'] as int?;
+        final headers = (part['headers'] as List<dynamic>?) ?? [];
+        
+        // Must have attachmentId — this marks it as an actual attachment part
+        if (attachmentId == null || attachmentId.isEmpty) {
+          // Recursively check nested parts even if this part isn't an attachment
+          final parts = part['parts'] as List<dynamic>?;
+          if (parts != null) {
+            for (final p in parts) {
+              extractAttachments(p);
+            }
+          }
+          return;
+        }
+        
+        // Build header map for easier lookup
+        final headerMap = <String, String>{};
+        for (final h in headers) {
+          if (h is Map<String, dynamic>) {
+            final name = (h['name'] as String? ?? '').toLowerCase();
+            final value = h['value'] as String? ?? '';
+            if (name.isNotEmpty) {
+              headerMap[name] = value;
+            }
+          }
+        }
+        
+        final disp = headerMap['content-disposition'] ?? '';
+        final cid = headerMap['content-id'] ?? '';
+        final dispLower = disp.toLowerCase();
+        
+        // Skip inline parts unless explicitly marked as attachment
+        if (dispLower.contains('inline') && !dispLower.contains('attachment')) {
+          // Skip - recursively check nested parts
+          final parts = part['parts'] as List<dynamic>?;
+          if (parts != null) {
+            for (final p in parts) {
+              extractAttachments(p);
+            }
+          }
+          return;
+        }
+        
+        // Skip if has Content-ID (inline images)
+        if (cid.isNotEmpty) {
+          // Skip - recursively check nested parts
+          final parts = part['parts'] as List<dynamic>?;
+          if (parts != null) {
+            for (final p in parts) {
+              extractAttachments(p);
+            }
+          }
+          return;
+        }
+        
+        // Skip image/* types (unless explicitly marked as attachment)
+        if (mimeType.startsWith('image/')) {
+          // Only include images if explicitly marked as attachment
+          if (!dispLower.contains('attachment')) {
+            // Skip - recursively check nested parts
+            final parts = part['parts'] as List<dynamic>?;
+            if (parts != null) {
+              for (final p in parts) {
+                extractAttachments(p);
+              }
+            }
+            return;
+          }
+        }
+        
+        // Determine the filename - extract from headers if not present
+        if (filename == null || filename.isEmpty) {
+          // Try to extract from Content-Disposition header
+          final matchFilename = RegExp(r'filename="?([^";]+)"?', caseSensitive: false).firstMatch(disp);
+          if (matchFilename != null) {
+            filename = matchFilename.group(1)?.trim();
+          } else {
+            // Try Content-Type header
+            final contentType = headerMap['content-type'] ?? '';
+            final matchName = RegExp(r'name="?([^";]+)"?', caseSensitive: false).firstMatch(contentType);
+            if (matchName != null) {
+              filename = matchName.group(1)?.trim();
+            }
+          }
+        }
+        
+        // Must have filename to be considered an attachment
+        if (filename == null || filename.isEmpty) {
+          // Skip - recursively check nested parts
+          final parts = part['parts'] as List<dynamic>?;
+          if (parts != null) {
+            for (final p in parts) {
+              extractAttachments(p);
+            }
+          }
+          return;
+        }
+        
+        // This is a real attachment
+        attachments.add(AttachmentInfo(
+          filename: filename,
+          mimeType: mimeType,
+          attachmentId: attachmentId,
+          size: size,
+        ));
+        
+        // Recursively check nested parts
+        final parts = part['parts'] as List<dynamic>?;
+        if (parts != null) {
+          for (final p in parts) {
+            extractAttachments(p);
+          }
+        }
+      }
+      
+      extractAttachments(payload ?? {});
 
       // Prefer HTML over plain text
       final bodyContent = htmlBody ?? plainBody ?? widget.message.snippet ?? 'No content available';
@@ -213,9 +388,24 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       if (!mounted) return;
       setState(() {
         _htmlContent = fullHtml;
+        _attachments = attachments;
         _isLoading = false;
       });
-    } catch (e) {
+      
+      // Debug: Print attachment count
+      debugPrint('[EmailViewer] Attachment extraction complete for message ${widget.message.id}');
+      debugPrint('[EmailViewer]   hasAttachments flag: ${widget.message.hasAttachments}');
+      debugPrint('[EmailViewer]   Found ${attachments.length} real attachments');
+      if (attachments.isNotEmpty) {
+        for (final att in attachments) {
+          debugPrint('[EmailViewer]     - ${att.filename} (${att.mimeType}, ${att.size ?? 0} bytes, attachmentId: ${att.attachmentId})');
+        }
+      } else if (widget.message.hasAttachments) {
+        debugPrint('[EmailViewer]   WARNING: Message has hasAttachments=true but no real attachments found!');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('[EmailViewer] ERROR loading email: $e');
+      debugPrint('[EmailViewer] Stack trace: $stackTrace');
       if (!mounted) return;
       setState(() {
         _error = 'Error loading email: $e';
@@ -244,6 +434,141 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     if (match != null) return match.group(1)!.trim();
     if (from.contains('@')) return from.trim();
     return '';
+  }
+
+  Widget _buildAttachmentChip(AttachmentInfo attachment) {
+    final theme = Theme.of(context);
+    
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ActionChip(
+        avatar: Icon(
+          Icons.insert_drive_file,
+          size: 18,
+          color: theme.colorScheme.primary,
+        ),
+        label: Text(
+          attachment.filename,
+          style: theme.textTheme.bodySmall,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        onPressed: () => _downloadAttachment(attachment),
+        backgroundColor: theme.colorScheme.surfaceContainerHighest,
+        side: BorderSide(
+          color: theme.colorScheme.outline.withValues(alpha: 0.2),
+          width: 1,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _downloadAttachment(AttachmentInfo attachment) async {
+    try {
+      // If viewing from local folder, open the file directly
+      if (widget.localFolderName != null) {
+        final folderService = LocalFolderService();
+        final localPath = await folderService.getAttachmentPath(
+          widget.localFolderName!,
+          widget.message.id,
+          attachment.attachmentId,
+        );
+        
+        if (localPath != null) {
+          // Open the file directly from local folder
+          final result = await OpenFile.open(localPath);
+          if (!mounted) return;
+          
+          if (result.type != ResultType.done) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Opened: ${attachment.filename}')),
+            );
+          }
+          return;
+        } else {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Attachment file not found: ${attachment.filename}')),
+          );
+          return;
+        }
+      }
+      
+      // Otherwise download from Gmail API
+      final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
+      final accessToken = account?.accessToken;
+      if (accessToken == null || accessToken.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No access token available')),
+        );
+        return;
+      }
+
+      // Show loading indicator
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Downloading ${attachment.filename}...')),
+      );
+
+      // Download attachment from Gmail API
+      final resp = await http.get(
+        Uri.parse(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/${widget.message.id}/attachments/${attachment.attachmentId}',
+        ),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+
+      if (resp.statusCode != 200) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to download attachment: ${resp.statusCode}')),
+        );
+        return;
+      }
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final fileData = data['data'] as String?;
+      if (fileData == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No attachment data received')),
+        );
+        return;
+      }
+
+      // Decode base64url
+      final bytes = base64Url.decode(fileData.replaceAll('-', '+').replaceAll('_', '/'));
+
+      // Save to downloads directory
+      final directory = await getDownloadsDirectory();
+      if (directory == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not access downloads directory')),
+        );
+        return;
+      }
+
+      final filePath = path.join(directory.path, attachment.filename);
+      final file = File(filePath);
+      await file.writeAsBytes(bytes);
+
+      // Open the file
+      final result = await OpenFile.open(filePath);
+      if (!mounted) return;
+
+      if (result.type != ResultType.done) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Downloaded: ${attachment.filename}')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error downloading attachment: $e')),
+      );
+    }
   }
 
   void _handleReply() {
@@ -361,41 +686,72 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                         ),
                       )
                     : _htmlContent != null
-                        ? InAppWebView(
-                            initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
-                            // ignore: deprecated_member_use
-                            initialOptions: InAppWebViewGroupOptions(
-                              // ignore: deprecated_member_use
-                              crossPlatform: InAppWebViewOptions(
-                                useShouldOverrideUrlLoading: true,
-                                mediaPlaybackRequiresUserGesture: false,
-                                supportZoom: true,
-                                javaScriptEnabled: true,
+                        ? Column(
+                            children: [
+                              // Attachments section
+                              if (_attachments.isNotEmpty)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                    border: Border(
+                                      bottom: BorderSide(
+                                        color: Theme.of(context).dividerColor,
+                                        width: 1,
+                                      ),
+                                    ),
+                                  ),
+                                  child: Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: SingleChildScrollView(
+                                      scrollDirection: Axis.horizontal,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              // Email content
+                              Expanded(
+                                child: InAppWebView(
+                                  initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                                  // ignore: deprecated_member_use
+                                  initialOptions: InAppWebViewGroupOptions(
+                                    // ignore: deprecated_member_use
+                                    crossPlatform: InAppWebViewOptions(
+                                      useShouldOverrideUrlLoading: true,
+                                      mediaPlaybackRequiresUserGesture: false,
+                                      supportZoom: true,
+                                      javaScriptEnabled: true,
+                                    ),
+                                    // ignore: deprecated_member_use
+                                    android: AndroidInAppWebViewOptions(
+                                      useHybridComposition: true,
+                                    ),
+                                    // ignore: deprecated_member_use
+                                    ios: IOSInAppWebViewOptions(
+                                      allowsInlineMediaPlayback: true,
+                                    ),
+                                  ),
+                                  onWebViewCreated: (controller) {
+                                    // Controller stored for potential future use
+                                    // ignore: unused_local_variable
+                                    _webViewController = controller;
+                                  },
+                                  shouldOverrideUrlLoading: (controller, navigationAction) async {
+                                    // Open external links in default browser
+                                    final url = navigationAction.request.url;
+                                    if (url != null && (url.scheme == 'http' || url.scheme == 'https')) {
+                                      // Allow navigation within the email HTML (like images, anchors)
+                                      // but we could block external links if desired
+                                      return NavigationActionPolicy.ALLOW;
+                                    }
+                                    return NavigationActionPolicy.CANCEL;
+                                  },
+                                ),
                               ),
-                              // ignore: deprecated_member_use
-                              android: AndroidInAppWebViewOptions(
-                                useHybridComposition: true,
-                              ),
-                              // ignore: deprecated_member_use
-                              ios: IOSInAppWebViewOptions(
-                                allowsInlineMediaPlayback: true,
-                              ),
-                            ),
-                            onWebViewCreated: (controller) {
-                              // Controller stored for potential future use
-                              // ignore: unused_local_variable
-                              _webViewController = controller;
-                            },
-                            shouldOverrideUrlLoading: (controller, navigationAction) async {
-                              // Open external links in default browser
-                              final url = navigationAction.request.url;
-                              if (url != null && (url.scheme == 'http' || url.scheme == 'https')) {
-                                // Allow navigation within the email HTML (like images, anchors)
-                                // but we could block external links if desired
-                                return NavigationActionPolicy.ALLOW;
-                              }
-                              return NavigationActionPolicy.CANCEL;
-                            },
+                            ],
                           )
                         : const Center(child: Text('No content available')),
     );

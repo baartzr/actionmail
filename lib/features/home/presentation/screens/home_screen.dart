@@ -17,6 +17,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:flutter/foundation.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
@@ -47,6 +48,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   String? _selectedAccountId;
   List<GoogleAccount> _accounts = [];
   bool _initializedFromRoute = false;
+  bool _isOpeningAccountDialog = false;
+  bool _isAccountsRefreshing = false;
+  DateTime? _lastAccountTap;
   
   // Selected local state filter: null (show all), 'Personal', or 'Business'
   String? _selectedLocalState;
@@ -67,13 +71,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   final FirebaseSyncService _firebaseSync = FirebaseSyncService();
   final LocalFolderService _localFolderService = LocalFolderService();
 
-  Future<void> _loadAccounts() async {
+  // Lightweight accounts load that does NOT touch Firebase sync
+  Future<void> _loadAccountsLight() async {
     final svc = GoogleAuthService();
     final list = await svc.loadAccounts();
     if (!mounted) return;
     setState(() {
       _accounts = list;
     });
+  }
+
+  Future<void> _loadAccounts() async {
+    if (_isAccountsRefreshing) return;
+    _isAccountsRefreshing = true;
+    try {
+      final svc = GoogleAuthService();
+      final list = await svc.loadAccounts();
+      if (!mounted) return;
+      setState(() {
+        _accounts = list;
+      });
     
     // Initialize Firebase sync if enabled and an account is selected
     final syncEnabled = await _firebaseSync.isSyncEnabled();
@@ -103,6 +120,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } else if (syncEnabled && _selectedAccountId == null) {
       // No account selected - stop Firebase sync
       await _firebaseSync.initializeUser(null);
+    }
+    } finally {
+      _isAccountsRefreshing = false;
     }
   }
 
@@ -146,25 +166,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _showAccountSelectorDialog() async {
-    await _loadAccounts();
-    if (!mounted) return;
-    final selectedAccount = await showDialog<String>(
-      context: context,
-      builder: (context) => AccountSelectorDialog(
-        accounts: _accounts,
-        selectedAccountId: _selectedAccountId,
-      ),
-    );
-    // Reload accounts to ensure we have the latest list (including newly added accounts)
-    await _loadAccounts();
-    if (!mounted) return;
-    if (selectedAccount != null) {
+    final now = DateTime.now();
+    if (_lastAccountTap != null && now.difference(_lastAccountTap!).inMilliseconds < 200) {
+      return;
+    }
+    _lastAccountTap = now;
+    if (_isOpeningAccountDialog) return;
+    setState(() { _isOpeningAccountDialog = true; });
+    try {
+      // Ensure we have an account list, but don't block dialog on Firebase sync
+      if (_accounts.isEmpty) {
+        await _loadAccountsLight();
+      }
+      if (!mounted) return;
+      final selectedAccount = await showDialog<String>(
+        context: context,
+        builder: (context) => AccountSelectorDialog(
+          accounts: _accounts,
+          selectedAccountId: _selectedAccountId,
+        ),
+      );
+      // Kick off a background refresh for accounts (includes Firebase wiring) without blocking UI
+      // ignore: unawaited_futures
+      _loadAccounts();
+      if (!mounted) return;
+      if (selectedAccount != null) {
       // Verify the account still exists in the list
       if (_accounts.any((acc) => acc.id == selectedAccount)) {
         setState(() {
           _selectedAccountId = selectedAccount;
         });
         await _saveLastActiveAccount(selectedAccount);
+          if (kDebugMode) {
+            debugPrint('[HomeScreen] Account selected: $selectedAccount');
+          }
         
         // Re-initialize Firebase sync with the new account's email
         final syncEnabled = await _firebaseSync.isSyncEnabled();
@@ -198,6 +233,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _selectedAccountId = null;
         });
         ref.read(emailListProvider.notifier).clearEmails();
+      }
+    }
+    } finally {
+      if (mounted) {
+        setState(() { _isOpeningAccountDialog = false; });
+      } else {
+        _isOpeningAccountDialog = false;
       }
     }
   }
@@ -276,12 +318,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             ),
                             const SizedBox(width: 16),
                             TextButton.icon(
-                              onPressed: _showAccountSelectorDialog,
-                              icon: Icon(
-                                Icons.account_circle,
-                                size: 18,
-                                color: Theme.of(context).appBarTheme.foregroundColor,
-                              ),
+                              onPressed: _isOpeningAccountDialog ? null : _showAccountSelectorDialog,
+                              icon: _isOpeningAccountDialog
+                                  ? SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Theme.of(context).appBarTheme.foregroundColor,
+                                      ),
+                                    )
+                                  : Icon(
+                                      Icons.account_circle,
+                                      size: 18,
+                                      color: Theme.of(context).appBarTheme.foregroundColor,
+                                    ),
                               label: Text(
                                 _selectedAccountId != null && _accounts.isNotEmpty
                                     ? _accounts.firstWhere((acc) => acc.id == _selectedAccountId, orElse: () => _accounts.first).email
@@ -1417,7 +1468,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 final now = DateTime.now();
                 final today = DateTime(now.year, now.month, now.day);
                 for (final m in emails) {
-                  if (m.actionDate == null) continue;
                   // Filter by Personal/Business selection
                   if (_selectedLocalState != null && m.localTagPersonal != _selectedLocalState) {
                     continue;
@@ -1426,14 +1476,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   if (m.actionComplete) {
                     continue;
                   }
-                  final local = m.actionDate!.toLocal();
-                  final d = DateTime(local.year, local.month, local.day);
-                  if (d == today) {
-                    countToday++;
-                  } else if (d.isAfter(today)) {
-                    countUpcoming++;
+                  // Only include messages that have an action
+                  if (!m.hasAction) {
+                    continue;
+                  }
+                  // Categorize based on date if available
+                  if (m.actionDate != null) {
+                    final local = m.actionDate!.toLocal();
+                    final d = DateTime(local.year, local.month, local.day);
+                    if (d == today) {
+                      countToday++;
+                    } else if (d.isAfter(today)) {
+                      countUpcoming++;
+                    } else {
+                      countOverdue++;
+                    }
                   } else {
-                    countOverdue++;
+                    // Messages with action text but no date - count as "today" for now
+                    // (or we could add a separate "unscheduled" count)
+                    countToday++;
                   }
                 }
               });
@@ -1964,9 +2025,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           }
           // Action summary filter
           if (_selectedActionFilter != null) {
-            if (m.actionDate == null) return false;
+            // Only include messages that have an action
+            if (!m.hasAction) return false;
             // Exclude completed actions
             if (m.actionComplete) return false;
+            // For date-based filtering, we need a date
+            if (m.actionDate == null) return false;
             final now = DateTime.now();
             final today = DateTime(now.year, now.month, now.day);
             final local = m.actionDate!.toLocal();
@@ -2156,7 +2220,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 },
                 onActionUpdated: (date, text, {bool? actionComplete}) async {
                   // Capture original detected action for feedback
-                  final originalAction = message.actionDate != null || message.actionInsightText != null
+                  final originalAction = message.hasAction
                       ? ActionResult(
                           actionDate: message.actionDate ?? DateTime.now(),
                           confidence: message.actionConfidence ?? 0.0,

@@ -46,7 +46,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
                   // Only show INBOX emails
                   if (m.folderLabel != 'INBOX') return false;
                   // Must have an action
-                  if (m.actionDate == null && (m.actionInsightText == null || m.actionInsightText!.isEmpty)) return false;
+                  if (!m.hasAction) return false;
                   // Apply Personal/Business filter if set
                   if (_filterLocal == null) return true;
                   return m.localTagPersonal == _filterLocal;
@@ -245,7 +245,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
               ),
               actions: [
                 // Remove button (only show if action exists)
-                if (message.actionDate != null || message.actionInsightText != null)
+                if (message.hasAction)
                   TextButton.icon(
                     onPressed: () async {
                       final confirmed = await showDialog<bool>(
@@ -308,7 +308,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
       final actionText = result['actionText'] as String?;
       
       // Capture original detected action for feedback
-      final originalAction = message.actionDate != null || message.actionInsightText != null
+      final originalAction = message.hasAction
           ? ActionResult(
               actionDate: message.actionDate ?? DateTime.now(),
               confidence: message.actionConfidence ?? 0.0,

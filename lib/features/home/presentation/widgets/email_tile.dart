@@ -62,8 +62,8 @@ class _EmailTileState extends State<EmailTile> {
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
     _actionComplete = widget.message.actionComplete;
-    // Default: show action if action date exists, hide if no action date
-    _showActionLine = widget.message.actionDate != null;
+    // Default: show action if message has an action
+    _showActionLine = widget.message.hasAction;
   }
 
   bool _hasLeftActions(String folder) {
@@ -523,7 +523,9 @@ class _EmailTileState extends State<EmailTile> {
                         constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                         icon: Icon(
                           _showActionLine ? Icons.visibility : Icons.visibility_off,
-                          color: theme.colorScheme.onSurfaceVariant,
+                          color: _showActionLine
+                              ? theme.colorScheme.primary
+                              : theme.colorScheme.onSurfaceVariant,
                         ),
                         onPressed: () {
                           setState(() {
@@ -580,7 +582,6 @@ class _EmailTileState extends State<EmailTile> {
                         Expanded(
                           child: Builder(
                             builder: (context) {
-                              final hasAction = _actionDate != null || (_actionText != null && _actionText!.trim().isNotEmpty);
                               final isInbox = widget.message.folderLabel == 'INBOX';
                               final baseStyle = theme.textTheme.bodySmall?.copyWith(
                                 color: isOverdue
@@ -590,7 +591,7 @@ class _EmailTileState extends State<EmailTile> {
                               );
                               
                               // Show full action UI
-                              if (!hasAction) {
+                              if (!widget.message.hasAction) {
                                 return GestureDetector(
                                   onTap: isInbox ? _openEditActionDialog : null,
                                   behavior: HitTestBehavior.opaque,
@@ -712,6 +713,8 @@ class _EmailTileState extends State<EmailTile> {
     
     return Draggable<MessageIndex>(
       data: widget.message,
+      // Use pointerDragAnchorStrategy for consistent cursor alignment regardless of where drag starts
+      dragAnchorStrategy: pointerDragAnchorStrategy,
       onDragStarted: () {
         // Notify parent that drag started
         // We'll use a notification or callback if needed
@@ -726,10 +729,18 @@ class _EmailTileState extends State<EmailTile> {
           opacity: 0.8,
           child: Container(
             width: 300,
+            constraints: const BoxConstraints(maxWidth: 300),
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.surface,
               borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  blurRadius: 8,
+                  offset: const Offset(0, 4),
+                ),
+              ],
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -793,24 +804,23 @@ class _EmailTileState extends State<EmailTile> {
     final cs = theme.colorScheme;
     final isPersonal = _localState == 'Personal';
     final isBusiness = _localState == 'Business';
-    Color colorFor(bool selected) => selected ? cs.primary : cs.onSurfaceVariant;
     
-    // Create a connected switch appearance
+    // Match the appbar segmented bar style exactly
     return Container(
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(8),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: cs.outlineVariant.withValues(alpha: 0.4)),
       ),
-      padding: const EdgeInsets.all(2),
+      padding: const EdgeInsets.all(1),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Material(
-            color: isPersonal ? cs.primary : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            color: isPersonal ? cs.primary : cs.surface,
+            borderRadius: BorderRadius.circular(8),
             child: InkWell(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
               onTap: () {
                 setState(() {
                   _localState = isPersonal ? null : 'Personal';
@@ -820,20 +830,20 @@ class _EmailTileState extends State<EmailTile> {
                 }
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 child: Icon(
                   isPersonal ? Icons.person : Icons.person_outline,
                   size: 20,
-                  color: isPersonal ? cs.onPrimary : colorFor(false),
+                  color: isPersonal ? cs.onPrimary : cs.onSurface,
                 ),
               ),
             ),
           ),
           Material(
-            color: isBusiness ? cs.primary : Colors.transparent,
-            borderRadius: BorderRadius.circular(6),
+            color: isBusiness ? cs.primary : cs.surface,
+            borderRadius: BorderRadius.circular(8),
             child: InkWell(
-              borderRadius: BorderRadius.circular(6),
+              borderRadius: BorderRadius.circular(8),
               onTap: () {
                 setState(() {
                   _localState = isBusiness ? null : 'Business';
@@ -843,11 +853,11 @@ class _EmailTileState extends State<EmailTile> {
                 }
               },
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 child: Icon(
                   isBusiness ? Icons.business_center : Icons.business_center_outlined,
                   size: 20,
-                  color: isBusiness ? cs.onPrimary : colorFor(false),
+                  color: isBusiness ? cs.onPrimary : cs.onSurface,
                 ),
               ),
             ),

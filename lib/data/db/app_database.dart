@@ -1,5 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart' as p;
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 
 class AppDatabase {
   static final AppDatabase _instance = AppDatabase._internal();
@@ -19,7 +21,7 @@ class AppDatabase {
     final path = p.join(dbPath, 'actionmail.db');
     return openDatabase(
       path,
-      version: 12,
+      version: 13,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -44,6 +46,7 @@ class AppDatabase {
             actionConfidence REAL,
             actionInsightText TEXT,
             actionComplete INTEGER NOT NULL DEFAULT 0,
+            hasAction INTEGER NOT NULL DEFAULT 0,
             isRead INTEGER NOT NULL,
             isStarred INTEGER NOT NULL,
             isImportant INTEGER NOT NULL,
@@ -216,6 +219,29 @@ class AppDatabase {
           }
           await batch.commit(noResult: true);
         }
+        if (oldVersion < 13) {
+          // Add hasAction field
+          await db.execute('ALTER TABLE messages ADD COLUMN hasAction INTEGER NOT NULL DEFAULT 0');
+          
+          // Set hasAction based on existing actionDate or actionInsightText
+          final rows = await db.query('messages', columns: ['id', 'actionDate', 'actionInsightText']);
+          final batch = db.batch();
+          for (final row in rows) {
+            final messageId = row['id'] as String;
+            final actionDate = row['actionDate'] as int?;
+            final actionText = row['actionInsightText'] as String?;
+            final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
+            if (hasAction) {
+              batch.update(
+                'messages',
+                {'hasAction': 1},
+                where: 'id=?',
+                whereArgs: [messageId],
+              );
+            }
+          }
+          await batch.commit(noResult: true);
+        }
       },
     );
   }
@@ -224,6 +250,21 @@ class AppDatabase {
     final db = await database;
     await db.delete('messages');
     await db.delete('pending_ops');
+  }
+
+  /// Delete the entire database file (for testing/fresh start)
+  Future<void> deleteDatabase() async {
+    if (_db != null) {
+      await _db!.close();
+      _db = null;
+    }
+    final dbPath = await getDatabasesPath();
+    final path = p.join(dbPath, 'actionmail.db');
+    final dbFile = File(path);
+    if (await dbFile.exists()) {
+      await dbFile.delete();
+      debugPrint('[AppDatabase] Deleted database file: $path');
+    }
   }
 }
 

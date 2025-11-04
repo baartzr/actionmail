@@ -341,11 +341,14 @@ class LocalFolderService {
       
       findAttachments(payload);
       
+      // Save attachment metadata to JSON file for easier retrieval
+      final attachmentsMetadata = <Map<String, dynamic>>[];
+      
       // Download each attachment
       for (final att in attachments) {
         final attachmentId = att['attachmentId'] as String;
         final filename = att['filename'] as String;
-        final sanitizedFilename = _sanitizeFilename(filename);
+        // Filename is preserved in metadata; local file uses a short fileId
         
         try {
           final attResponse = await http.get(
@@ -363,15 +366,64 @@ class LocalFolderService {
                 data.replaceAll('-', '+').replaceAll('_', '/'),
               );
               
-              final attFile = File(path.join(attachmentsDir.path, '${attachmentId}_$sanitizedFilename'));
+              // Use a hash-based filename to avoid Windows path length issues
+              // Windows MAX_PATH is 260 chars, so we need short filenames
+              // Always use a short hash-based filename to ensure path stays under limit
+              final hash = attachmentId.hashCode.abs().toRadixString(36);
+              // Use a very short filename: hash code + simple index or timestamp
+              // Keep it under 20 chars to leave room for directory path
+              String fileId = '${hash.length > 12 ? hash.substring(0, 12) : hash}_${attachments.length}';
+              
+              File attFile = File(path.join(attachmentsDir.path, fileId));
+              String fullPath = attFile.path;
+              debugPrint('[LocalFolderService] Saving attachment: $filename');
+              debugPrint('[LocalFolderService]   attachmentId length: ${attachmentId.length}');
+              debugPrint('[LocalFolderService]   Initial fileId: $fileId');
+              debugPrint('[LocalFolderService]   Initial path: $fullPath');
+              debugPrint('[LocalFolderService]   Initial path length: ${fullPath.length}');
+              
+              if (fullPath.length > 260) {
+                debugPrint('[LocalFolderService]   WARNING: Path exceeds Windows limit! Using shorter fileId');
+                // Use even shorter: just hash code
+                fileId = '${attachmentId.hashCode.abs()}';
+                attFile = File(path.join(attachmentsDir.path, fileId));
+                fullPath = attFile.path;
+                debugPrint('[LocalFolderService]   New fileId: $fileId');
+                debugPrint('[LocalFolderService]   New path: $fullPath');
+                debugPrint('[LocalFolderService]   New path length: ${fullPath.length}');
+                
+                if (fullPath.length > 260) {
+                  debugPrint('[LocalFolderService]   ERROR: Still too long! Directory path itself may be too long.');
+                  throw Exception('Attachment path too long: ${fullPath.length} chars');
+                }
+              }
+              
               await attFile.writeAsBytes(bytes);
               
-              debugPrint('[LocalFolderService] Saved attachment: $sanitizedFilename');
+              // Store metadata with fileId mapping
+              attachmentsMetadata.add({
+                'attachmentId': attachmentId,
+                'fileId': fileId, // The actual filename used on disk
+                'filename': filename, // Original filename
+                'mimeType': att['mimeType'] as String,
+                'size': att['size'] as int,
+              });
+              
+              debugPrint('[LocalFolderService] Saved attachment: $filename');
             }
           }
         } catch (e) {
           debugPrint('[LocalFolderService] Error downloading attachment $filename: $e');
         }
+      }
+      
+      // Save attachment metadata to JSON file
+      if (attachmentsMetadata.isNotEmpty) {
+        final metadataFile = File(path.join(attachmentsDir.path, 'metadata.json'));
+        await metadataFile.writeAsString(
+          jsonEncode(attachmentsMetadata),
+          encoding: utf8,
+        );
       }
     } catch (e) {
       debugPrint('[LocalFolderService] Error saving attachments: $e');
@@ -475,10 +527,43 @@ class LocalFolderService {
         return null;
       }
       
+      // First try to find fileId from metadata.json
+      final metadataFile = File(path.join(attachmentsDir.path, 'metadata.json'));
+      if (await metadataFile.exists()) {
+        try {
+          final metadataJson = await metadataFile.readAsString(encoding: utf8);
+          final metadataList = jsonDecode(metadataJson) as List<dynamic>;
+          
+          for (final att in metadataList) {
+            final attMap = att as Map<String, dynamic>;
+            if (attMap['attachmentId'] == attachmentId) {
+              final fileId = attMap['fileId'] as String? ?? attachmentId;
+              final attFile = File(path.join(attachmentsDir.path, fileId));
+              if (await attFile.exists()) {
+                return attFile.path;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('[LocalFolderService] Error reading metadata in getAttachmentPath: $e');
+        }
+      }
+      
+      // Fallback: try to find by attachmentId directly (new format)
+      final attFile = File(path.join(attachmentsDir.path, attachmentId));
+      if (await attFile.exists()) {
+        return attFile.path;
+      }
+      
+      // Fallback: try old format (attachmentId_filename)
       final entities = attachmentsDir.listSync();
       for (final entity in entities) {
-        if (entity is File && path.basename(entity.path).startsWith('${attachmentId}_')) {
-          return entity.path;
+        if (entity is File) {
+          final filename = path.basename(entity.path);
+          if (filename == 'metadata.json') continue;
+          if (filename.startsWith('${attachmentId}_') || filename == attachmentId) {
+            return entity.path;
+          }
         }
       }
       
@@ -486,6 +571,150 @@ class LocalFolderService {
     } catch (e) {
       debugPrint('[LocalFolderService] Error getting attachment path: $e');
       return null;
+    }
+  }
+  
+  /// Load attachment metadata from saved files in local folder
+  /// Returns list of attachment info with filename, size, and local file path
+  Future<List<Map<String, dynamic>>> loadAttachments(String folderName, String messageId) async {
+    try {
+      debugPrint('[LocalFolderService] loadAttachments called for folder=$folderName messageId=$messageId');
+      final emailDir = await _getEmailDirectory(folderName, messageId);
+      debugPrint('[LocalFolderService] Email directory: ${emailDir.path}');
+      
+      final attachmentsDir = Directory(path.join(emailDir.path, 'attachments'));
+      debugPrint('[LocalFolderService] Attachments directory: ${attachmentsDir.path}');
+      debugPrint('[LocalFolderService] Attachments directory exists: ${await attachmentsDir.exists()}');
+      
+      if (!await attachmentsDir.exists()) {
+        debugPrint('[LocalFolderService] Attachments directory does not exist, returning empty list');
+        return [];
+      }
+      
+      // List all files in attachments directory
+      final allEntities = attachmentsDir.listSync();
+      debugPrint('[LocalFolderService] Found ${allEntities.length} entities in attachments directory');
+      for (final entity in allEntities) {
+        debugPrint('[LocalFolderService]   - ${entity.path} (${entity is File ? "File" : "Directory"})');
+      }
+      
+      // Try to load from metadata.json first (new format)
+      final metadataFile = File(path.join(attachmentsDir.path, 'metadata.json'));
+      debugPrint('[LocalFolderService] Checking for metadata.json: ${metadataFile.path}');
+      debugPrint('[LocalFolderService] metadata.json exists: ${await metadataFile.exists()}');
+      if (await metadataFile.exists()) {
+        try {
+          final metadataJson = await metadataFile.readAsString(encoding: utf8);
+          final metadataList = jsonDecode(metadataJson) as List<dynamic>;
+          
+          debugPrint('[LocalFolderService] Found metadata.json with ${metadataList.length} attachments');
+          final attachments = <Map<String, dynamic>>[];
+          for (final att in metadataList) {
+            final attMap = att as Map<String, dynamic>;
+            final attachmentId = attMap['attachmentId'] as String;
+            final filename = attMap['filename'] as String;
+            // Use fileId if available (new format), otherwise fall back to attachmentId
+            final fileId = attMap['fileId'] as String? ?? attachmentId;
+            debugPrint('[LocalFolderService] Processing attachment: id=$attachmentId filename=$filename fileId=$fileId');
+            
+            final attFile = File(path.join(attachmentsDir.path, fileId));
+            debugPrint('[LocalFolderService]   Attachment file path: ${attFile.path}');
+            debugPrint('[LocalFolderService]   Path length: ${attFile.path.length}');
+            debugPrint('[LocalFolderService]   Attachment file exists: ${await attFile.exists()}');
+            
+            if (await attFile.exists()) {
+              // Get actual file size (may differ from saved metadata)
+              final fileStat = await attFile.stat();
+              attachments.add({
+                'attachmentId': attachmentId,
+                'filename': filename,
+                'mimeType': attMap['mimeType'] as String,
+                'size': fileStat.size,
+                'localPath': attFile.path,
+              });
+              debugPrint('[LocalFolderService]   Added attachment: $filename (${fileStat.size} bytes)');
+            } else {
+              debugPrint('[LocalFolderService]   WARNING: Attachment file not found for $attachmentId');
+            }
+          }
+          
+          debugPrint('[LocalFolderService] Returning ${attachments.length} attachments from metadata.json');
+          return attachments;
+        } catch (e, stackTrace) {
+          debugPrint('[LocalFolderService] Error reading attachment metadata: $e');
+          debugPrint('[LocalFolderService] Stack trace: $stackTrace');
+          // Fall through to old format parsing
+        }
+      }
+      
+      // Fallback: parse from old format (attachmentId_filename)
+      debugPrint('[LocalFolderService] Falling back to old format parsing');
+      final attachments = <Map<String, dynamic>>[];
+      debugPrint('[LocalFolderService] Processing ${allEntities.length} entities for old format');
+      
+      for (final entity in allEntities) {
+        if (entity is File) {
+          final filename = path.basename(entity.path);
+          // Skip metadata.json
+          if (filename == 'metadata.json') continue;
+          
+          // Try to parse old format: ${attachmentId}_$sanitizedFilename
+          // For old format, we'll use the filename as-is and try to extract extension
+          final fileStat = await entity.stat();
+          final size = fileStat.size;
+          
+          // Try to determine mime type from extension
+          String mimeType = 'application/octet-stream';
+          final extension = path.extension(filename).toLowerCase();
+          final mimeMap = {
+            '.pdf': 'application/pdf',
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.txt': 'text/plain',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.zip': 'application/zip',
+            '.rar': 'application/x-rar-compressed',
+          };
+          mimeType = mimeMap[extension] ?? 'application/octet-stream';
+          
+          // Try to extract attachmentId and original filename
+          // Old format: attachmentId_filename
+          final underscoreIndex = filename.indexOf('_');
+          if (underscoreIndex > 0) {
+            final attachmentId = filename.substring(0, underscoreIndex);
+            final originalFilename = filename.substring(underscoreIndex + 1);
+            
+            attachments.add({
+              'attachmentId': attachmentId,
+              'filename': originalFilename,
+              'mimeType': mimeType,
+              'size': size,
+              'localPath': entity.path,
+            });
+          } else {
+            // If no underscore, assume entire filename is attachmentId (new format without metadata)
+            attachments.add({
+              'attachmentId': filename,
+              'filename': filename, // Use attachmentId as filename fallback
+              'mimeType': mimeType,
+              'size': size,
+              'localPath': entity.path,
+            });
+          }
+        }
+      }
+      
+      debugPrint('[LocalFolderService] Returning ${attachments.length} attachments from old format parsing');
+      return attachments;
+    } catch (e, stackTrace) {
+      debugPrint('[LocalFolderService] Error loading attachments: $e');
+      debugPrint('[LocalFolderService] Stack trace: $stackTrace');
+      return [];
     }
   }
   
@@ -524,12 +753,5 @@ class LocalFolderService {
         .trim();
   }
   
-  /// Sanitize filename to be filesystem-safe
-  String _sanitizeFilename(String filename) {
-    // Remove invalid characters for file names
-    return filename
-        .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
-        .trim();
-  }
 }
 

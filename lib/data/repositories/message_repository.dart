@@ -87,6 +87,11 @@ class MessageRepository {
     await _dbProvider.clearAll();
   }
 
+  /// Delete the entire database file (for testing/fresh start)
+  Future<void> deleteDatabase() async {
+    await _dbProvider.deleteDatabase();
+  }
+
   Future<void> updateLocalTag(String messageId, String? localTag) async {
     final db = await _dbProvider.database;
     await db.update(
@@ -226,9 +231,12 @@ class MessageRepository {
 
   Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence, bool? actionComplete]) async {
     final db = await _dbProvider.database;
+    // Determine if action exists (has date or text)
+    final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
     final data = <String, Object?>{
       'actionDate': actionDate?.millisecondsSinceEpoch,
       'actionInsightText': actionText,
+      'hasAction': hasAction ? 1 : 0,
       if (confidence != null) 'actionConfidence': confidence,
       if (actionComplete != null) 'actionComplete': actionComplete ? 1 : 0,
     };
@@ -344,6 +352,7 @@ class MessageRepository {
       'actionConfidence': m.actionConfidence,
       'actionInsightText': m.actionInsightText,
       'actionComplete': m.actionComplete ? 1 : 0,
+      'hasAction': m.hasAction ? 1 : 0,
       'isRead': m.isRead ? 1 : 0,
       'isStarred': m.isStarred ? 1 : 0,
       'isImportant': m.isImportant ? 1 : 0,
@@ -394,6 +403,10 @@ class MessageRepository {
       actionConfidence: (row['actionConfidence'] as num?)?.toDouble(),
       actionInsightText: row['actionInsightText'] as String?,
       actionComplete: (row['actionComplete'] as int? ?? 0) == 1,
+      // hasAction: derive from actionDate/actionInsightText if column doesn't exist (for backwards compatibility)
+      hasAction: row.containsKey('hasAction') 
+          ? (row['hasAction'] as int? ?? 0) == 1
+          : (row['actionDate'] != null || (row['actionInsightText'] != null && (row['actionInsightText'] as String).isNotEmpty)),
       isRead: (row['isRead'] as int) == 1,
       isStarred: (row['isStarred'] as int) == 1,
       isImportant: (row['isImportant'] as int) == 1,

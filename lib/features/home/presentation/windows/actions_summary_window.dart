@@ -62,16 +62,24 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     final Map<String, List<MessageIndex>> messagesByAccount = {};
     
     for (final account in sortedAccounts) {
+      // Only load messages from INBOX folder
       final messages = await repo.getByFolder(account.id, 'INBOX');
-      // Filter to only messages with actions, excluding completed ones
+      // Filter to only messages with incomplete actions
+      // Also explicitly filter by folderLabel to ensure only INBOX (case-insensitive)
       final actions = messages.where((m) {
+        // Ensure message is actually in INBOX folder (case-insensitive check)
+        if (m.folderLabel.toUpperCase() != 'INBOX') {
+          return false;
+        }
+        // Only include messages that have an action
+        if (!m.hasAction) {
+          return false;
+        }
         // Exclude completed actions (using actionComplete field)
         if (m.actionComplete) {
           return false;
         }
-        // Include if has action date or action text
-        return m.actionDate != null || 
-               (m.actionInsightText != null && m.actionInsightText!.isNotEmpty);
+        return true;
       }).toList();
       
       // Initialize completion state for each message based on actionComplete field
@@ -160,7 +168,12 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     final upcoming = <MessageIndex>[];
 
     for (final msg in messages) {
-      if (msg.actionDate == null) continue;
+      // Actions without dates are included as "Today"
+      if (msg.actionDate == null) {
+        todayList.add(msg);
+        continue;
+      }
+      
       final actionDate = DateTime(
         msg.actionDate!.year,
         msg.actionDate!.month,
@@ -526,7 +539,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
               ),
               actions: [
                 // Remove button (only show if action exists)
-                if (message.actionDate != null || message.actionInsightText != null)
+                if (message.hasAction)
                   TextButton.icon(
                     onPressed: () async {
                       final confirmed = await showDialog<bool>(
@@ -589,7 +602,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       final actionText = result['actionText'] as String?;
       
       // Capture original detected action for feedback
-      final originalAction = message.actionDate != null || message.actionInsightText != null
+      final originalAction = message.hasAction
           ? ActionResult(
               actionDate: message.actionDate ?? DateTime.now(),
               confidence: message.actionConfidence ?? 0.0,

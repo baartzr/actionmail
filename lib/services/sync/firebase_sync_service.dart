@@ -29,6 +29,10 @@ class FirebaseSyncService {
   Timer? _pollTimer; // Polling timer instead of real-time listener
   final Map<String, dynamic> _initialValues = {}; // Track initial values to avoid syncing on load
   final Map<String, Map<String, dynamic>> _lastKnownDocs = {}; // Track last known document versions for polling
+  // Retry state for delayed initialization when Firebase isn't ready yet
+  Timer? _initRetryTimer;
+  int _initRetryCount = 0;
+  static const int _maxInitRetries = 5;
   // No longer need to track last processed emailMeta - each document change is independent
   // Sender preferences are no longer synced, so no tracking needed
   
@@ -102,11 +106,28 @@ class FirebaseSyncService {
       final initialized = await initialize();
       if (!initialized) {
         debugPrint('[FirebaseSync] Cannot initialize user: Firebase initialization failed');
+        // Schedule a short retry to allow background Firebase.initializeApp to complete
+        if (_initRetryCount < _maxInitRetries) {
+          _initRetryTimer?.cancel();
+          _initRetryCount++;
+          final delay = Duration(milliseconds: 300 * _initRetryCount);
+          debugPrint('[FirebaseSync] Scheduling initializeUser retry #$_initRetryCount in ${delay.inMilliseconds}ms');
+          _initRetryTimer = Timer(delay, () {
+            // Ignore await; fire and forget retry
+            initializeUser(userId);
+          });
+        } else {
+          debugPrint('[FirebaseSync] Max initializeUser retries reached; giving up');
+        }
         return;
       }
     }
     
     if (_firestore != null && enabled) {
+      // Reset retry state on success
+      _initRetryTimer?.cancel();
+      _initRetryTimer = null;
+      _initRetryCount = 0;
       _userCollection = _firestore!.collection('users');
       _userDoc = _userCollection!.doc(userId);
       _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
@@ -308,12 +329,14 @@ class FirebaseSyncService {
     
     // Check actionDate: provided if non-null OR if both are null
     final actionDateProvided = actionDate != null || localMessage?.actionDate == null;
+    bool actionDateChanged = false;
     if (actionDateProvided) {
       final initialDateStr = initial['actionDate'] as String?;
       final newDateStr = actionDate?.toIso8601String();
       if (newDateStr != initialDateStr) {
         current['actionDate'] = newDateStr;
         hasChanges = true;
+        actionDateChanged = true;
         debugPrint('[FirebaseSync]   actionDate changed: $initialDateStr -> $newDateStr');
       } else {
         debugPrint('[FirebaseSync]   actionDate unchanged: $initialDateStr');
@@ -324,17 +347,35 @@ class FirebaseSyncService {
     
     // Check actionInsightText: provided if non-null OR if both are null
     final actionTextProvided = actionInsightText != null || localMessage?.actionInsightText == null;
+    bool actionTextChanged = false;
     if (actionTextProvided) {
       final initialText = initial['actionInsightText'] as String?;
       if (actionInsightText != initialText) {
         current['actionInsightText'] = actionInsightText;
         hasChanges = true;
+        actionTextChanged = true;
         debugPrint('[FirebaseSync]   actionInsightText changed: $initialText -> $actionInsightText');
       } else {
         debugPrint('[FirebaseSync]   actionInsightText unchanged: $initialText');
       }
     } else {
       debugPrint('[FirebaseSync]   actionInsightText not provided (null param with local value), skipping');
+    }
+    
+    // Safeguard: If either actionDate or actionInsightText is being updated, ensure both are synced together
+    // to prevent inconsistent state (e.g., text without date or date without text)
+    if (actionDateChanged || actionTextChanged) {
+      // If one was updated but the other wasn't explicitly provided, include the current local value
+      if (actionDateChanged && !actionTextProvided) {
+        // Date was updated, include current text from local
+        current['actionInsightText'] = localMessage?.actionInsightText;
+        debugPrint('[FirebaseSync]   Safeguard: Including current actionInsightText: ${localMessage?.actionInsightText}');
+      }
+      if (actionTextChanged && !actionDateProvided) {
+        // Text was updated, include current date from local
+        current['actionDate'] = localMessage?.actionDate?.toIso8601String();
+        debugPrint('[FirebaseSync]   Safeguard: Including current actionDate: ${localMessage?.actionDate?.toIso8601String()}');
+      }
     }
     
     // Check actionComplete: provided if non-null OR if both are false
@@ -441,6 +482,10 @@ class FirebaseSyncService {
       final initialKey = 'emailMeta.$messageId.current';
       final lastKnown = _initialValues[initialKey] as Map<String, dynamic>?;
       
+      // Read existing local message to check if it exists and has data
+      final existingMessage = await repo.getById(messageId);
+      final hasLocalData = existingMessage != null;
+      
       final localTag = current['localTagPersonal']?.toString();
       final lastKnownTag = lastKnown?['localTagPersonal']?.toString();
       
@@ -462,12 +507,14 @@ class FirebaseSyncService {
       final lastKnownComplete = lastKnown?['actionComplete'] as bool? ?? false;
       
       // Only update if values actually changed
+      // IMPORTANT: For fresh installs (no local data), always apply Firebase data
       bool needsUpdate = false;
       String? updatedLocalTag;
       DateTime? updatedActionDate;
       String? updatedActionText;
       
-      if (localTag != lastKnownTag) {
+      // For localTag: update if changed OR if no local data exists
+      if (localTag != lastKnownTag || (!hasLocalData && localTag != null)) {
         needsUpdate = true;
         updatedLocalTag = localTag;
         await repo.updateLocalTag(messageId, localTag);
@@ -501,37 +548,57 @@ class FirebaseSyncService {
       
       // Update action if actionDate, actionText, or actionComplete is present and different
       // IMPORTANT: Only update fields that are actually in the 'current' map from Firebase
-      // Read existing local values first to preserve fields not included in the update
-      final existingMessage = await repo.getById(messageId);
+      // For fresh installs (no local data), always apply Firebase action data
       DateTime? finalActionDate = existingMessage?.actionDate;
       String? finalActionText = existingMessage?.actionInsightText;
       bool finalActionComplete = existingMessage?.actionComplete ?? false;
       
       final currentDateStr = actionDate?.toIso8601String();
       bool actionChanged = false;
+      bool dateUpdated = false;
+      bool textUpdated = false;
+      
+      // For actions: if no local action data exists, apply all Firebase action data
+      // Otherwise, only update if values changed
+      final hasLocalAction = existingMessage?.hasAction ?? false;
       
       if (current.containsKey('actionDate')) {
-        // Only update if this field is actually in the update
-        if (currentDateStr != lastKnownDateStr) {
+        // Update if changed OR if no local action data exists (even if message exists, it might not have action)
+        if (!hasLocalAction || currentDateStr != lastKnownDateStr) {
           finalActionDate = actionDate;
           actionChanged = true;
+          dateUpdated = true;
         }
       }
       
       if (current.containsKey('actionInsightText')) {
-        // Only update if this field is actually in the update
-        if (actionText != lastKnownText) {
+        // Update if changed OR if no local action data exists
+        if (!hasLocalAction || actionText != lastKnownText) {
           finalActionText = actionText;
           actionChanged = true;
+          textUpdated = true;
         }
       }
       
       if (current.containsKey('actionComplete')) {
-        // Only update if this field is actually in the update
-        if (actionComplete != lastKnownComplete) {
+        // Update if changed OR if no local action data exists
+        if (!hasLocalAction || actionComplete != lastKnownComplete) {
           finalActionComplete = actionComplete;
           actionChanged = true;
         }
+      }
+      
+      // Safeguard: If either actionDate or actionInsightText was updated, ensure both are set
+      // to prevent inconsistent state (e.g., text without date or date without text)
+      if (dateUpdated && !textUpdated) {
+        // Date was updated but text wasn't - preserve existing text
+        finalActionText = existingMessage?.actionInsightText;
+        debugPrint('[FirebaseSync]   Safeguard: Preserving existing actionInsightText: $finalActionText');
+      }
+      if (textUpdated && !dateUpdated) {
+        // Text was updated but date wasn't - preserve existing date
+        finalActionDate = existingMessage?.actionDate;
+        debugPrint('[FirebaseSync]   Safeguard: Preserving existing actionDate: $finalActionDate');
       }
       
       if (actionChanged) {

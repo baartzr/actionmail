@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/app/actionmail_app.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -9,6 +8,8 @@ import 'package:actionmail/firebase_options.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/data/db/app_database.dart';
+import 'package:flutter/foundation.dart';
+import 'package:actionmail/services/sync/firebase_init.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -28,74 +29,70 @@ void main() async {
     debugPrint('[Main] Database pre-warm error (non-fatal): $e');
   }
   
-  // Initialize Firebase (optional - app works without it)
-  // This requires:
-  // 1. google-services.json in android/app/ (✅ DONE for Android)
-  // 2. Run: flutterfire configure (REQUIRED for desktop - generates firebase_options.dart)
-  bool firebaseInitialized = false;
-  try {
-    // Initialize Firebase with platform-specific options
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-    
-    // Verify Firebase is actually initialized by checking if any apps exist
-    final apps = Firebase.apps;
-    if (apps.isEmpty) {
-      debugPrint('[Main] Firebase.initializeApp() completed but no apps found');
-      debugPrint('[Main] On desktop, you MUST run: flutterfire configure');
-      debugPrint('[Main] This generates lib/firebase_options.dart with platform-specific config');
-    } else {
-      debugPrint('[Main] Firebase app initialized: ${apps.first.name}');
-      firebaseInitialized = true;
-    }
-    
-    final syncService = FirebaseSyncService();
-    final syncInitialized = await syncService.initialize();
-    if (syncInitialized && firebaseInitialized) {
-      debugPrint('[Main] Firebase sync service initialized successfully');
-    } else {
-      if (!firebaseInitialized) {
-        debugPrint('[Main] Firebase app not initialized - sync will not work');
-      }
-      if (!syncInitialized) {
-        debugPrint('[Main] Firebase sync service initialization failed');
-      }
-    }
-    
-    // Initialize ML Action Extractor (Phase 1: Infrastructure)
+  // Kick off heavy initializations in background so UI can appear immediately
+  // This includes Firebase (optional) and ML (optional). Neither is required to show local emails.
+  // We also add timing logs to trace startup performance on desktop.
+  // ignore: unawaited_futures
+  Future<void>(() async {
+    final t0 = DateTime.now();
+    bool firebaseInitialized = false;
     try {
-      final mlInitialized = await MLActionExtractor.initialize();
-      if (mlInitialized) {
-        debugPrint('[Main] ML Action Extractor initialized successfully');
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      final apps = Firebase.apps;
+      if (apps.isEmpty) {
+        debugPrint('[Main] Firebase.initializeApp() completed but no apps found');
       } else {
-        debugPrint('[Main] ML Action Extractor initialized (model not available - using rule-based)');
+        debugPrint('[Main] Firebase app initialized: ${apps.first.name}');
+        firebaseInitialized = true;
+      }
+      final t1 = DateTime.now();
+      if (kDebugMode) {
+        debugPrint('[perf] Firebase.initializeApp took ${t1.difference(t0).inMilliseconds}ms');
+      }
+      // Signal that Firebase init attempt completed
+      FirebaseInit.instance.complete();
+
+      final syncService = FirebaseSyncService();
+      final syncInitStart = DateTime.now();
+      final syncInitialized = await syncService.initialize();
+      if (kDebugMode) {
+        debugPrint('[perf] FirebaseSyncService.initialize took ${DateTime.now().difference(syncInitStart).inMilliseconds}ms');
+      }
+      if (syncInitialized && firebaseInitialized) {
+        debugPrint('[Main] Firebase sync service initialized successfully');
+      } else {
+        if (!firebaseInitialized) {
+          debugPrint('[Main] Firebase app not initialized - sync will not work');
+        }
+        if (!syncInitialized) {
+          debugPrint('[Main] Firebase sync service initialization failed');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Main] Firebase background initialization error: $e');
+      // Still signal completion so awaiters don't hang
+      FirebaseInit.instance.complete();
+    }
+
+    // Initialize ML Action Extractor (optional) in background
+    try {
+      final mlStart = DateTime.now();
+      final mlInitialized = await MLActionExtractor.initialize();
+      final mlMs = DateTime.now().difference(mlStart).inMilliseconds;
+      if (kDebugMode) {
+        if (mlInitialized) {
+          debugPrint('[Main] ML Action Extractor initialized successfully in ${mlMs}ms');
+        } else {
+          debugPrint('[Main] ML Action Extractor initialized (rule-based) in ${mlMs}ms');
+        }
       }
     } catch (e) {
       debugPrint('[Main] ML Action Extractor initialization error: $e');
-      debugPrint('[Main] Continuing with rule-based action extraction only');
     }
-  } on PlatformException catch (e) {
-    // Firebase platform channel errors
-    debugPrint('[Main] Firebase PlatformException: $e');
-    if (e.code == 'channel-error') {
-      debugPrint('[Main] On desktop, you MUST run: flutterfire configure');
-      debugPrint('[Main] This generates lib/firebase_options.dart with platform-specific config');
-    }
-  } on MissingPluginException catch (_) {
-    // Firebase plugins not properly registered
-    debugPrint('[Main] Firebase plugins not registered');
-    debugPrint('[Main] Try: flutter clean && flutter pub get && flutter run');
-  } catch (e) {
-    // Other Firebase initialization errors
-    debugPrint('[Main] Firebase initialization error: $e');
-    debugPrint('[Main] Continuing without Firebase - sync feature will be disabled');
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      debugPrint('[Main] IMPORTANT: On desktop, run: flutterfire configure');
-      debugPrint('[Main] This generates the required firebase_options.dart file');
-    }
-  }
-  
+  });
+
   runApp(
     const ProviderScope(
       child: ActionMailApp(),
