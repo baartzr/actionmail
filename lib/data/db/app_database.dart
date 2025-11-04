@@ -19,7 +19,7 @@ class AppDatabase {
     final path = p.join(dbPath, 'actionmail.db');
     return openDatabase(
       path,
-      version: 11,
+      version: 12,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -43,6 +43,7 @@ class AppDatabase {
             actionDate INTEGER,
             actionConfidence REAL,
             actionInsightText TEXT,
+            actionComplete INTEGER NOT NULL DEFAULT 0,
             isRead INTEGER NOT NULL,
             isStarred INTEGER NOT NULL,
             isImportant INTEGER NOT NULL,
@@ -163,6 +164,57 @@ class AppDatabase {
           // Add indexes for faster queries
           await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_account_folder_date ON messages(accountId, folderLabel, internalDate DESC)');
           await db.execute('CREATE INDEX IF NOT EXISTS idx_messages_account_date ON messages(accountId, internalDate DESC)');
+        }
+        if (oldVersion < 12) {
+          // Add actionComplete field
+          await db.execute('ALTER TABLE messages ADD COLUMN actionComplete INTEGER NOT NULL DEFAULT 0');
+          
+          // Migrate existing data: detect "(Complete)" in actionInsightText and set actionComplete flag
+          // Also clean the text by removing "(Complete)" marker
+          final rows = await db.query('messages', columns: ['id', 'actionInsightText'], where: 'actionInsightText IS NOT NULL');
+          final batch = db.batch();
+          for (final row in rows) {
+            final messageId = row['id'] as String;
+            final actionText = row['actionInsightText'] as String?;
+            if (actionText != null) {
+              // Check if text contains "(Complete)" marker (case-insensitive)
+              final hasComplete = actionText.toLowerCase().contains('complete');
+              if (hasComplete) {
+                // Set actionComplete flag
+                batch.update(
+                  'messages',
+                  {'actionComplete': 1},
+                  where: 'id=?',
+                  whereArgs: [messageId],
+                );
+                
+                // Clean the text by removing "(Complete)" marker only
+                // Be careful not to remove legitimate uses of the word "complete"
+                final cleanedText = actionText
+                    .replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '')
+                    .trim();
+                
+                // Only update if text changed
+                if (cleanedText != actionText && cleanedText.isNotEmpty) {
+                  batch.update(
+                    'messages',
+                    {'actionInsightText': cleanedText},
+                    where: 'id=?',
+                    whereArgs: [messageId],
+                  );
+                } else if (cleanedText.isEmpty) {
+                  // If cleaned text is empty, set to null
+                  batch.update(
+                    'messages',
+                    {'actionInsightText': null},
+                    where: 'id=?',
+                    whereArgs: [messageId],
+                  );
+                }
+              }
+            }
+          }
+          await batch.commit(noResult: true);
         }
       },
     );

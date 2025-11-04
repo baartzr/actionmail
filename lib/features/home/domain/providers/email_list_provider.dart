@@ -332,14 +332,18 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     setFolder(messageId, newFolderLabel);
   }
 
-  void setAction(String messageId, DateTime? actionDate, String? actionText) {
+  void setAction(String messageId, DateTime? actionDate, String? actionText, {bool? actionComplete}) {
     final current = state;
     if (current is AsyncData<List<MessageIndex>>) {
       final list = current.value;
       final idx = list.indexWhere((m) => m.id == messageId);
       if (idx != -1) {
         final updated = List<MessageIndex>.from(list);
-        updated[idx] = updated[idx].copyWith(actionDate: actionDate, actionInsightText: actionText);
+        updated[idx] = updated[idx].copyWith(
+          actionDate: actionDate,
+          actionInsightText: actionText,
+          actionComplete: actionComplete,
+        );
         state = AsyncValue.data(updated);
       }
     }

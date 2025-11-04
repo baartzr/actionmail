@@ -65,9 +65,8 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       final messages = await repo.getByFolder(account.id, 'INBOX');
       // Filter to only messages with actions, excluding completed ones
       final actions = messages.where((m) {
-        // Exclude completed actions
-        if (m.actionInsightText != null && 
-            m.actionInsightText!.toLowerCase().contains('complete')) {
+        // Exclude completed actions (using actionComplete field)
+        if (m.actionComplete) {
           return false;
         }
         // Include if has action date or action text
@@ -75,9 +74,9 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                (m.actionInsightText != null && m.actionInsightText!.isNotEmpty);
       }).toList();
       
-      // Initialize completion state for each message based on current action text
+      // Initialize completion state for each message based on actionComplete field
       for (final msg in actions) {
-        _completionState[msg.id] = _isActionComplete(msg.actionInsightText);
+        _completionState[msg.id] = msg.actionComplete;
       }
       
       if (actions.isNotEmpty) {
@@ -311,8 +310,8 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6.0),
       child: GestureDetector(
-        onTap: () => _openEmail(message),
-        onDoubleTap: () => _openEditActionDialog(message),
+        onTap: () => _openEditActionDialog(message),
+        onDoubleTap: () => _openEmail(message),
         child: Container(
           padding: const EdgeInsets.all(8.0),
           decoration: BoxDecoration(
@@ -432,21 +431,11 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   }
 
   Future<void> _toggleComplete(MessageIndex message) async {
-    final existingText = (message.actionInsightText ?? '').trim();
-    final isComplete = _isActionComplete(existingText);
-    
-    String newText;
-    if (isComplete) {
-      // Remove "(Complete)" from the text
-      newText = existingText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
-    } else {
-      // Add "(Complete)" to the text
-      newText = existingText.isEmpty ? 'Complete' : '$existingText (Complete)';
-    }
+    final newComplete = !message.actionComplete;
     
     // Update local state and message object in both _allAccountMessages and _accountMessages
     setState(() {
-      _completionState[message.id] = !isComplete;
+      _completionState[message.id] = newComplete;
       // Update the message object in _allAccountMessages (source of truth)
       for (final accountId in _allAccountMessages.keys) {
         final messages = _allAccountMessages[accountId];
@@ -454,7 +443,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         if (index != null && index >= 0 && messages != null) {
           _allAccountMessages[accountId] = List.from(messages);
           _allAccountMessages[accountId]![index] = messages[index].copyWith(
-            actionInsightText: newText.isEmpty ? null : newText,
+            actionComplete: newComplete,
           );
         }
       }
@@ -463,42 +452,37 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     });
     
     // Persist to database
-    final newActionText = newText.isEmpty ? null : newText;
-    await MessageRepository().updateAction(message.id, message.actionDate, newActionText);
+    await MessageRepository().updateAction(message.id, message.actionDate, message.actionInsightText, null, newComplete);
     
     // Update provider state
     ref.read(emailListProvider.notifier).setAction(
       message.id,
       message.actionDate,
-      newActionText,
+      message.actionInsightText,
+      actionComplete: newComplete,
     );
     
     // Sync to Firebase if enabled
     final syncEnabled = await _firebaseSync.isSyncEnabled();
     if (syncEnabled) {
-      // Check if action text actually changed
-      final currentText = message.actionInsightText;
-      if (currentText != newActionText) {
+      // Check if actionComplete actually changed
+      final currentComplete = message.actionComplete;
+      if (currentComplete != newComplete) {
         await _firebaseSync.syncEmailMeta(
           message.id,
           actionDate: message.actionDate,
-          actionInsightText: newActionText,
+          actionInsightText: message.actionInsightText,
+          actionComplete: newComplete,
         );
       }
     }
   }
 
-  bool _isActionComplete(String? actionText) {
-    if (actionText == null || actionText.isEmpty) return false;
-    return actionText.toLowerCase().contains('complete');
-  }
-
   Future<void> _openEditActionDialog(MessageIndex message) async {
     DateTime? tempDate = message.actionDate ?? DateTime.now();
-    // Remove "(Complete)" from text when editing, so user sees clean text
-    final existingText = (message.actionInsightText ?? '').trim();
-    final cleanText = existingText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
-    final textController = TextEditingController(text: cleanText);
+    // Use action text as-is (no need to remove "(Complete)" since we use boolean field now)
+    final existingText = message.actionInsightText ?? '';
+    final textController = TextEditingController(text: existingText);
 
     final result = await showDialog<Map<String, dynamic>?>(
       context: context,
@@ -613,13 +597,17 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
             )
           : null;
       
+      // Preserve actionComplete when editing (don't reset it)
+      final currentComplete = message.actionComplete;
+      
       // Persist to database
-      await MessageRepository().updateAction(message.id, actionDate, actionText);
+      await MessageRepository().updateAction(message.id, actionDate, actionText, null, currentComplete);
       // Update in-memory state
       ref.read(emailListProvider.notifier).setAction(
         message.id,
         actionDate,
         actionText,
+        actionComplete: currentComplete,
       );
       
       // Sync to Firebase if enabled
@@ -628,11 +616,12 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         // Get current message to check if action actually changed
         final currentDate = message.actionDate;
         final currentText = message.actionInsightText;
-        if (currentDate != actionDate || currentText != actionText) {
+        if (currentDate != actionDate || currentText != actionText || currentComplete != message.actionComplete) {
           await _firebaseSync.syncEmailMeta(
             message.id,
             actionDate: actionDate,
             actionInsightText: actionText,
+            actionComplete: currentComplete,
           );
         }
       }
@@ -669,12 +658,13 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
           _allAccountMessages[accountId]![index] = messages[index].copyWith(
             actionDate: actionDate,
             actionInsightText: actionText,
+            actionComplete: currentComplete, // Preserve completion state
           );
         }
       }
-      // Reset completion state when action is edited (revert to minus icon)
+      // Preserve completion state when editing
       setState(() {
-        _completionState[message.id] = false;
+        _completionState[message.id] = currentComplete;
         // Reapply filter to update _accountMessages
         _accountMessages = _applyLocalStateFilter(_allAccountMessages);
       });

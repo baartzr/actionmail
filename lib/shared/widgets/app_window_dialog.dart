@@ -14,6 +14,7 @@ class AppWindowDialog extends StatelessWidget {
   final List<Widget>? headerActions;
   final AppWindowSize size;
   final bool fullscreen;
+  final double? height; // Optional height override
 
   const AppWindowDialog({
     super.key,
@@ -23,6 +24,7 @@ class AppWindowDialog extends StatelessWidget {
     this.headerActions,
     this.size = AppWindowSize.large,
     this.fullscreen = false,
+    this.height,
   });
 
   static Future<T?> show<T>({
@@ -33,6 +35,7 @@ class AppWindowDialog extends StatelessWidget {
     List<Widget>? headerActions,
     bool barrierDismissible = true,
     AppWindowSize size = AppWindowSize.large,
+    double? height,
   }) {
     return showDialog<T>(
       context: context,
@@ -42,6 +45,7 @@ class AppWindowDialog extends StatelessWidget {
         bodyPadding: bodyPadding,
         headerActions: headerActions,
         size: size,
+        height: height,
         child: child,
       ),
     );
@@ -61,6 +65,12 @@ class AppWindowDialog extends StatelessWidget {
     if (fullscreen) {
       targetWidth = media.size.width;
       targetHeight = media.size.height;
+    } else if (height != null) {
+      // Use custom height if provided
+      targetWidth = size == AppWindowSize.small 
+          ? math.min(media.size.width * 0.5, 500.0)
+          : math.min(media.size.width * 0.9, 800.0);
+      targetHeight = height;
     } else if (size == AppWindowSize.small) {
       targetWidth = math.min(media.size.width * 0.5, 500.0);
       targetHeight = math.min(media.size.height * 0.6, 600.0);

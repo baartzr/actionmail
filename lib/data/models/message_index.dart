@@ -22,6 +22,7 @@ class MessageIndex {
   final DateTime? actionDate;
   final double? actionConfidence;
   final String? actionInsightText;
+  final bool actionComplete; // Whether the action is marked as complete
   final bool isRead;
   final bool isStarred;
   final bool isImportant;
@@ -48,6 +49,7 @@ class MessageIndex {
     this.actionDate,
     this.actionConfidence,
     this.actionInsightText,
+    this.actionComplete = false,
     this.isRead = false,
     this.isStarred = false,
     this.isImportant = false,
@@ -86,6 +88,7 @@ class MessageIndex {
     DateTime? actionDate,
     double? actionConfidence,
     String? actionInsightText,
+    bool? actionComplete,
     bool? isRead,
     bool? isStarred,
     bool? isImportant,
@@ -112,6 +115,7 @@ class MessageIndex {
       actionDate: actionDate ?? this.actionDate,
       actionConfidence: actionConfidence ?? this.actionConfidence,
       actionInsightText: actionInsightText ?? this.actionInsightText,
+      actionComplete: actionComplete ?? this.actionComplete,
       isRead: isRead ?? this.isRead,
       isStarred: isStarred ?? this.isStarred,
       isImportant: isImportant ?? this.isImportant,

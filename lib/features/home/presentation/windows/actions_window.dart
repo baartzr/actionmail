@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,6 +23,8 @@ class ActionsWindow extends ConsumerStatefulWidget {
 class _ActionsWindowState extends ConsumerState<ActionsWindow> {
   String? _filterLocal; // null=All, 'Personal', 'Business'
   final FirebaseSyncService _firebaseSync = FirebaseSyncService();
+  Timer? _tapTimer;
+  MessageIndex? _pendingTapMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -84,55 +87,46 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isMobile = constraints.maxWidth < 900;
-        return ListTile(
-          leading: isMobile ? null : const Icon(Icons.event_note),
-          title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('From: $senderDisplay', style: const TextStyle(fontSize: 12)),
-              Text('Received: $receivedDateStr', style: const TextStyle(fontSize: 12)),
-              const SizedBox(height: 4),
-              if (actionDateStr.isNotEmpty || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty))
-                isMobile 
-                    ? Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (actionDateStr.isNotEmpty)
-                            Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-                          if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-                            RichText(
-                              text: TextSpan(
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context).colorScheme.onSurface,
-                                ),
-                                children: [
-                                  TextSpan(text: 'Message: ${m.actionInsightText} '),
-                                  TextSpan(
-                                    text: 'Edit',
-                                    style: TextStyle(
-                                      color: Theme.of(context).colorScheme.secondary,
-                                      fontWeight: FontWeight.w600,
-                                      decoration: TextDecoration.underline,
-                                    ),
-                                    recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
-                                  ),
-                                ],
-                              ),
-                            ),
-                        ],
-                      )
-                    : Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          if (actionDateStr.isNotEmpty)
-                            Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-                          if (actionDateStr.isNotEmpty && m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-                            const Text('  •  ', style: TextStyle(fontSize: 12)),
-                          if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
-                            Expanded(
-                              child: RichText(
+        return GestureDetector(
+          onTap: () {
+            // Cancel any pending single tap
+            _tapTimer?.cancel();
+            _pendingTapMessage = m;
+            // Wait a bit to see if this is part of a double tap
+            _tapTimer = Timer(const Duration(milliseconds: 300), () {
+              if (_pendingTapMessage?.id == m.id) {
+                // Single tap - open action edit
+                _openEditActionDialog(m);
+                _pendingTapMessage = null;
+              }
+            });
+          },
+          onDoubleTap: () {
+            // Cancel single tap timer
+            _tapTimer?.cancel();
+            _pendingTapMessage = null;
+            // Double tap - open email viewer
+            _openEmailViewer(m);
+          },
+          behavior: HitTestBehavior.opaque,
+          child: ListTile(
+            leading: isMobile ? null : const Icon(Icons.event_note),
+            title: Text(m.subject, maxLines: 2, overflow: TextOverflow.ellipsis),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('From: $senderDisplay', style: const TextStyle(fontSize: 12)),
+                Text('Received: $receivedDateStr', style: const TextStyle(fontSize: 12)),
+                const SizedBox(height: 4),
+                if (actionDateStr.isNotEmpty || (m.actionInsightText != null && m.actionInsightText!.isNotEmpty))
+                  isMobile 
+                      ? Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (actionDateStr.isNotEmpty)
+                              Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                            if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                              RichText(
                                 text: TextSpan(
                                   style: TextStyle(
                                     fontSize: 12,
@@ -152,13 +146,44 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
                                   ],
                                 ),
                               ),
-                            ),
-                        ],
-                      ),
-            ],
+                          ],
+                        )
+                      : Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            if (actionDateStr.isNotEmpty)
+                              Text('Action date: $actionDateStr', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                            if (actionDateStr.isNotEmpty && m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                              const Text('  •  ', style: TextStyle(fontSize: 12)),
+                            if (m.actionInsightText != null && m.actionInsightText!.isNotEmpty)
+                              Expanded(
+                                child: RichText(
+                                  text: TextSpan(
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context).colorScheme.onSurface,
+                                    ),
+                                    children: [
+                                      TextSpan(text: 'Message: ${m.actionInsightText} '),
+                                      TextSpan(
+                                        text: 'Edit',
+                                        style: TextStyle(
+                                          color: Theme.of(context).colorScheme.secondary,
+                                          fontWeight: FontWeight.w600,
+                                          decoration: TextDecoration.underline,
+                                        ),
+                                        recognizer: TapGestureRecognizer()..onTap = () => _openEditActionDialog(m),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                          ],
+                        ),
+              ],
+            ),
+            trailing: Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
           ),
-          trailing: Text(m.localTagPersonal ?? '', style: const TextStyle(fontSize: 12)),
-          onTap: () => _openEmailViewer(m),
         );
       },
     );
@@ -291,13 +316,17 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
             )
           : null;
       
+      // Preserve actionComplete when editing (don't reset it)
+      final currentComplete = message.actionComplete;
+      
       // Persist to database
-      await MessageRepository().updateAction(message.id, actionDate, actionText);
+      await MessageRepository().updateAction(message.id, actionDate, actionText, null, currentComplete);
       // Update in-memory state
       ref.read(emailListProvider.notifier).setAction(
         message.id,
         actionDate,
         actionText,
+        actionComplete: currentComplete,
       );
       
       // Sync to Firebase if enabled
@@ -306,11 +335,12 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
         // Get current message to check if action actually changed
         final currentDate = message.actionDate;
         final currentText = message.actionInsightText;
-        if (currentDate != actionDate || currentText != actionText) {
+        if (currentDate != actionDate || currentText != actionText || currentComplete != message.actionComplete) {
           await _firebaseSync.syncEmailMeta(
             message.id,
             actionDate: actionDate,
             actionInsightText: actionText,
+            actionComplete: currentComplete,
           );
         }
       }

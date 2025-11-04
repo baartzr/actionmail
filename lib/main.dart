@@ -8,6 +8,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:actionmail/firebase_options.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
+import 'package:actionmail/data/db/app_database.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,6 +17,15 @@ void main() async {
   if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  }
+  
+  // Pre-warm database connection to avoid delay on first email load
+  try {
+    final db = AppDatabase();
+    await db.database; // Opens connection if not already open
+    debugPrint('[Main] Database connection pre-warmed');
+  } catch (e) {
+    debugPrint('[Main] Database pre-warm error (non-fatal): $e');
   }
   
   // Initialize Firebase (optional - app works without it)

@@ -49,13 +49,26 @@ class MessageRepository {
 
   Future<List<MessageIndex>> getByFolder(String accountId, String folderLabel) async {
     final db = await _dbProvider.database;
+    final queryStart = DateTime.now();
     final rows = await db.query(
       'messages',
       where: 'accountId=? AND folderLabel=?',
       whereArgs: [accountId, folderLabel],
       orderBy: 'internalDate DESC',
     );
-    return rows.map(_fromRow).toList();
+    final queryDuration = DateTime.now().difference(queryStart);
+    if (rows.length > 10) {
+      // ignore: avoid_print
+      print('[DB] Query ${rows.length} rows took ${queryDuration.inMilliseconds}ms');
+    }
+    final parseStart = DateTime.now();
+    final result = rows.map(_fromRow).toList();
+    final parseDuration = DateTime.now().difference(parseStart);
+    if (rows.length > 10) {
+      // ignore: avoid_print
+      print('[DB] Parse ${rows.length} rows took ${parseDuration.inMilliseconds}ms');
+    }
+    return result;
   }
 
   Future<MessageIndex?> getById(String messageId) async {
@@ -211,15 +224,17 @@ class MessageRepository {
     await db.update('pending_ops', {'status': 'failed'}, where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence]) async {
+  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence, bool? actionComplete]) async {
     final db = await _dbProvider.database;
+    final data = <String, Object?>{
+      'actionDate': actionDate?.millisecondsSinceEpoch,
+      'actionInsightText': actionText,
+      if (confidence != null) 'actionConfidence': confidence,
+      if (actionComplete != null) 'actionComplete': actionComplete ? 1 : 0,
+    };
     await db.update(
       'messages',
-      {
-        'actionDate': actionDate?.millisecondsSinceEpoch,
-        'actionInsightText': actionText,
-        if (confidence != null) 'actionConfidence': confidence,
-      },
+      data,
       where: 'id=?',
       whereArgs: [messageId],
     );
@@ -328,6 +343,7 @@ class MessageRepository {
       'actionDate': m.actionDate?.millisecondsSinceEpoch,
       'actionConfidence': m.actionConfidence,
       'actionInsightText': m.actionInsightText,
+      'actionComplete': m.actionComplete ? 1 : 0,
       'isRead': m.isRead ? 1 : 0,
       'isStarred': m.isStarred ? 1 : 0,
       'isImportant': m.isImportant ? 1 : 0,
@@ -337,6 +353,25 @@ class MessageRepository {
   }
 
   MessageIndex _fromRow(Map<String, Object?> row) {
+    // Optimize JSON decoding: parse once and reuse
+    final categoriesJson = row['gmailCategories'] as String;
+    final labelsJson = row['gmailSmartLabels'] as String;
+    List<String> gmailCategories;
+    List<String> gmailSmartLabels;
+    
+    // Fast path for empty arrays (most common case)
+    if (categoriesJson == '[]') {
+      gmailCategories = const [];
+    } else {
+      gmailCategories = (jsonDecode(categoriesJson) as List<dynamic>).cast<String>();
+    }
+    
+    if (labelsJson == '[]') {
+      gmailSmartLabels = const [];
+    } else {
+      gmailSmartLabels = (jsonDecode(labelsJson) as List<dynamic>).cast<String>();
+    }
+    
     return MessageIndex(
       id: row['id'] as String,
       threadId: row['threadId'] as String,
@@ -348,8 +383,8 @@ class MessageRepository {
       subject: row['subject'] as String,
       snippet: row['snippet'] as String?,
       hasAttachments: (row['hasAttachments'] as int) == 1,
-      gmailCategories: (jsonDecode(row['gmailCategories'] as String) as List<dynamic>).cast<String>(),
-      gmailSmartLabels: (jsonDecode(row['gmailSmartLabels'] as String) as List<dynamic>).cast<String>(),
+      gmailCategories: gmailCategories,
+      gmailSmartLabels: gmailSmartLabels,
       localTagPersonal: row['localTagPersonal'] as String?,
       subsLocal: (row['subsLocal'] as int? ?? 0) == 1,
       shoppingLocal: (row['shoppingLocal'] as int? ?? 0) == 1,
@@ -358,6 +393,7 @@ class MessageRepository {
       actionDate: row['actionDate'] != null ? DateTime.fromMillisecondsSinceEpoch(row['actionDate'] as int) : null,
       actionConfidence: (row['actionConfidence'] as num?)?.toDouble(),
       actionInsightText: row['actionInsightText'] as String?,
+      actionComplete: (row['actionComplete'] as int? ?? 0) == 1,
       isRead: (row['isRead'] as int) == 1,
       isStarred: (row['isStarred'] as int) == 1,
       isImportant: (row['isImportant'] as int) == 1,

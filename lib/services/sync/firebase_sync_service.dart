@@ -4,6 +4,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
 
 /// Firebase sync service for cross-device data synchronization using Firestore
@@ -25,7 +26,9 @@ class FirebaseSyncService {
   String? _userId;
   bool _syncEnabled = false;
   final Map<String, StreamSubscription> _subscriptions = {};
+  Timer? _pollTimer; // Polling timer instead of real-time listener
   final Map<String, dynamic> _initialValues = {}; // Track initial values to avoid syncing on load
+  final Map<String, Map<String, dynamic>> _lastKnownDocs = {}; // Track last known document versions for polling
   // No longer need to track last processed emailMeta - each document change is independent
   // Sender preferences are no longer synced, so no tracking needed
   
@@ -119,10 +122,14 @@ class FirebaseSyncService {
 
   /// Load initial values from Firebase to avoid syncing unchanged data
   /// Loads from emailMeta subcollection
+  /// Ensures query is executed on the platform thread to avoid threading errors
   Future<void> _loadInitialValues() async {
     if (_emailMetaCollection == null) return;
     
     try {
+      // Defer query execution until after the current frame to ensure we're on the main thread
+      await SchedulerBinding.instance.endOfFrame;
+      
       // Load all documents from the emailMeta subcollection
       final snapshot = await _emailMetaCollection!.get();
       
@@ -144,61 +151,95 @@ class FirebaseSyncService {
     }
   }
 
-  /// Start listening to Firebase changes
+  /// Start listening to Firebase changes using polling instead of real-time listeners
+  /// This avoids the threading error that occurs with Firestore snapshot listeners
+  /// Polls every 5 seconds to check for changes
   Future<void> _startListening() async {
     if (_emailMetaCollection == null || !_syncEnabled) return;
 
     try {
-      // Listen to the emailMeta subcollection - each email is its own document
-      // This way, only changed emails trigger the listener
-      _subscriptions['emailMeta'] = _emailMetaCollection!
-          .snapshots()
-          .listen(
-            (snapshot) {
-              for (final change in snapshot.docChanges) {
-                final messageId = change.doc.id;
-                final doc = change.doc;
-                
-                // Skip if this is a local write (pending writes from this device)
-                // Firestore's hasPendingWrites flag handles this automatically
-                if (doc.metadata.hasPendingWrites) {
-                  continue;
-                }
-                
-                // Handle the change
-                if (change.type == DocumentChangeType.removed) {
-                  // Email metadata was deleted - we don't handle this currently
-                  continue;
-                }
-                
+      // Defer polling setup until after the current frame to ensure we're on the main thread
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        // Double-check we're still enabled and have collection
+        if (_emailMetaCollection == null || !_syncEnabled) return;
+        
+        // Cancel any existing timer
+        _pollTimer?.cancel();
+        
+        // Clear last known docs when restarting
+        _lastKnownDocs.clear();
+        
+        // Poll every 5 seconds for changes
+        _pollTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+          if (_emailMetaCollection == null || !_syncEnabled) {
+            timer.cancel();
+            return;
+          }
+          
+          try {
+            // Poll for all documents - this is safe to do on any thread
+            final snapshot = await _emailMetaCollection!.get();
+            
+            // Process on main thread
+            scheduleMicrotask(() {
+              final updatedDocs = <String, Map<String, dynamic>>{};
+              
+              for (final doc in snapshot.docs) {
+                final messageId = doc.id;
                 final data = doc.data() as Map<String, dynamic>?;
+                
                 if (data == null) continue;
                 
                 final current = data['current'] as Map<String, dynamic>?;
                 if (current == null) continue;
                 
-                // Process this single email change
-                _handleSingleEmailMetaUpdate(messageId, current);
+                // Check if this document changed
+                final lastKnown = _lastKnownDocs[messageId];
+                final isChanged = lastKnown == null || 
+                    !_mapsEqual(Map<String, dynamic>.from(lastKnown), Map<String, dynamic>.from(current));
+                
+                if (isChanged) {
+                  updatedDocs[messageId] = current;
+                  _lastKnownDocs[messageId] = Map<String, dynamic>.from(current);
+                  
+                  // Process this single email change
+                  _handleSingleEmailMetaUpdate(messageId, current);
+                }
               }
-            },
-            onError: (error) {
-              debugPrint('[FirebaseSync] Error in emailMeta subcollection listener: $error');
-            },
-          );
+              
+              // Remove documents that no longer exist
+              final existingIds = snapshot.docs.map((d) => d.id).toSet();
+              final removedIds = _lastKnownDocs.keys.where((id) => !existingIds.contains(id)).toList();
+              for (final id in removedIds) {
+                _lastKnownDocs.remove(id);
+              }
+              
+              if (updatedDocs.isNotEmpty) {
+                debugPrint('[FirebaseSync] Poll detected ${updatedDocs.length} changed documents');
+              }
+            });
+          } catch (e) {
+            debugPrint('[FirebaseSync] Error polling emailMeta: $e');
+          }
+        });
 
-      debugPrint('[FirebaseSync] Started listening to emailMeta subcollection');
+        debugPrint('[FirebaseSync] Started polling emailMeta subcollection (every 5 seconds)');
+      });
     } catch (e) {
-      debugPrint('[FirebaseSync] Error starting listeners: $e');
+      debugPrint('[FirebaseSync] Error scheduling polling: $e');
     }
   }
 
-  /// Stop all Firebase listeners
+  /// Stop all Firebase listeners and polling
   Future<void> _stopSync() async {
     for (final sub in _subscriptions.values) {
       await sub.cancel();
     }
     _subscriptions.clear();
-    debugPrint('[FirebaseSync] Stopped listening');
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    _lastKnownDocs.clear();
+    debugPrint('[FirebaseSync] Stopped listening and polling');
   }
 
   /// Initialize user sync if enabled
@@ -211,13 +252,14 @@ class FirebaseSyncService {
     }
   }
 
-  /// Sync email metadata (personal/business tag, action date, action message)
+  /// Sync email metadata (personal/business tag, action date, action message, action complete)
   /// Only syncs fields that are explicitly provided and have changed from initial value
   /// Note: Pass values to sync, null to clear (if previously set)
   Future<void> syncEmailMeta(String messageId, {
     String? localTagPersonal,
     DateTime? actionDate,
     String? actionInsightText,
+    bool? actionComplete,
   }) async {
     debugPrint('[FirebaseSync] syncEmailMeta called for $messageId');
     debugPrint('[FirebaseSync]   _syncEnabled: $_syncEnabled');
@@ -294,6 +336,21 @@ class FirebaseSyncService {
     } else {
       debugPrint('[FirebaseSync]   actionInsightText not provided (null param with local value), skipping');
     }
+    
+    // Check actionComplete: provided if non-null OR if both are false
+    final actionCompleteProvided = actionComplete != null || (localMessage?.actionComplete ?? false) == false;
+    if (actionCompleteProvided) {
+      final initialComplete = initial['actionComplete'] as bool? ?? false;
+      if (actionComplete != initialComplete) {
+        current['actionComplete'] = actionComplete ?? false;
+        hasChanges = true;
+        debugPrint('[FirebaseSync]   actionComplete changed: $initialComplete -> ${actionComplete ?? false}');
+      } else {
+        debugPrint('[FirebaseSync]   actionComplete unchanged: $initialComplete');
+      }
+    } else {
+      debugPrint('[FirebaseSync]   actionComplete not provided (null param with local value), skipping');
+    }
 
     if (!hasChanges) {
       debugPrint('[FirebaseSync] No changes for message $messageId, skipping sync');
@@ -306,6 +363,9 @@ class FirebaseSyncService {
     }
 
     try {
+      // Defer Firestore operations until after the current frame to ensure we're on the main thread
+      await SchedulerBinding.instance.endOfFrame;
+      
       // Write to the subcollection - each email is its own document
       final emailDoc = _emailMetaCollection!.doc(messageId);
       
@@ -352,6 +412,9 @@ class FirebaseSyncService {
       if (current.containsKey('actionInsightText')) {
         initialMap['actionInsightText'] = actionInsightText;
       }
+      if (current.containsKey('actionComplete')) {
+        initialMap['actionComplete'] = actionComplete ?? false;
+      }
       
       debugPrint('[FirebaseSync] Synced email meta for $messageId');
     } catch (e) {
@@ -395,6 +458,9 @@ class FirebaseSyncService {
       final actionText = current['actionInsightText']?.toString();
       final lastKnownText = lastKnown?['actionInsightText']?.toString();
       
+      final actionComplete = current['actionComplete'] as bool? ?? false;
+      final lastKnownComplete = lastKnown?['actionComplete'] as bool? ?? false;
+      
       // Only update if values actually changed
       bool needsUpdate = false;
       String? updatedLocalTag;
@@ -433,12 +499,13 @@ class FirebaseSyncService {
         (_initialValues[initialKey] as Map<String, dynamic>)['localTagPersonal'] = localTag;
       }
       
-      // Update action if actionDate or actionText is present and different
+      // Update action if actionDate, actionText, or actionComplete is present and different
       // IMPORTANT: Only update fields that are actually in the 'current' map from Firebase
       // Read existing local values first to preserve fields not included in the update
       final existingMessage = await repo.getById(messageId);
       DateTime? finalActionDate = existingMessage?.actionDate;
       String? finalActionText = existingMessage?.actionInsightText;
+      bool finalActionComplete = existingMessage?.actionComplete ?? false;
       
       final currentDateStr = actionDate?.toIso8601String();
       bool actionChanged = false;
@@ -459,12 +526,20 @@ class FirebaseSyncService {
         }
       }
       
+      if (current.containsKey('actionComplete')) {
+        // Only update if this field is actually in the update
+        if (actionComplete != lastKnownComplete) {
+          finalActionComplete = actionComplete;
+          actionChanged = true;
+        }
+      }
+      
       if (actionChanged) {
         needsUpdate = true;
         updatedActionDate = finalActionDate;
         updatedActionText = finalActionText;
         // Update with preserved existing values + new values
-        await repo.updateAction(messageId, finalActionDate, finalActionText);
+        await repo.updateAction(messageId, finalActionDate, finalActionText, null, finalActionComplete);
         // Update initial values
         if (!_initialValues.containsKey(initialKey)) {
           _initialValues[initialKey] = <String, dynamic>{};
@@ -475,6 +550,9 @@ class FirebaseSyncService {
         }
         if (current.containsKey('actionInsightText')) {
           initialMap['actionInsightText'] = finalActionText;
+        }
+        if (current.containsKey('actionComplete')) {
+          initialMap['actionComplete'] = finalActionComplete;
         }
       }
       

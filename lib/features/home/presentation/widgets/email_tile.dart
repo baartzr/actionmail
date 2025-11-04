@@ -17,7 +17,7 @@ class EmailTile extends StatefulWidget {
   final VoidCallback? onArchive;
   final VoidCallback? onRestore;
   final VoidCallback? onMoveToInbox;
-  final void Function(DateTime? date, String? text)? onActionUpdated;
+  final void Function(DateTime? date, String? text, {bool? actionComplete})? onActionUpdated;
   final VoidCallback? onActionCompleted;
   final VoidCallback? onMarkRead;
   final void Function(String folderName)? onSaveToFolder;
@@ -51,6 +51,7 @@ class _EmailTileState extends State<EmailTile> {
   int _revealDir = 0; // -1 left swipe, 1 right swipe, 0 none
   DateTime? _actionDate;
   String? _actionText;
+  bool _actionComplete = false;
   bool _showActionLine = true; // Visibility of action line
 
   @override
@@ -60,6 +61,7 @@ class _EmailTileState extends State<EmailTile> {
     _starred = widget.message.isStarred;
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
+    _actionComplete = widget.message.actionComplete;
     // Default: show action if action date exists, hide if no action date
     _showActionLine = widget.message.actionDate != null;
   }
@@ -282,9 +284,11 @@ class _EmailTileState extends State<EmailTile> {
       _localState = widget.message.localTagPersonal;
     }
     if (oldWidget.message.actionDate != widget.message.actionDate ||
-        oldWidget.message.actionInsightText != widget.message.actionInsightText) {
+        oldWidget.message.actionInsightText != widget.message.actionInsightText ||
+        oldWidget.message.actionComplete != widget.message.actionComplete) {
       _actionDate = widget.message.actionDate;
       _actionText = widget.message.actionInsightText;
+      _actionComplete = widget.message.actionComplete;
     }
   }
 
@@ -613,12 +617,12 @@ class _EmailTileState extends State<EmailTile> {
                                   ),
                                 );
                               }
-                            // With action: show [date] action text and [Edit, Mark as Complete/Incomplete]
+                            // With action: show [date] action text and [Edit, Complete/Incomplete toggle]
                             final display = _actionText ?? '';
                             final dateLabel = _actionDate != null
-                                ? _formatDate(_actionDate!, DateTime.now())
+                                ? _formatActionDate(_actionDate!, DateTime.now())
                                 : null;
-                            final isComplete = _isActionComplete(_actionText);
+                            final isComplete = _actionComplete;
                               return GestureDetector(
                                 onTap: isInbox ? _openEditActionDialog : null,
                                 behavior: HitTestBehavior.opaque,
@@ -631,26 +635,24 @@ class _EmailTileState extends State<EmailTile> {
                                       const TextSpan(text: '  •  '),
                                     ],
                                       if (display.isNotEmpty) TextSpan(text: display),
-                                      if (!isComplete) ...[
-                                        const TextSpan(text: '  '),
-                                        TextSpan(
-                                          text: 'Mark Complete',
-                                          style: theme.textTheme.bodySmall?.copyWith(
-                                            color: isInbox 
-                                                ? theme.colorScheme.tertiary
-                                                : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                            decoration: TextDecoration.none,
-                                            fontStyle: FontStyle.normal,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                          recognizer: isInbox 
-                                              ? (TapGestureRecognizer()
-                                                ..onTap = () {
-                                                  _handleMarkActionComplete();
-                                                })
-                                              : null,
+                                      const TextSpan(text: '  '),
+                                      TextSpan(
+                                        text: isComplete ? 'Status: Complete' : 'Status: Incomplete',
+                                        style: theme.textTheme.bodySmall?.copyWith(
+                                          color: isInbox 
+                                              ? theme.colorScheme.tertiary
+                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                          decoration: TextDecoration.none,
+                                          fontStyle: FontStyle.normal,
+                                          fontWeight: FontWeight.w600,
                                         ),
-                                      ],
+                                        recognizer: isInbox 
+                                            ? (TapGestureRecognizer()
+                                              ..onTap = () {
+                                                _handleMarkActionComplete();
+                                              })
+                                            : null,
+                                      ),
                                     ],
                                   ),
                                   maxLines: 2,
@@ -859,10 +861,9 @@ class _EmailTileState extends State<EmailTile> {
 
   Future<void> _openEditActionDialog() async {
     DateTime? tempDate = _actionDate ?? DateTime.now();
-    // Remove "(Complete)" when editing to set as incomplete
+    // Use action text as-is (no need to remove "(Complete)" since we use boolean field now)
     final currentText = _actionText ?? '';
-    final textWithoutComplete = currentText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
-    final textController = TextEditingController(text: textWithoutComplete);
+    final textController = TextEditingController(text: currentText);
 
     await showDialog<void>(
       context: context,
@@ -958,14 +959,13 @@ class _EmailTileState extends State<EmailTile> {
                         FilledButton(
                           onPressed: () {
                             final newText = textController.text.trim();
-                            // Ensure we don't have "(Complete)" in the text since editing sets it as incomplete
-                            final cleanedText = newText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
                             setState(() {
                               _actionDate = tempDate;
-                              _actionText = cleanedText.isEmpty ? null : cleanedText;
+                              _actionText = newText.isEmpty ? null : newText;
+                              // Note: actionComplete state is preserved when editing (not reset)
                             });
                             if (widget.onActionUpdated != null) {
-                              widget.onActionUpdated!(_actionDate, _actionText);
+                              widget.onActionUpdated!(_actionDate, _actionText, actionComplete: _actionComplete);
                             }
                             Navigator.of(context).pop();
                           },
@@ -989,31 +989,13 @@ class _EmailTileState extends State<EmailTile> {
     );
   }
 
-  bool _isActionComplete(String? actionText) {
-    if (actionText == null || actionText.isEmpty) return false;
-    return actionText.contains('(Complete)');
-  }
-
   void _handleMarkActionComplete() {
-    final existingText = (_actionText ?? '').trim();
-    final isComplete = _isActionComplete(_actionText);
-    
-    String newText;
-    if (isComplete) {
-      // Remove "(Complete)" from the text
-      newText = existingText.replaceAll(RegExp(r'\s*\(Complete\)\s*', caseSensitive: false), '').trim();
-    } else {
-      // Add "(Complete)" to the text
-      newText = existingText.isEmpty ? 'Complete' : '$existingText (Complete)';
-    }
-    
     setState(() {
-      _actionText = newText.isEmpty ? null : newText;
-      // Keep the existing date intact
+      _actionComplete = !_actionComplete;
     });
-    // Persist as an update to the action (keep date, update text)
+    // Update action with new completion state
     if (widget.onActionUpdated != null) {
-      widget.onActionUpdated!(_actionDate, _actionText);
+      widget.onActionUpdated!(_actionDate, _actionText, actionComplete: _actionComplete);
     }
   }
 
@@ -1093,6 +1075,24 @@ class _EmailTileState extends State<EmailTile> {
     if (daysDiff == 0) {
       final s = DateFormat('h:mm a').format(localDate);
       return s.replaceAll('AM', 'am').replaceAll('PM', 'pm');
+    } else if (daysDiff == 1) {
+      return 'Yesterday';
+    } else {
+      return DateFormat('dd-MMM').format(localDate);
+    }
+  }
+
+  /// Format action date - always shows date, not time (even for today)
+  String _formatActionDate(DateTime date, DateTime now) {
+    final localDate = date.toLocal();
+    final localNow = now.toLocal();
+    final today = DateTime(localNow.year, localNow.month, localNow.day);
+    final targetDay = DateTime(localDate.year, localDate.month, localDate.day);
+    final daysDiff = today.difference(targetDay).inDays;
+
+    if (daysDiff == 0) {
+      // For today, just show the date (not time)
+      return DateFormat('dd-MMM').format(localDate);
     } else if (daysDiff == 1) {
       return 'Yesterday';
     } else {

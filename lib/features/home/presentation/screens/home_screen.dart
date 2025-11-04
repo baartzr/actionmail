@@ -1422,9 +1422,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   if (_selectedLocalState != null && m.localTagPersonal != _selectedLocalState) {
                     continue;
                   }
-                  // Exclude completed actions
-                  if (m.actionInsightText != null && 
-                      m.actionInsightText!.toLowerCase().contains('complete')) {
+                  // Exclude completed actions (using actionComplete field)
+                  if (m.actionComplete) {
                     continue;
                   }
                   final local = m.actionDate!.toLocal();
@@ -1966,9 +1965,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Action summary filter
           if (_selectedActionFilter != null) {
             if (m.actionDate == null) return false;
+            // Exclude completed actions
+            if (m.actionComplete) return false;
             final now = DateTime.now();
             final today = DateTime(now.year, now.month, now.day);
-            final d = DateTime(m.actionDate!.year, m.actionDate!.month, m.actionDate!.day);
+            final local = m.actionDate!.toLocal();
+            final d = DateTime(local.year, local.month, local.day);
             switch (_selectedActionFilter) {
               case AppConstants.filterToday:
                 if (d != today) return false;
@@ -2152,7 +2154,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ref.read(emailListProvider.notifier).removeMessage(message.id);
                   }
                 },
-                onActionUpdated: (date, text) async {
+                onActionUpdated: (date, text, {bool? actionComplete}) async {
                   // Capture original detected action for feedback
                   final originalAction = message.actionDate != null || message.actionInsightText != null
                       ? ActionResult(
@@ -2162,8 +2164,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         )
                       : null;
                   
-                  await MessageRepository().updateAction(message.id, date, text);
-                  ref.read(emailListProvider.notifier).setAction(message.id, date, text);
+                  await MessageRepository().updateAction(message.id, date, text, null, actionComplete);
+                  ref.read(emailListProvider.notifier).setAction(message.id, date, text, actionComplete: actionComplete);
                   
                   // Record feedback for ML training
                   final userAction = date != null || text != null
@@ -2194,11 +2196,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     // Get current message to check if action actually changed
                     final currentDate = message.actionDate;
                     final currentText = message.actionInsightText;
-                    if (currentDate != date || currentText != text) {
+                    final currentComplete = message.actionComplete;
+                    if (currentDate != date || currentText != text || currentComplete != actionComplete) {
                       await _firebaseSync.syncEmailMeta(
                         message.id,
                         actionDate: date,
                         actionInsightText: text,
+                        actionComplete: actionComplete,
                       );
                     }
                   }
