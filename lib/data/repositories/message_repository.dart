@@ -141,6 +141,22 @@ class MessageRepository {
     );
   }
 
+  /// Batch update read status for multiple messages
+  Future<void> batchUpdateRead(List<String> messageIds, bool isRead) async {
+    if (messageIds.isEmpty) return;
+    final db = await _dbProvider.database;
+    final batch = db.batch();
+    for (final messageId in messageIds) {
+      batch.update(
+        'messages',
+        {'isRead': isRead ? 1 : 0},
+        where: 'id=?',
+        whereArgs: [messageId],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
   /// Update only label-related fields (categories, flags, folder) without replacing entire message
   /// This is used during incremental sync when only labels change
   Future<void> updateMessageLabelsAndFlags(

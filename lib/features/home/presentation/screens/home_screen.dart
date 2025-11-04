@@ -29,6 +29,8 @@ import 'package:actionmail/services/local_folders/local_folder_service.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -51,6 +53,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isOpeningAccountDialog = false;
   bool _isAccountsRefreshing = false;
   DateTime? _lastAccountTap;
+  
+  // Account unread counts (for left panel display)
+  Map<String, int> _accountUnreadCounts = {};
+  Timer? _unreadCountRefreshTimer;
   
   // Selected local state filter: null (show all), 'Personal', or 'Business'
   String? _selectedLocalState;
@@ -88,9 +94,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final svc = GoogleAuthService();
       final list = await svc.loadAccounts();
       if (!mounted) return;
+      
+      // Check if selected account is still valid
+      bool needsAccountSelection = false;
+      if (_selectedAccountId == null) {
+        needsAccountSelection = list.isNotEmpty;
+      } else if (list.isNotEmpty && !list.any((acc) => acc.id == _selectedAccountId)) {
+        // Selected account no longer exists in list
+        needsAccountSelection = true;
+        setState(() {
+          _selectedAccountId = null;
+        });
+      }
+      
       setState(() {
         _accounts = list;
       });
+      
+      // If accounts list is empty, clear selected account and emails
+      if (list.isEmpty) {
+        if (_selectedAccountId != null) {
+          setState(() {
+            _selectedAccountId = null;
+          });
+          ref.read(emailListProvider.notifier).clearEmails();
+        }
+      }
+      // If no account is selected but accounts exist, select one
+      else if (needsAccountSelection && list.isNotEmpty) {
+        // Try to load last active account from preferences
+        final lastAccount = await _loadLastActiveAccount();
+        if (lastAccount != null && list.any((acc) => acc.id == lastAccount)) {
+          _selectedAccountId = lastAccount;
+        } else {
+          _selectedAccountId = list.first.id;
+        }
+        // Save the selected account as last active
+        if (_selectedAccountId != null) {
+          await _saveLastActiveAccount(_selectedAccountId!);
+        }
+        // Load emails for the selected account
+        if (_selectedAccountId != null) {
+          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+        }
+      }
+      
+      // Refresh unread counts when accounts are loaded
+      await _refreshAccountUnreadCounts();
     
     // Initialize Firebase sync if enabled and an account is selected
     final syncEnabled = await _firebaseSync.isSyncEnabled();
@@ -270,6 +320,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         if (_selectedAccountId != null) {
           await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
+        // Load initial unread counts and start periodic refresh
+        await _refreshAccountUnreadCounts();
+        _startUnreadCountRefreshTimer();
       });
       _initializedFromRoute = true;
     }
@@ -687,6 +740,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
+                            if (_accountUnreadCounts[account.id] != null && _accountUnreadCounts[account.id]! > 0)
+                              Padding(
+                                padding: const EdgeInsets.only(left: 8),
+                                child: Text(
+                                  '(${_accountUnreadCounts[account.id]})',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: isSelected ? const Color(0xFF00695C) : cs.onSurfaceVariant,
+                                    fontWeight: FontWeight.normal,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                              ),
                           ],
                         ),
                       ),
@@ -1059,6 +1124,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               });
             },
           ),
+          // Mark all as read button (only show when Unread filter is active)
+          if (_stateFilter == 'Unread') ...[
+            SizedBox(width: isDesktop ? 2 : 12),
+            _buildMarkAllAsReadButton(context),
+          ],
           SizedBox(width: isDesktop ? 2 : 12),
           _buildSophisticatedFilterButton(
             context,
@@ -1155,6 +1225,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ],
               ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMarkAllAsReadButton(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    
+    // Get unread emails from the current list (reactive)
+    final emailListAsync = ref.watch(emailListProvider);
+    
+    final unreadInfo = emailListAsync.when(
+      data: (emails) {
+        final unreadEmails = emails.where((m) => !m.isRead).toList();
+        return {
+          'count': unreadEmails.length,
+          'ids': unreadEmails.map((m) => m.id).toList(),
+        };
+      },
+      loading: () => {'count': 0, 'ids': <String>[]},
+      error: (_, __) => {'count': 0, 'ids': <String>[]},
+    );
+    
+    final unreadCount = unreadInfo['count'] as int;
+    final unreadMessageIds = unreadInfo['ids'] as List<String>;
+    final isEnabled = unreadCount > 0 && !_isLocalFolder;
+    
+    return Tooltip(
+      message: 'Mark all as Read',
+      child: Material(
+        color: isEnabled ? cs.primaryContainer : Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: isEnabled
+              ? () => _markAllUnreadAsRead(unreadMessageIds)
+              : null,
+          child: Container(
+            padding: const EdgeInsets.all(6),
+            child: Icon(
+              Icons.done_all,
+              size: 18,
+              color: isEnabled
+                  ? cs.onPrimaryContainer
+                  : cs.onSurfaceVariant.withValues(alpha: 0.5),
             ),
           ),
         ),
@@ -2047,44 +2165,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final cs = theme.colorScheme;
     final selected = _selectedActionFilter == filter;
     String label;
+    String tooltipText;
     switch (filter) {
       case AppConstants.filterToday:
         label = AppConstants.actionSummaryToday;
+        tooltipText = 'Actions due today';
         break;
       case AppConstants.filterUpcoming:
         label = 'Future';
+        tooltipText = 'Upcoming actions';
         break;
       case AppConstants.filterOverdue:
         label = AppConstants.actionSummaryOverdue;
+        tooltipText = 'Overdue actions';
         break;
       default:
         label = AppConstants.actionSummaryAll;
+        tooltipText = label;
     }
     final displayText = '$label ($count)';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 1.0),
-      child: InkWell(
-        onTap: () {
-          setState(() {
-            // Toggle: if already selected, deselect (null); otherwise select
-            _selectedActionFilter = _selectedActionFilter == filter ? null : filter;
-          });
-        },
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-          decoration: selected
-              ? BoxDecoration(
-                  color: cs.primary.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(8),
-                )
-              : null,
-          child: Text(
-            displayText,
-            style: theme.textTheme.labelMedium?.copyWith(
-              color: selected ? cs.primary : cs.onSurfaceVariant,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
-              fontSize: 12,
+      child: Tooltip(
+        message: tooltipText,
+        child: InkWell(
+          onTap: () {
+            setState(() {
+              // Toggle: if already selected, deselect (null); otherwise select
+              _selectedActionFilter = _selectedActionFilter == filter ? null : filter;
+            });
+          },
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+            decoration: selected
+                ? BoxDecoration(
+                    color: cs.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  )
+                : null,
+            child: Text(
+              displayText,
+              style: theme.textTheme.labelMedium?.copyWith(
+                color: selected ? cs.primary : cs.onSurfaceVariant,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                fontSize: 12,
+              ),
             ),
           ),
         ),
@@ -2548,8 +2674,101 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return '';
   }
 
+  /// Mark all currently visible unread emails as read
+  Future<void> _markAllUnreadAsRead(List<String> messageIds) async {
+    if (messageIds.isEmpty || _selectedAccountId == null || _isLocalFolder) return;
+    
+    try {
+      // Batch update in database
+      await MessageRepository().batchUpdateRead(messageIds, true);
+      
+      // Update UI state for all messages
+      for (final messageId in messageIds) {
+        ref.read(emailListProvider.notifier).setRead(messageId, true);
+        // Enqueue Gmail API update
+        _enqueueGmailUpdate('markRead', messageId);
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Marked ${messageIds.length} email${messageIds.length == 1 ? '' : 's'} as read'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[HomeScreen] Error marking all as read: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error marking emails as read: $e')),
+        );
+      }
+    }
+  }
+
+  /// Start periodic refresh timer for account unread counts (15 minutes)
+  void _startUnreadCountRefreshTimer() {
+    _unreadCountRefreshTimer?.cancel();
+    _unreadCountRefreshTimer = Timer.periodic(const Duration(minutes: 15), (_) {
+      _refreshAccountUnreadCounts();
+    });
+  }
+
+  /// Refresh unread counts for all accounts using Gmail API
+  Future<void> _refreshAccountUnreadCounts() async {
+    if (_accounts.isEmpty) return;
+    
+    final counts = <String, int>{};
+    for (final account in _accounts) {
+      try {
+        // Try to get unread count from Gmail API
+        final count = await _getGmailUnreadCount(account.id);
+        counts[account.id] = count;
+      } catch (e) {
+        // Fallback to local DB if API call fails
+        try {
+          final localCount = await MessageRepository().getUnreadCountByFolder(account.id, 'INBOX');
+          counts[account.id] = localCount;
+        } catch (_) {
+          counts[account.id] = 0;
+        }
+      }
+    }
+    
+    if (mounted) {
+      setState(() {
+        _accountUnreadCounts = counts;
+      });
+    }
+  }
+
+  /// Get unread count for an account using Gmail API /users/me/labels/INBOX endpoint
+  Future<int> _getGmailUnreadCount(String accountId) async {
+    final authAccount = await GoogleAuthService().ensureValidAccessToken(accountId);
+    if (authAccount == null || authAccount.accessToken.isEmpty) {
+      // Fallback to local DB if no token
+      return await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+    }
+
+    final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX');
+    final response = await http.get(
+      uri,
+      headers: {'Authorization': 'Bearer ${authAccount.accessToken}'},
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return data['messagesUnread'] as int? ?? 0;
+    } else {
+      // Fallback to local DB on API error
+      return await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+    }
+  }
+
   @override
   void dispose() {
+    _unreadCountRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
