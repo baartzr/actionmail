@@ -427,6 +427,46 @@ class MessageRepository {
       prevFolderLabel: row['prevFolderLabel'] as String?,
     );
   }
+
+  /// Get unread count for a specific folder
+  Future<int> getUnreadCountByFolder(String accountId, String folderLabel) async {
+    final db = await _dbProvider.database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM messages WHERE accountId=? AND folderLabel=? AND isRead=0',
+      [accountId, folderLabel],
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Get starred count for an account (across all folders)
+  Future<int> getStarredCount(String accountId) async {
+    final db = await _dbProvider.database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM messages WHERE accountId=? AND isStarred=1',
+      [accountId],
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Get important count for an account (across all folders)
+  Future<int> getImportantCount(String accountId) async {
+    final db = await _dbProvider.database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM messages WHERE accountId=? AND isImportant=1',
+      [accountId],
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Get unread count for an account (across all folders)
+  Future<int> getUnreadCount(String accountId) async {
+    final db = await _dbProvider.database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM messages WHERE accountId=? AND isRead=0',
+      [accountId],
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
 }
 
 

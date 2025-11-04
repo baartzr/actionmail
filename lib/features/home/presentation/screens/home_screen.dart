@@ -221,8 +221,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
         
         if (_selectedAccountId != null) {
-          // Use loadEmails for account switch to trigger full initial sync if needed
-          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+          // Use loadFolder to ensure the folder is properly loaded for any account
+          await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
         }
       }
     } else {
@@ -578,7 +578,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
-  // Left panel for desktop - Gmail folder tree
+  // Left panel for desktop - Accounts and Gmail folder tree
   Widget _buildLeftPanel(BuildContext context) {
     // Only show on desktop (Windows, macOS, Linux)
     if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
@@ -600,9 +600,108 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       );
     }
     
-    return GmailFolderTree(
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    
+    return Column(
+      children: [
+        // Accounts section
+        if (_accounts.isNotEmpty)
+          Container(
+            decoration: BoxDecoration(
+              color: cs.surfaceContainerHighest,
+              border: Border(
+                bottom: BorderSide(
+                  color: cs.outline.withValues(alpha: 0.1),
+                  width: 1,
+                ),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.account_circle, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Accounts',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ..._accounts.map((account) {
+                  final isSelected = account.id == _selectedAccountId;
+                  return Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () async {
+                        if (account.id != _selectedAccountId) {
+                          setState(() {
+                            _selectedAccountId = account.id;
+                          });
+                          await _saveLastActiveAccount(account.id);
+                          if (_selectedAccountId != null) {
+                            // Use loadFolder to ensure the folder is properly loaded for any account
+                            await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+                          }
+                        }
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: isSelected
+                              ? const Color(0xFF00695C).withValues(alpha: 0.3)
+                              : Colors.transparent,
+                          border: isSelected
+                              ? const Border(
+                                  left: BorderSide(
+                                    color: Color(0xFF00695C),
+                                    width: 3,
+                                  ),
+                                )
+                              : null,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              isSelected ? Icons.account_circle : Icons.account_circle_outlined,
+                              size: 18,
+                              color: isSelected ? const Color(0xFF00695C) : cs.onSurfaceVariant,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                account.email,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: isSelected ? const Color(0xFF00695C) : cs.onSurface,
+                                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+        // Gmail folder tree
+        Expanded(
+          child: GmailFolderTree(
       selectedFolder: _selectedFolder,
       isViewingLocalFolder: _isLocalFolder,
+      accountId: _selectedAccountId,
       onFolderSelected: (folderId) async {
         setState(() {
           _selectedFolder = folderId;
@@ -703,6 +802,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           }
         }
       },
+          ),
+        ),
+      ],
     );
   }
   
@@ -744,7 +846,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Local email -> Local folder: move within local storage
           await _moveLocalEmailToFolder(folderPath, message);
         } else {
-          // Gmail email -> Local folder: save and archive
+          // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
+          final src = (message.folderLabel).toUpperCase();
+          if (src == 'TRASH' || src == 'ARCHIVE') {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+              );
+            }
+            return;
+          }
+          // Proceed: save and archive
           await _saveEmailToFolder(folderPath, message);
         }
       },
@@ -899,6 +1011,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final cs = theme.colorScheme;
     final isDesktop = MediaQuery.of(context).size.width >= 900;
     
+    // Get counts from the currently displayed email list (account + folder)
+    // This reflects what's actually shown in the email list
+    final emailListAsync = ref.watch(emailListProvider);
+    
+    // Calculate counts from the current email list
+    final counts = emailListAsync.when(
+      data: (emails) {
+        // Count from emails in the current folder (already filtered by account and folder)
+        return {
+          'unread': emails.where((m) => !m.isRead).length,
+          'starred': emails.where((m) => m.isStarred).length,
+          'important': emails.where((m) => m.isImportant).length,
+        };
+      },
+      loading: () => {'unread': 0, 'starred': 0, 'important': 0},
+      error: (_, __) => {'unread': 0, 'starred': 0, 'important': 0},
+    );
+    
+    final unreadCount = counts['unread']!;
+    final starredCount = counts['starred']!;
+    final importantCount = counts['important']!;
+    
     return Container(
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
@@ -918,32 +1052,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             Icons.mark_email_unread_outlined,
             Icons.mark_email_unread,
             _stateFilter == 'Unread',
+            unreadCount,
             () {
               setState(() {
                 _stateFilter = _stateFilter == 'Unread' ? null : 'Unread';
               });
             },
           ),
-          SizedBox(width: isDesktop ? 2 : 8),
+          SizedBox(width: isDesktop ? 2 : 12),
           _buildSophisticatedFilterButton(
             context,
             'Starred',
             Icons.star_border,
             Icons.star,
             _stateFilter == 'Starred',
+            starredCount,
             () {
               setState(() {
                 _stateFilter = _stateFilter == 'Starred' ? null : 'Starred';
               });
             },
           ),
-          SizedBox(width: isDesktop ? 2 : 8),
+          SizedBox(width: isDesktop ? 2 : 12),
           _buildSophisticatedFilterButton(
             context,
             'Important',
-            Icons.label_outline,
-            Icons.label,
+            Icons.priority_high_outlined,
+            Icons.priority_high,
             _stateFilter == 'Important',
+            importantCount,
             () {
               setState(() {
                 _stateFilter = _stateFilter == 'Important' ? null : 'Important';
@@ -1091,6 +1228,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     IconData outlinedIcon,
     IconData filledIcon,
     bool selected,
+    int count,
     VoidCallback onTap,
   ) {
     final theme = Theme.of(context);
@@ -1117,33 +1255,87 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       }
     }
     
-    return Material(
-      color: selected ? cs.primaryContainer : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
+    // Tooltip text
+    String tooltipText;
+    switch (label) {
+      case 'Starred':
+        tooltipText = 'Emails you have Starred';
+        break;
+      case 'Important':
+        tooltipText = 'Emails Google has flagged as Important';
+        break;
+      default:
+        tooltipText = label;
+    }
+    if (count > 0) {
+      tooltipText = '$tooltipText ($count)';
+    }
+    
+    return Tooltip(
+      message: tooltipText,
+      child: Material(
+        color: selected ? cs.primaryContainer : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Container(
-          padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                selected ? filledIcon : outlinedIcon,
-                size: 18,
-                color: iconColor,
-              ),
-              if (isDesktop) ...[
-                const SizedBox(width: 6),
-                Text(
-                  label,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  ),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: onTap,
+          child: Container(
+            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  selected ? filledIcon : outlinedIcon,
+                  size: 18,
+                  color: iconColor,
                 ),
+                if (isDesktop) ...[
+                  const SizedBox(width: 6),
+                  Text(
+                    label,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    ),
+                  ),
+                  if (count > 0) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      decoration: BoxDecoration(
+                        color: selected ? cs.primary : iconColor,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        count > 99 ? '99+' : '$count',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 10,
+                        ),
+                      ),
+                    ),
+                  ],
+                ] else if (count > 0) ...[
+                  const SizedBox(width: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: selected ? cs.primary : iconColor,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      count > 99 ? '99+' : '$count',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -1281,6 +1473,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Save email to local folder and move to Archive
   Future<void> _saveEmailToFolder(String folderName, MessageIndex message) async {
+    // Disallow saving to local from Gmail TRASH/ARCHIVE
+    final src = (message.folderLabel).toUpperCase();
+    if (src == 'TRASH' || src == 'ARCHIVE') {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+        );
+      }
+      return;
+    }
     // Optimistic UI: reflect archive intent immediately
     if (_selectedAccountId == null) return;
     final wasArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
@@ -2181,6 +2383,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ));
                   }
                   _enqueueGmailUpdate('trash:$src', message.id);
+
+                  // If viewing a local folder, also remove the saved local copy (additional process)
+                  if (_isLocalFolder) {
+                    final localPath = _selectedFolder;
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      unawaited(_localFolderService.removeEmailFromFolder(localPath, message.id));
+                    });
+                  }
                 },
                 onArchive: () async {
                   // Optimistic UI update first

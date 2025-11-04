@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/data/models/message_index.dart';
+import 'package:actionmail/data/repositories/message_repository.dart';
 
 /// Gmail folder navigation tree for desktop left panel
 class GmailFolderTree extends StatefulWidget {
@@ -8,6 +9,7 @@ class GmailFolderTree extends StatefulWidget {
   final ValueChanged<String> onFolderSelected;
   final void Function(String folderId, MessageIndex message)? onEmailDropped;
   final bool isViewingLocalFolder; // Whether we're currently viewing local folder emails
+  final String? accountId; // Account ID for fetching unread counts
 
   const GmailFolderTree({
     super.key,
@@ -15,6 +17,7 @@ class GmailFolderTree extends StatefulWidget {
     required this.onFolderSelected,
     this.onEmailDropped,
     this.isViewingLocalFolder = false,
+    this.accountId,
   });
 
   @override
@@ -23,6 +26,47 @@ class GmailFolderTree extends StatefulWidget {
 
 class _GmailFolderTreeState extends State<GmailFolderTree> {
   MessageIndex? _draggedMessage;
+  final MessageRepository _messageRepo = MessageRepository();
+  Map<String, int> _unreadCounts = {};
+  bool _isLoadingCounts = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUnreadCounts();
+  }
+
+  @override
+  void didUpdateWidget(GmailFolderTree oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Reload counts if account changed
+    if (oldWidget.accountId != widget.accountId) {
+      _loadUnreadCounts();
+    }
+  }
+
+  Future<void> _loadUnreadCounts() async {
+    if (widget.accountId == null) return;
+    setState(() => _isLoadingCounts = true);
+    try {
+      final counts = <String, int>{};
+      final folders = ['INBOX', 'SENT', 'ARCHIVE', 'TRASH', 'SPAM'];
+      for (final folder in folders) {
+        final count = await _messageRepo.getUnreadCountByFolder(widget.accountId!, folder);
+        counts[folder] = count;
+      }
+      if (mounted) {
+        setState(() {
+          _unreadCounts = counts;
+          _isLoadingCounts = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingCounts = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -77,6 +121,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.inbox,
                   label: AppConstants.folderDisplayNames[AppConstants.folderInbox] ?? AppConstants.folderInbox,
                   folderId: AppConstants.folderInbox,
+                  unreadCount: _unreadCounts[AppConstants.folderInbox] ?? 0,
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
                   onDragEnd: () => setState(() => _draggedMessage = null),
@@ -86,6 +131,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.send,
                   label: AppConstants.folderDisplayNames[AppConstants.folderSent] ?? AppConstants.folderSent,
                   folderId: AppConstants.folderSent,
+                  unreadCount: _unreadCounts[AppConstants.folderSent] ?? 0,
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
                   onDragEnd: () => setState(() => _draggedMessage = null),
@@ -95,6 +141,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.archive,
                   label: AppConstants.folderDisplayNames[AppConstants.folderArchive] ?? AppConstants.folderArchive,
                   folderId: AppConstants.folderArchive,
+                  unreadCount: _unreadCounts[AppConstants.folderArchive] ?? 0,
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
                   onDragEnd: () => setState(() => _draggedMessage = null),
@@ -104,6 +151,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.delete,
                   label: AppConstants.folderDisplayNames[AppConstants.folderTrash] ?? AppConstants.folderTrash,
                   folderId: AppConstants.folderTrash,
+                  unreadCount: _unreadCounts[AppConstants.folderTrash] ?? 0,
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
                   onDragEnd: () => setState(() => _draggedMessage = null),
@@ -113,6 +161,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   icon: Icons.block,
                   label: AppConstants.folderDisplayNames[AppConstants.folderSpam] ?? AppConstants.folderSpam,
                   folderId: AppConstants.folderSpam,
+                  unreadCount: _unreadCounts[AppConstants.folderSpam] ?? 0,
                   draggedMessage: _draggedMessage,
                   onDragStart: (message) => setState(() => _draggedMessage = message),
                   onDragEnd: () => setState(() => _draggedMessage = null),
@@ -197,6 +246,7 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
     required IconData icon,
     required String label,
     required String folderId,
+    required int unreadCount,
     MessageIndex? draggedMessage,
     void Function(MessageIndex)? onDragStart,
     void Function()? onDragEnd,
@@ -266,6 +316,15 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              if (unreadCount > 0)
+                Text(
+                  '($unreadCount)',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: isSelected ? selectedFolderColor : cs.onSurfaceVariant,
+                    fontWeight: FontWeight.normal,
+                    fontSize: 12,
+                  ),
+                ),
             ],
           ),
         ),
