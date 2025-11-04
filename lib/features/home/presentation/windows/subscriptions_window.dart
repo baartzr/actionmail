@@ -20,6 +20,7 @@ class SubscriptionsWindow extends ConsumerStatefulWidget {
 class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
   String? _filterLocal;
   final Set<String> _unsubscribedIds = {};
+  bool _showUnsubscribed = true; // Show unsubscribed by default
 
   @override
   Widget build(BuildContext context) {
@@ -34,9 +35,24 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          PersonalBusinessFilter(
-            selected: _filterLocal,
-            onChanged: (v) => setState(() => _filterLocal = v),
+          Row(
+            children: [
+              Expanded(
+                child: PersonalBusinessFilter(
+                  selected: _filterLocal,
+                  onChanged: (v) => setState(() => _filterLocal = v),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton.icon(
+                onPressed: () => setState(() => _showUnsubscribed = !_showUnsubscribed),
+                icon: Icon(_showUnsubscribed ? Icons.visibility : Icons.visibility_off, size: 18),
+                label: Text(_showUnsubscribed ? 'Hide Unsubscribed' : 'Show Unsubscribed'),
+                style: TextButton.styleFrom(
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 12),
           Expanded(
@@ -45,6 +61,9 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                 final filtered = list.where((m) {
                   final hasSubs = m.subsLocal;
                   if (!hasSubs) return false;
+                  // Filter by unsubscribed status based on toggle
+                  if (!_showUnsubscribed && m.unsubscribedLocal) return false;
+                  // Apply Personal/Business filter if set
                   if (_filterLocal == null) return true;
                   return m.localTagPersonal == _filterLocal;
                 }).toList();
@@ -58,8 +77,10 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                   );
                 }
 
-                // Group by sender and get most recent message per sender
-                final Map<String, MessageIndex> senderToLatestMessage = {};
+                // Group by sender and unsubscribed status
+                // A sender can appear twice: once for subscribed emails, once for unsubscribed emails
+                final Map<String, MessageIndex> senderToLatestSubscribed = {}; // senderEmail -> latest subscribed message
+                final Map<String, MessageIndex> senderToLatestUnsubscribed = {}; // senderEmail -> latest unsubscribed message
                 final Map<String, List<MessageIndex>> senderToAllMessages = {};
                 
                 for (final m in filtered) {
@@ -68,23 +89,38 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                   
                   senderToAllMessages.putIfAbsent(senderEmail, () => []).add(m);
                   
-                  final existing = senderToLatestMessage[senderEmail];
-                  if (existing == null || m.internalDate.isAfter(existing.internalDate)) {
-                    senderToLatestMessage[senderEmail] = m;
+                  // Track separately for subscribed vs unsubscribed
+                  if (m.unsubscribedLocal) {
+                    final existing = senderToLatestUnsubscribed[senderEmail];
+                    if (existing == null || m.internalDate.isAfter(existing.internalDate)) {
+                      senderToLatestUnsubscribed[senderEmail] = m;
+                    }
+                  } else {
+                    final existing = senderToLatestSubscribed[senderEmail];
+                    if (existing == null || m.internalDate.isAfter(existing.internalDate)) {
+                      senderToLatestSubscribed[senderEmail] = m;
+                    }
                   }
                 }
+                
+                // Combine both maps - if a sender has both subscribed and unsubscribed emails, show both entries
+                final allLatestMessages = <MessageIndex>[];
+                allLatestMessages.addAll(senderToLatestSubscribed.values);
+                allLatestMessages.addAll(senderToLatestUnsubscribed.values);
 
                 // Sort by most recent date
-                final latestMessages = senderToLatestMessage.values.toList()
-                  ..sort((a, b) => b.internalDate.compareTo(a.internalDate));
+                allLatestMessages.sort((a, b) => b.internalDate.compareTo(a.internalDate));
 
                 return ListView.separated(
-                  itemCount: latestMessages.length,
+                  itemCount: allLatestMessages.length,
                   separatorBuilder: (_, __) => const Divider(height: 1),
                   itemBuilder: (ctx, i) {
-                    final message = latestMessages[i];
+                    final message = allLatestMessages[i];
                     final senderEmail = _extractEmail(message.from);
-                    final allMessages = senderToAllMessages[senderEmail] ?? [];
+                    // Filter messages by sender AND unsubscribed status to get correct count
+                    final allMessages = (senderToAllMessages[senderEmail] ?? [])
+                        .where((m) => m.unsubscribedLocal == message.unsubscribedLocal)
+                        .toList();
                     return _subscriptionTile(message, allMessages);
                   },
                 );
@@ -99,7 +135,8 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
   }
 
   Widget _subscriptionTile(MessageIndex m, List<MessageIndex> allMessagesFromSender) {
-    final isDone = _unsubscribedIds.contains(m.id);
+    // Show "Unsubscribed" if marked in this session OR already marked in database
+    final isDone = _unsubscribedIds.contains(m.id) || m.unsubscribedLocal;
     final isMobile = MediaQuery.of(context).size.width < 900;
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
@@ -141,7 +178,7 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
         trailing: isDone
             ? FilledButton(
                 style: FilledButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                   minimumSize: const Size(0, 28),
                   textStyle: const TextStyle(fontSize: 11),
                   backgroundColor: cs.surfaceContainerHighest.withValues(alpha: 0.8),
@@ -155,7 +192,7 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
               )
             : FilledButton(
           style: ButtonStyle(
-            padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 4, vertical: 8)),
+            padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 8, vertical: 8)),
             minimumSize: const WidgetStatePropertyAll(Size(0, 28)),
             textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 11)),
             backgroundColor: WidgetStatePropertyAll(cs.primary.withValues(alpha:0.7)),
@@ -178,7 +215,14 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                 SnackBar(content: Text(ok ? 'Unsubscribe email sent' : 'Failed to send unsubscribe email')),
               );
               if (ok) {
-                await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                // Mark this email and all emails from this sender as unsubscribed
+                final senderEmail = _extractEmail(m.from);
+                if (senderEmail.isNotEmpty) {
+                  await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
+                } else {
+                  // Fallback: just mark this email if we can't extract sender
+                  await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                }
                 setState(() => _unsubscribedIds.add(m.id));
               }
               return;
@@ -229,7 +273,14 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
               );
               if (confirmed == true && mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Marked as unsubscribed')));
-                await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                // Mark this email and all emails from this sender as unsubscribed
+                final senderEmail = _extractEmail(m.from);
+                if (senderEmail.isNotEmpty) {
+                  await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
+                } else {
+                  // Fallback: just mark this email if we can't extract sender
+                  await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                }
                 setState(() => _unsubscribedIds.add(m.id));
               }
             } else {

@@ -253,6 +253,23 @@ class MessageRepository {
     await db.update('messages', data, where: 'id=?', whereArgs: [messageId]);
   }
 
+  /// Mark all emails from a sender email address as unsubscribed
+  /// senderEmail should be the extracted email address in lowercase (e.g., "user@example.com")
+  Future<void> markSenderUnsubscribed(String accountId, String senderEmail) async {
+    final db = await _dbProvider.database;
+    // Extract email from fromAddr field (handles "Name <email@domain.com>" format)
+    // We need to match emails where fromAddr contains the sender email (case-insensitive)
+    // Use LOWER() for case-insensitive matching to handle "Name <Email@Domain.com>" formats
+    // Match both "Name <email@domain.com>" and "email@domain.com" formats
+    final lowerSender = senderEmail.toLowerCase();
+    await db.update(
+      'messages',
+      {'unsubscribedLocal': 1},
+      where: 'accountId=? AND (LOWER(fromAddr) LIKE ? OR LOWER(fromAddr) = ?)',
+      whereArgs: [accountId, '%<$lowerSender>%', lowerSender],
+    );
+  }
+
   Future<String?> getUnsubLink(String messageId) async {
     final db = await _dbProvider.database;
     final rows = await db.query('messages', columns: ['unsubLink'], where: 'id=?', whereArgs: [messageId], limit: 1);

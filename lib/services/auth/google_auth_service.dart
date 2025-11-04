@@ -22,14 +22,23 @@ class GoogleAuthService {
   factory GoogleAuthService() => _instance;
   GoogleAuthService._internal();
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: <String>[
-      'email',
-      'https://www.googleapis.com/auth/gmail.readonly',
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/userinfo.profile',
-    ],
-  );
+  // Lazy-initialize GoogleSignIn only when needed to prevent automatic sign-in attempts
+  GoogleSignIn? _googleSignIn;
+  GoogleSignIn get _googleSignInInstance {
+    _googleSignIn ??= GoogleSignIn(
+      scopes: <String>[
+        'email',
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/userinfo.profile',
+      ],
+      // Prevent automatic sign-in attempts that can trigger chooser unexpectedly
+      signInOption: SignInOption.standard,
+      // Don't request server auth code (we handle OAuth manually)
+      serverClientId: null,
+    );
+    return _googleSignIn!;
+  }
 
   // Cache for ongoing ensureValidAccessToken calls to prevent duplicate checks
   final Map<String, Future<GoogleAccount?>> _tokenCheckCache = {};
@@ -476,7 +485,7 @@ class GoogleAuthService {
     }
     // Fallback to google_sign_in where supported
     if (kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
-      final account = await _googleSignIn.signIn();
+      final account = await _googleSignInInstance.signIn();
       if (account == null) return null;
       final auth = await account.authentication;
       final googleAccount = GoogleAccount(
@@ -503,7 +512,7 @@ class GoogleAuthService {
   }
 
   Future<void> signOutAll() async {
-    await _googleSignIn.disconnect();
+    await _googleSignInInstance.disconnect();
   }
 
   Future<bool> signOutAccount(String accountId) async {

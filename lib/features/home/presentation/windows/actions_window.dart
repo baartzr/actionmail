@@ -9,6 +9,7 @@ import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialo
 import 'package:actionmail/data/repositories/message_repository.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
+import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:intl/intl.dart';
 
 class ActionsWindow extends ConsumerStatefulWidget {
@@ -20,6 +21,7 @@ class ActionsWindow extends ConsumerStatefulWidget {
 
 class _ActionsWindowState extends ConsumerState<ActionsWindow> {
   String? _filterLocal; // null=All, 'Personal', 'Business'
+  final FirebaseSyncService _firebaseSync = FirebaseSyncService();
 
   @override
   Widget build(BuildContext context) {
@@ -297,6 +299,21 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
         actionDate,
         actionText,
       );
+      
+      // Sync to Firebase if enabled
+      final syncEnabled = await _firebaseSync.isSyncEnabled();
+      if (syncEnabled) {
+        // Get current message to check if action actually changed
+        final currentDate = message.actionDate;
+        final currentText = message.actionInsightText;
+        if (currentDate != actionDate || currentText != actionText) {
+          await _firebaseSync.syncEmailMeta(
+            message.id,
+            actionDate: actionDate,
+            actionInsightText: actionText,
+          );
+        }
+      }
       
       // Record feedback for ML training
       final userAction = actionDate != null || actionText != null

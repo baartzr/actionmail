@@ -10,6 +10,7 @@ import 'package:actionmail/features/home/domain/providers/email_list_provider.da
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
+import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -27,6 +28,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   bool _loading = true;
   // Track completion state for each message (true = complete, false = incomplete)
   final Map<String, bool> _completionState = {};
+  final FirebaseSyncService _firebaseSync = FirebaseSyncService();
   // Personal/Business filter state
   String? _selectedLocalState;
 
@@ -461,14 +463,29 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     });
     
     // Persist to database
-    await MessageRepository().updateAction(message.id, message.actionDate, newText.isEmpty ? null : newText);
+    final newActionText = newText.isEmpty ? null : newText;
+    await MessageRepository().updateAction(message.id, message.actionDate, newActionText);
     
     // Update provider state
     ref.read(emailListProvider.notifier).setAction(
       message.id,
       message.actionDate,
-      newText.isEmpty ? null : newText,
+      newActionText,
     );
+    
+    // Sync to Firebase if enabled
+    final syncEnabled = await _firebaseSync.isSyncEnabled();
+    if (syncEnabled) {
+      // Check if action text actually changed
+      final currentText = message.actionInsightText;
+      if (currentText != newActionText) {
+        await _firebaseSync.syncEmailMeta(
+          message.id,
+          actionDate: message.actionDate,
+          actionInsightText: newActionText,
+        );
+      }
+    }
   }
 
   bool _isActionComplete(String? actionText) {
@@ -604,6 +621,21 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         actionDate,
         actionText,
       );
+      
+      // Sync to Firebase if enabled
+      final syncEnabled = await _firebaseSync.isSyncEnabled();
+      if (syncEnabled) {
+        // Get current message to check if action actually changed
+        final currentDate = message.actionDate;
+        final currentText = message.actionInsightText;
+        if (currentDate != actionDate || currentText != actionText) {
+          await _firebaseSync.syncEmailMeta(
+            message.id,
+            actionDate: actionDate,
+            actionInsightText: actionText,
+          );
+        }
+      }
       
       // Record feedback for ML training
       final userAction = actionDate != null || actionText != null
