@@ -131,122 +131,149 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                     ? BorderSide(color: cs.primary, width: 2)
                                     : BorderSide.none,
                               ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12.0),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    // Row 1: Email (with tick) + Name below (clickable to switch account)
-                                    InkWell(
-                                      onTap: () {
-                                        Navigator.of(context).pop(account.id);
-                                      },
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 2),
-                                        child: Row(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Expanded(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    account.email,
-                                                    style: theme.textTheme.bodyMedium?.copyWith(
-                                                      fontWeight: FontWeight.w500,
-                                                      fontSize: 14,
-                                                    ),
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
+                              child: Stack(
+                                children: [
+                                  Padding(
+                                    padding: const EdgeInsets.all(12.0),
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        // Row 1: Email (with tick) + Name below (clickable to switch account)
+                                        InkWell(
+                                          onTap: () {
+                                            Navigator.of(context).pop(account.id);
+                                          },
+                                          borderRadius: BorderRadius.circular(4),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(vertical: 2),
+                                            child: Row(
+                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              children: [
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        account.email,
+                                                        style: theme.textTheme.bodyMedium?.copyWith(
+                                                          fontWeight: FontWeight.w500,
+                                                          fontSize: 14,
+                                                        ),
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                      if (account.displayName.isNotEmpty) ...[
+                                                        const SizedBox(height: 1),
+                                                        Text(
+                                                          account.displayName,
+                                                          style: theme.textTheme.bodySmall?.copyWith(
+                                                            color: cs.onSurfaceVariant,
+                                                            fontSize: 11,
+                                                          ),
+                                                          maxLines: 1,
+                                                          overflow: TextOverflow.ellipsis,
+                                                        ),
+                                                      ],
+                                                    ],
                                                   ),
-                                                  if (account.displayName.isNotEmpty) ...[
-                                                    const SizedBox(height: 1),
+                                                ),
+                                                if (isSelected) ...[
+                                                  const SizedBox(width: 6),
+                                                  Icon(
+                                                    Icons.check,
+                                                    size: 18,
+                                                    color: cs.primary.withValues(alpha: 0.7),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                        // Row 2: SignOut icon + text + Remove icon + text
+                                        const SizedBox(height: 8),
+                                        Row(
+                                          children: [
+                                            InkWell(
+                                              onTap: () => _handleSignOut(account.id),
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: Padding(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      Icons.logout,
+                                                      size: 16,
+                                                      color: cs.onSurfaceVariant,
+                                                    ),
+                                                    const SizedBox(width: 4),
                                                     Text(
-                                                      account.displayName,
+                                                      'SignOut',
                                                       style: theme.textTheme.bodySmall?.copyWith(
                                                         color: cs.onSurfaceVariant,
                                                         fontSize: 11,
                                                       ),
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
                                                     ),
                                                   ],
-                                                ],
+                                                ),
                                               ),
                                             ),
-                                            if (isSelected) ...[
-                                              const SizedBox(width: 6),
-                                              Icon(
-                                                Icons.check,
-                                                size: 18,
-                                                color: cs.primary.withValues(alpha: 0.7),
+                                            const SizedBox(width: 12),
+                                            InkWell(
+                                              onTap: () => _handleRemove(account.id),
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: Padding(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                                                child: Row(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    Icon(
+                                                      Icons.delete_outline,
+                                                      size: 16,
+                                                      color: cs.error,
+                                                    ),
+                                                    const SizedBox(width: 4),
+                                                    Text(
+                                                      'Remove',
+                                                      style: theme.textTheme.bodySmall?.copyWith(
+                                                        color: cs.error,
+                                                        fontSize: 11,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
                                               ),
-                                            ],
+                                            ),
                                           ],
-                                        ),
-                                      ),
-                                    ),
-                                    // Row 2: SignOut icon + text + Remove icon + text
-                                    const SizedBox(height: 8),
-                                    Row(
-                                      children: [
-                                        InkWell(
-                                          onTap: () => _handleSignOut(account.id),
-                                          borderRadius: BorderRadius.circular(4),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  Icons.logout,
-                                                  size: 16,
-                                                  color: cs.onSurfaceVariant,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  'SignOut',
-                                                  style: theme.textTheme.bodySmall?.copyWith(
-                                                    color: cs.onSurfaceVariant,
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        InkWell(
-                                          onTap: () => _handleRemove(account.id),
-                                          borderRadius: BorderRadius.circular(4),
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                                            child: Row(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                Icon(
-                                                  Icons.delete_outline,
-                                                  size: 16,
-                                                  color: cs.error,
-                                                ),
-                                                const SizedBox(width: 4),
-                                                Text(
-                                                  'Remove',
-                                                  style: theme.textTheme.bodySmall?.copyWith(
-                                                    color: cs.error,
-                                                    fontSize: 11,
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                          ),
                                         ),
                                       ],
                                     ),
-                                  ],
-                                ),
+                                  ),
+                                  // Switch icon button in top right corner for inactive accounts
+                                  if (!isSelected)
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Material(
+                                        color: Colors.transparent,
+                                        child: InkWell(
+                                          onTap: () {
+                                            Navigator.of(context).pop(account.id);
+                                          },
+                                          borderRadius: BorderRadius.circular(20),
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(4),
+                                            child: Icon(
+                                              Icons.switch_account,
+                                              size: 20,
+                                              color: cs.primary,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                           );

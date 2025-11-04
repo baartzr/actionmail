@@ -28,7 +28,6 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
   MessageIndex? _draggedMessage;
   final MessageRepository _messageRepo = MessageRepository();
   Map<String, int> _unreadCounts = {};
-  bool _isLoadingCounts = false;
 
   @override
   void initState() {
@@ -47,7 +46,6 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
 
   Future<void> _loadUnreadCounts() async {
     if (widget.accountId == null) return;
-    setState(() => _isLoadingCounts = true);
     try {
       final counts = <String, int>{};
       final folders = ['INBOX', 'SENT', 'ARCHIVE', 'TRASH', 'SPAM'];
@@ -58,13 +56,10 @@ class _GmailFolderTreeState extends State<GmailFolderTree> {
       if (mounted) {
         setState(() {
           _unreadCounts = counts;
-          _isLoadingCounts = false;
         });
       }
     } catch (e) {
-      if (mounted) {
-        setState(() => _isLoadingCounts = false);
-      }
+      // Silently handle errors - counts will remain at default (0) values
     }
   }
 

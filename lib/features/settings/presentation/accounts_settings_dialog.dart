@@ -80,7 +80,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                             ),
                           ),
                           const SizedBox(height: 20),
-                          Container(
+                          /* Container(
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
                               color: theme.colorScheme.surface,
@@ -102,7 +102,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 _FeatureItem(icon: Icons.sync, text: '2‑minute background sync with Gmail'),
                               ],
                             ),
-                          ),
+                          ), */
                         ],
                       ),
                     ),

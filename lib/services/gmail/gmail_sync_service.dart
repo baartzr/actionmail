@@ -94,22 +94,18 @@ class GmailSyncService {
       }
     }
 
-    // Apply sender preferences (auto-apply local tag)
-    final senderPrefs = await _repo.getAllSenderPrefs();
-    for (var i = 0; i < messageIndexes.length; i++) {
-      final m = messageIndexes[i];
-      final email = _extractEmail(m.from);
-      final pref = senderPrefs[email];
-      if (pref != null && pref.isNotEmpty) {
-        messageIndexes[i] = m.copyWith(localTagPersonal: pref);
-      }
-    }
+    // Preserve local fields when present locally (before applying sender prefs)
+    // This ensures existing tags are preserved
+    final idMap = await _repo.getByIds(accountId, messageIndexes.map((e) => e.id).toList());
+    debugPrint('[SenderPrefs] syncMessages: loaded ${idMap.length} existing messages from DB');
+    
+    // Apply sender preferences (auto-apply local tag) only to messages without existing tags
+    final messagesWithPrefs = await _applySenderPreferences(accountId, messageIndexes, idMap, context: 'syncMessages');
     
     // Note: Action detection moved to Phase 2 (deeper body-based detection)
-    var enriched = messageIndexes;
+    var enriched = messagesWithPrefs;
 
-    // Preserve local fields when present locally
-    final idMap = await _repo.getByIds(accountId, enriched.map((e) => e.id).toList());
+    // Preserve other local fields when present locally
     enriched = enriched.map((m) {
       final existing = idMap[m.id];
       if (existing != null) {
@@ -243,11 +239,16 @@ class GmailSyncService {
             Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$id?format=full'),
             headers: {'Authorization': 'Bearer $accessToken'},
           );
-          if (fullResp.statusCode == 200) {
-            final msgMap = jsonDecode(fullResp.body) as Map<String, dynamic>;
-            final gi = GmailMessage.fromJson(msgMap).toMessageIndex(accountId);
-            await _repo.upsertMessages([gi]);
-            // Only tag INBOX emails
+                    if (fullResp.statusCode == 200) {
+            final msgMap = jsonDecode(fullResp.body) as Map<String, dynamic>;   
+            final gi = GmailMessage.fromJson(msgMap).toMessageIndex(accountId); 
+
+            // Apply sender preferences before saving
+            final idMap = await _repo.getByIds(accountId, [gi.id]);
+            final messagesWithPrefs = await _applySenderPreferences(accountId, [gi], idMap, context: 'incrementalSync');
+            await _repo.upsertMessages(messagesWithPrefs);
+
+            // Only tag INBOX emails (use original gi for folder check, before pref application)
             if (gi.folderLabel == 'INBOX') {
               gmailMessagesToTag.add(GmailMessage.fromJson(msgMap));
             }
@@ -752,6 +753,54 @@ class GmailSyncService {
     // ignore: avoid_print
     print('[subs] header chosen=$chosen');
     return chosen;
+  }
+
+  /// Apply sender preferences to messages (auto-apply local tag)
+  /// Preserves existing tags if message already has one locally
+  Future<List<MessageIndex>> _applySenderPreferences(
+    String accountId,
+    List<MessageIndex> messageIndexes,
+    Map<String, MessageIndex> idMap, {
+    required String context,
+  }) async {
+    final senderPrefs = await _repo.getAllSenderPrefs();
+    debugPrint('[SenderPrefs] $context: applying sender prefs to ${messageIndexes.length} messages');
+    
+    int preservedCount = 0;
+    int appliedCount = 0;
+    int noPrefCount = 0;
+    
+    final result = <MessageIndex>[];
+    for (var i = 0; i < messageIndexes.length; i++) {
+      final m = messageIndexes[i];
+      final existing = idMap[m.id];
+      
+      // If message exists locally and already has a tag, preserve it
+      final existingTag = existing?.localTagPersonal;
+      if (existingTag != null && existingTag.isNotEmpty) {
+        // Preserve existing tag
+        result.add(m.copyWith(localTagPersonal: existingTag));
+        preservedCount++;
+        debugPrint('[SenderPrefs] $context: messageId=${m.id} subject="${m.subject}" preserved existing tag=$existingTag');
+      } else {
+        // New message or no existing tag - apply sender preference
+        final email = _extractEmail(m.from);
+        debugPrint('[SenderPrefs] $context: messageId=${m.id} subject="${m.subject}" from="$email" (extracted from "${m.from}")');
+        final pref = senderPrefs[email];
+        if (pref != null && pref.isNotEmpty) {
+          result.add(m.copyWith(localTagPersonal: pref));
+          appliedCount++;
+          debugPrint('[SenderPrefs] $context: messageId=${m.id} APPLIED tag=$pref from sender preference');
+        } else {
+          result.add(m);
+          noPrefCount++;
+          debugPrint('[SenderPrefs] $context: messageId=${m.id} NO PREF found for email=$email');
+        }
+      }
+    }
+
+    debugPrint('[SenderPrefs] $context: summary - preserved=$preservedCount, applied=$appliedCount, noPref=$noPrefCount');
+    return result;
   }
 
   String _extractEmail(String from) {

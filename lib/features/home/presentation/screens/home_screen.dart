@@ -18,6 +18,7 @@ import 'package:actionmail/features/home/presentation/widgets/account_selector_d
 import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:flutter/foundation.dart';
+import 'dart:async';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
@@ -27,8 +28,6 @@ import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:actionmail/services/local_folders/local_folder_service.dart';
 // duplicate import removed: gmail_sync_service.dart
 import 'package:actionmail/data/models/message_index.dart';
-import 'dart:async';
-import 'dart:io';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -139,8 +138,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
       }
       
-      // Refresh unread counts when accounts are loaded
-      await _refreshAccountUnreadCounts();
+      // Refresh unread counts in background (non-blocking)
+      // Use local DB first for instant display, then refresh from API
+      unawaited(_refreshAccountUnreadCounts());
     
     // Initialize Firebase sync if enabled and an account is selected
     final syncEnabled = await _firebaseSync.isSyncEnabled();
@@ -320,8 +320,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         if (_selectedAccountId != null) {
           await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
-        // Load initial unread counts and start periodic refresh
-        await _refreshAccountUnreadCounts();
+        // Load initial unread counts in background (non-blocking) and start periodic refresh
+        unawaited(_refreshAccountUnreadCounts());
         _startUnreadCountRefreshTimer();
       });
       _initializedFromRoute = true;
@@ -633,26 +633,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // Left panel for desktop - Accounts and Gmail folder tree
   Widget _buildLeftPanel(BuildContext context) {
-    // Only show on desktop (Windows, macOS, Linux)
-    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
-      final cs = Theme.of(context).colorScheme;
-      return Container(
-        color: cs.surfaceContainerHighest,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: Text('Filters', style: Theme.of(context).textTheme.titleSmall),
-            ),
-            const SizedBox(height: 8),
-            // Placeholder for future filters
-          ],
-        ),
-      );
-    }
-    
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     
@@ -875,26 +855,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   
   // Right panel for desktop - local folder tree
   Widget _buildRightPanel(BuildContext context) {
-    // Only show on desktop (Windows, macOS, Linux)
-    if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
-      final cs = Theme.of(context).colorScheme;
-      return Container(
-        color: cs.surfaceContainerHighest,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 8),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: Text('Details', style: Theme.of(context).textTheme.titleSmall),
-            ),
-            const SizedBox(height: 8),
-            // Placeholder for details
-          ],
-        ),
-      );
-    }
-    
     return LocalFolderTree(
       selectedFolder: _isLocalFolder ? _selectedFolder : null,
       onFolderSelected: (folderPath) async {
@@ -2719,27 +2679,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _refreshAccountUnreadCounts() async {
     if (_accounts.isEmpty) return;
     
-    final counts = <String, int>{};
+    // First, load from local DB for instant display (non-blocking)
+    final localCounts = <String, int>{};
     for (final account in _accounts) {
       try {
-        // Try to get unread count from Gmail API
-        final count = await _getGmailUnreadCount(account.id);
-        counts[account.id] = count;
-      } catch (e) {
-        // Fallback to local DB if API call fails
-        try {
-          final localCount = await MessageRepository().getUnreadCountByFolder(account.id, 'INBOX');
-          counts[account.id] = localCount;
-        } catch (_) {
-          counts[account.id] = 0;
-        }
+        final localCount = await MessageRepository().getUnreadCountByFolder(account.id, 'INBOX');
+        localCounts[account.id] = localCount;
+      } catch (_) {
+        localCounts[account.id] = 0;
       }
     }
     
+    // Update UI immediately with local counts
     if (mounted) {
       setState(() {
-        _accountUnreadCounts = counts;
+        _accountUnreadCounts = localCounts;
       });
+    }
+    
+    // Then refresh from API in background (non-blocking, won't block startup)
+    // Refresh all accounts in parallel - just fire off the background tasks
+    for (final account in _accounts) {
+      // Fire off background refresh for each account (non-blocking)
+      unawaited(() async {
+        try {
+          final count = await _getGmailUnreadCount(account.id);
+          if (mounted) {
+            setState(() {
+              _accountUnreadCounts[account.id] = count;
+            });
+          }
+        } catch (_) {
+          // Keep local count if API fails - counts already set from local DB above
+        }
+      }());
     }
   }
 

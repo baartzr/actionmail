@@ -300,60 +300,6 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                     color: theme.colorScheme.onPrimary,
                   ),
                 ),
-                const SizedBox(height: 24),
-                // Sign in button - moved directly below graphic, centered
-                FilledButton.icon(
-                  onPressed: _signingIn
-                      ? null
-                        : () async {
-                          print('[splash] sign-in button pressed');
-                          setState(() => _signingIn = true);
-                          final scaffoldMessenger = ScaffoldMessenger.of(context);
-                          print('[splash] calling signIn()');
-                          final svc = GoogleAuthService();
-                          final acc = await svc.signIn();
-                          print('[splash] signIn returned, mounted=$mounted, acc=${acc != null}');
-                          if (!context.mounted) return;
-                          if (acc != null) {
-                            print('[splash] calling upsertAccount');
-                            final stored = await svc.upsertAccount(acc);
-                            print('[splash] upsertAccount done, mounted=$mounted');
-                            if (!context.mounted) return;
-                            // Save as last active account
-                            print('[splash] saving last active account');
-                            await _saveLastActiveAccount(stored.id);
-                            print('[splash] saved, mounted=$mounted');
-                            if (!context.mounted) return;
-                            // Bring app to front after sign-in
-                            await _bringAppToFront();
-                            if (!context.mounted) return;
-                            
-                            if (_forceAdd) {
-                              // For add account flow, pop with account ID (this will pop AppWindowDialog)
-                              dialogNavigator.pop(stored.id);
-                            } else {
-                              // For normal sign-in, navigate to home
-                              _navigatedAway = true; // Mark as navigated to prevent pop attempts
-                              rootNavigator.pushReplacementNamed('/home', arguments: stored.id);
-                            }
-                          } else {
-                            // On Android, null might mean browser was launched and app will restart
-                            // Don't show error - the app will restart and complete sign-in via App Link
-                            if (Platform.isAndroid) {
-                              print('[splash] Android sign-in: browser launched, waiting for app restart');
-                              // Keep signing state - app will restart and complete sign-in
-                            } else {
-                              print('[splash] sign-in failed, showing snackbar');
-                              scaffoldMessenger.showSnackBar(
-                                const SnackBar(content: Text('Google sign-in not supported on this platform.')),
-                              );
-                              setState(() => _signingIn = false);
-                            }
-                          }
-                        },
-                  icon: const Icon(Icons.login),
-                  label: Text(_signingIn ? 'Signing in…' : 'Sign in with Google'),
-                ),
                 const SizedBox(height: 32),
                 Text(
                   'ActionMail',
@@ -362,29 +308,87 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                     color: theme.colorScheme.onSurface,
                   ),
                 ),
+                const SizedBox(height: 24),
+                // Sign in button - moved directly below graphic, centered
+                FilledButton.icon(
+                  onPressed: _signingIn
+                      ? null
+                      : () async {
+                    print('[splash] sign-in button pressed');
+                    setState(() => _signingIn = true);
+                    final scaffoldMessenger = ScaffoldMessenger.of(context);
+                    print('[splash] calling signIn()');
+                    final svc = GoogleAuthService();
+                    final acc = await svc.signIn();
+                    print('[splash] signIn returned, mounted=$mounted, acc=${acc != null}');
+                    if (!context.mounted) return;
+                    if (acc != null) {
+                      print('[splash] calling upsertAccount');
+                      final stored = await svc.upsertAccount(acc);
+                      print('[splash] upsertAccount done, mounted=$mounted');
+                      if (!context.mounted) return;
+                      // Save as last active account
+                      print('[splash] saving last active account');
+                      await _saveLastActiveAccount(stored.id);
+                      print('[splash] saved, mounted=$mounted');
+                      if (!context.mounted) return;
+                      // Bring app to front after sign-in
+                      await _bringAppToFront();
+                      if (!context.mounted) return;
+
+                      if (_forceAdd) {
+                        // For add account flow, pop with account ID (this will pop AppWindowDialog)
+                        dialogNavigator.pop(stored.id);
+                      } else {
+                        // For normal sign-in, navigate to home
+                        _navigatedAway = true; // Mark as navigated to prevent pop attempts
+                        rootNavigator.pushReplacementNamed('/home', arguments: stored.id);
+                      }
+                    } else {
+                      // On Android, null might mean browser was launched and app will restart
+                      // Don't show error - the app will restart and complete sign-in via App Link
+                      if (Platform.isAndroid) {
+                        print('[splash] Android sign-in: browser launched, waiting for app restart');
+                        // Keep signing state - app will restart and complete sign-in
+                      } else {
+                        print('[splash] sign-in failed, showing snackbar');
+                        scaffoldMessenger.showSnackBar(
+                          const SnackBar(content: Text('Google sign-in not supported on this platform.')),
+                        );
+                        setState(() => _signingIn = false);
+                      }
+                    }
+                  },
+                  icon: const Icon(Icons.login),
+                  label: Text(_signingIn ? 'Signing in…' : 'Sign in with Google'),
+                ),
                 const SizedBox(height: 8),
                 Text(
-                  'Email that helps you act faster',
+                  'A better way to manage your email',
                   style: theme.textTheme.titleMedium?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 32),
-                Card(
-                  elevation: 0,
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: const [
-                        _Benefit(icon: Icons.label_important_outline, text: 'Smart action labels and reminders'),
-                        _Benefit(icon: Icons.swipe, text: 'Swipe to Archive, Trash, or Restore with one tap'),
-                        _Benefit(icon: Icons.star_border_rounded, text: 'Star and filter important conversations'),
-                        _Benefit(icon: Icons.sync, text: 'Fast 2‑minute background sync'),
-                      ],
+                Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 400), // adjust width as needed
+                    child: Card(
+                      elevation: 0,
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      child: const Padding(
+                        padding: EdgeInsets.all(20.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _Benefit(icon: Icons.label_important_outline, text: 'Set and manage email actions'),
+                            _Benefit(icon: Icons.swipe, text: 'Sort and store email, your way'),
+                            _Benefit(icon: Icons.star_border_rounded, text: 'Never miss important emails'),
+                          ],
+                        ),
+                      ),
                     ),
                   ),
                 ),

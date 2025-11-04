@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:actionmail/data/db/app_database.dart';
 import 'package:actionmail/data/models/message_index.dart';
+import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 
 class MessageRepository {
@@ -100,23 +101,68 @@ class MessageRepository {
       where: 'id=?',
       whereArgs: [messageId],
     );
+    
+    // Update sender_prefs table to keep it in sync
+    // Get the sender email from the message
+    final message = await getById(messageId);
+    if (message != null) {
+      final senderEmail = _extractEmailFromFromField(message.from);
+      if (senderEmail.isNotEmpty) {
+        await setSenderDefaultLocalTag(senderEmail, localTag);
+      }
+    }
+  }
+  
+  /// Extract email address from "From" field
+  /// Handles both "email@example.com" and "Name &lt;email@example.com&gt;" formats
+  String _extractEmailFromFromField(String from) {
+    final regex = RegExp(r'<([^>]+)>');
+    final match = regex.firstMatch(from);
+    if (match != null) return match.group(1)!.trim();
+    if (from.contains('@')) return from.trim();
+    return '';
   }
 
+  /// Set sender default local tag in sender_prefs table
+  /// Stores the tag that was just set (the user's most recent change)
+  /// If localTag is null/empty, removes the sender from prefs
+  /// This represents the last change the user made, not the most recent email by date
   Future<void> setSenderDefaultLocalTag(String senderEmail, String? localTag) async {
     final db = await _dbProvider.database;
+    
+    // If tag is being cleared, simply remove from prefs
+    if (localTag == null || localTag.isEmpty) {
+      debugPrint('[SenderPrefs] setSenderDefaultLocalTag: clearing tag for sender=$senderEmail');
+      await db.delete(
+        'sender_prefs',
+        where: 'sender=?',
+        whereArgs: [senderEmail],
+      );
+      debugPrint('[SenderPrefs] setSenderDefaultLocalTag: removed sender=$senderEmail from prefs');
+      return;
+    }
+    
+    // Store the tag that was just set (user's most recent change)
+    debugPrint('[SenderPrefs] setSenderDefaultLocalTag: setting sender=$senderEmail tag=$localTag');
     await db.insert(
       'sender_prefs',
       {'sender': senderEmail, 'localTag': localTag},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+    debugPrint('[SenderPrefs] setSenderDefaultLocalTag: stored sender=$senderEmail tag=$localTag in prefs');
   }
 
+  /// Get all sender preferences from sender_prefs table (fast lookup)
   Future<Map<String, String?>> getAllSenderPrefs() async {
     final db = await _dbProvider.database;
     final rows = await db.query('sender_prefs');
     final map = <String, String?>{};
     for (final r in rows) {
       map[r['sender'] as String] = r['localTag'] as String?;
+    }
+    debugPrint('[SenderPrefs] getAllSenderPrefs: loaded ${map.length} preferences');
+    if (map.isNotEmpty) {
+      debugPrint('[SenderPrefs] getAllSenderPrefs: ${map.entries.map((e) => '${e.key}=${e.value}').join(', ')}');
     }
     return map;
   }
