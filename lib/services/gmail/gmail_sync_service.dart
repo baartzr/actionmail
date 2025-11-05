@@ -10,6 +10,15 @@ import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
+/// Custom exception class to carry HTTP status code for better error handling
+class _GmailApiException implements Exception {
+  final String message;
+  final int statusCode;
+  _GmailApiException(this.message, this.statusCode);
+  @override
+  String toString() => message;
+}
+
 /// Service to simulate Gmail API sync
 /// In production, this would call the actual Gmail API
 class GmailSyncService {
@@ -320,31 +329,143 @@ class GmailSyncService {
   }
 
   // Apply pending Gmail modifications with retries
+  // Batches operations by account to minimize token checks
   Future<void> processPendingOps() async {
     final pending = await _repo.getPendingOps(limit: 20);
     debugPrint('[Gmail] processPendingOps found ${pending.length} pending operations');
+    if (pending.isEmpty) return;
+
+    // Group operations by accountId to batch token checks
+    final Map<String, List<Map<String, dynamic>>> opsByAccount = {};
     for (final op in pending) {
-      final int id = op['id'] as int;
-      final String accountId = op['accountId'] as String;
-      final String messageId = op['messageId'] as String;
-      final String action = op['action'] as String;
-      final int retries = (op['retries'] as int?) ?? 0;
-      try {
-        await _applyLabelChange(accountId, messageId, action);
-        await _repo.markOpDone(id);
-      } catch (e) {
-        // Minimal debug info to trace failures without noisy logs
+      final accountId = op['accountId'] as String;
+      opsByAccount.putIfAbsent(accountId, () => []).add(op);
+    }
+
+    // Process each account's operations in a batch
+    for (final entry in opsByAccount.entries) {
+      final accountId = entry.key;
+      final ops = entry.value;
+      
+      // Get token once for this account's batch
+      final auth = GoogleAuthService();
+      var account = await auth.ensureValidAccessToken(accountId);
+      var accessToken = account?.accessToken;
+      
+      // If token check failed, attempt re-auth once
+      if (accessToken == null || accessToken.isEmpty) {
         // ignore: avoid_print
-        print('[gmail] modify failed action=$action id=$messageId retries=$retries error=$e');
-        final nextRetries = retries + 1;
-        await _repo.markOpAttempted(id, retries: nextRetries, when: DateTime.now());
-        if (nextRetries >= 5) {
-          await _repo.markOpFailed(id);
+        print('[gmail] attempting reauth for account=$accountId');
+        account = await auth.reauthenticateAccount(accountId) ?? account;
+        accessToken = account?.accessToken;
+      }
+
+      // Process all operations for this account using the same token
+      // Check token validity/expiry during batch and refresh if needed
+      for (final op in ops) {
+        final int id = op['id'] as int;
+        final String messageId = op['messageId'] as String;
+        final String action = op['action'] as String;
+        final int retries = (op['retries'] as int?) ?? 0;
+        
+        // Check if token is still valid/not expired before each operation
+        if (account != null && accessToken != null && accessToken.isNotEmpty) {
+          final nowMs = DateTime.now().millisecondsSinceEpoch;
+          final isExpired = account.tokenExpiryMs != null && account.tokenExpiryMs! <= nowMs;
+          final isNearExpiry = account.tokenExpiryMs != null && account.tokenExpiryMs! <= nowMs + 60000;
+          
+          // Refresh token if expired or near expiry (within 60 seconds)
+          if (isExpired || isNearExpiry) {
+            // ignore: avoid_print
+            print('[gmail] token expired/near expiry during batch, refreshing account=$accountId remainingMs=${account.tokenExpiryMs != null ? (account.tokenExpiryMs! - nowMs) : -1}');
+            final refreshed = await auth.ensureValidAccessToken(accountId);
+            if (refreshed != null && refreshed.accessToken.isNotEmpty) {
+              account = refreshed;
+              accessToken = refreshed.accessToken;
+            } else {
+              // Refresh failed, try re-auth
+              account = await auth.reauthenticateAccount(accountId) ?? account;
+              accessToken = account.accessToken;
+            }
+          }
+        }
+        
+        try {
+          // If we have a valid token, use it directly; otherwise try individual re-auth
+          if (accessToken != null && accessToken.isNotEmpty) {
+            await _applyLabelChangeWithToken(accountId, messageId, action, accessToken);
+            await _repo.markOpDone(id);
+          } else {
+            // Fallback to individual token check if batch token failed
+            await _applyLabelChange(accountId, messageId, action);
+            await _repo.markOpDone(id);
+          }
+        } catch (e) {
+          // If we get a 401 or 403, the token likely expired - try refreshing once more
+          bool isAuthError = false;
+          if (e is _GmailApiException) {
+            isAuthError = e.statusCode == 401 || e.statusCode == 403;
+          } else {
+            final errorStr = e.toString();
+            isAuthError = errorStr.contains('401') || 
+                         errorStr.contains('403') || 
+                         errorStr.contains('Unauthorized') ||
+                         errorStr.contains('Forbidden');
+          }
+          
+          if (isAuthError) {
+            // ignore: avoid_print
+            print('[gmail] got auth error during batch, refreshing token account=$accountId error=$e');
+            final refreshed = await auth.ensureValidAccessToken(accountId);
+            if (refreshed != null && refreshed.accessToken.isNotEmpty) {
+              account = refreshed;
+              accessToken = refreshed.accessToken;
+              // Retry the operation once with refreshed token
+              try {
+                await _applyLabelChangeWithToken(accountId, messageId, action, accessToken);
+                await _repo.markOpDone(id);
+                continue; // Success, skip error handling
+              } catch (retryError) {
+                // Retry also failed, fall through to error handling
+              }
+            }
+          }
+          
+          // Minimal debug info to trace failures without noisy logs
+          // ignore: avoid_print
+          print('[gmail] modify failed action=$action id=$messageId retries=$retries error=$e');
+          final nextRetries = retries + 1;
+          await _repo.markOpAttempted(id, retries: nextRetries, when: DateTime.now());
+          if (nextRetries >= 5) {
+            await _repo.markOpFailed(id);
+          }
         }
       }
     }
   }
 
+  /// Apply label change with a pre-validated access token (for batched operations)
+  /// Returns the HTTP status code if the request fails, for better error handling
+  Future<void> _applyLabelChangeWithToken(String accountId, String messageId, String action, String accessToken) async {
+    final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/modify');
+    final body = _buildModifyBody(action);
+    final resp = await http.post(
+      uri,
+      headers: {
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+      },
+      body: jsonEncode(body),
+    );
+    if (resp.statusCode < 200 || resp.statusCode >= 300) {
+      // ignore: avoid_print
+      print('[gmail] modify http ${resp.statusCode}: ${resp.body}');
+      // Include status code in exception for better error detection
+      throw _GmailApiException('Gmail modify failed: ${resp.statusCode}', resp.statusCode);
+    }
+  }
+
+  /// Apply label change with individual token check (for single operations)
   Future<void> _applyLabelChange(String accountId, String messageId, String action) async {
     final auth = GoogleAuthService();
     var account = await auth.ensureValidAccessToken(accountId);
@@ -361,21 +482,7 @@ class GmailSyncService {
       }
     }
 
-    final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/modify');
-    final body = _buildModifyBody(action);
-    final resp = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $accessToken',
-        'Content-Type': 'application/json',
-      },
-      body: jsonEncode(body),
-    );
-    if (resp.statusCode < 200 || resp.statusCode >= 300) {
-      // ignore: avoid_print
-      print('[gmail] modify http ${resp.statusCode}: ${resp.body}');
-      throw Exception('Gmail modify failed: ${resp.statusCode}');
-    }
+    await _applyLabelChangeWithToken(accountId, messageId, action, accessToken);
   }
 
   Map<String, dynamic> _buildModifyBody(String action) {

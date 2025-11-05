@@ -42,6 +42,8 @@ class GoogleAuthService {
 
   // Cache for ongoing ensureValidAccessToken calls to prevent duplicate checks
   final Map<String, Future<GoogleAccount?>> _tokenCheckCache = {};
+  // Cache for ongoing refreshAccessToken calls to prevent duplicate refreshes
+  final Map<String, Future<GoogleAccount?>> _refreshTokenCache = {};
   // Prevent parallel/duplicate interactive sign-ins
   Future<GoogleAccount?>? _signInInProgress;
 
@@ -536,23 +538,20 @@ class GoogleAuthService {
   /// If near expiry or invalid per tokeninfo, refresh using refresh_token.
   /// Uses a cache to prevent duplicate simultaneous calls for the same account.
   Future<GoogleAccount?> ensureValidAccessToken(String accountId) async {
-    // Check if there's already an ongoing check for this account
-    if (_tokenCheckCache.containsKey(accountId)) {
-      return _tokenCheckCache[accountId];
-    }
+    // Use putIfAbsent for atomic check-and-set to prevent race conditions
+    return _tokenCheckCache.putIfAbsent(accountId, () {
+      // Create the future for this check
+      final future = _performTokenCheck(accountId);
 
-    // Create the future for this check
-    final future = _performTokenCheck(accountId);
-    _tokenCheckCache[accountId] = future;
+      // Remove from cache when done (success or failure)
+      future.then((_) {
+        _tokenCheckCache.remove(accountId);
+      }).catchError((_) {
+        _tokenCheckCache.remove(accountId);
+      });
 
-    // Remove from cache when done (success or failure)
-    future.then((_) {
-      _tokenCheckCache.remove(accountId);
-    }).catchError((_) {
-      _tokenCheckCache.remove(accountId);
+      return future;
     });
-
-    return future;
   }
 
   Future<GoogleAccount?> _performTokenCheck(String accountId) async {
@@ -776,6 +775,22 @@ class GoogleAuthService {
   }
 
   Future<GoogleAccount?> refreshAccessToken(String accountId) async {
+    // Use putIfAbsent for atomic check-and-set to prevent concurrent refresh attempts
+    return _refreshTokenCache.putIfAbsent(accountId, () {
+      final future = _performTokenRefresh(accountId);
+
+      // Remove from cache when done (success or failure)
+      future.then((_) {
+        _refreshTokenCache.remove(accountId);
+      }).catchError((_) {
+        _refreshTokenCache.remove(accountId);
+      });
+
+      return future;
+    });
+  }
+
+  Future<GoogleAccount?> _performTokenRefresh(String accountId) async {
     final account = await getAccountById(accountId);
     if (account == null || account.refreshToken == null || account.refreshToken!.isEmpty) return null;
     final resp = await http.post(

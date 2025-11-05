@@ -31,13 +31,11 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
   final MessageRepository _messageRepo = MessageRepository();
   Map<String, int> _unreadCounts = {};
   String? _lastAccountId;
-  String? _lastSelectedFolder;
 
   @override
   void initState() {
     super.initState();
     _lastAccountId = widget.accountId;
-    _lastSelectedFolder = widget.selectedFolder;
     _loadUnreadCounts();
   }
 
@@ -51,7 +49,6 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
     }
     // Reload counts if folder selection changed (to reflect immediate updates)
     if (oldWidget.selectedFolder != widget.selectedFolder) {
-      _lastSelectedFolder = widget.selectedFolder;
       // Refresh counts when folder changes to show updated counts immediately
       if (widget.accountId != null) {
         _loadUnreadCounts();
