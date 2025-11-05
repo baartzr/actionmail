@@ -2452,7 +2452,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   final syncEnabled = await _firebaseSync.isSyncEnabled();
                   if (syncEnabled) {
                     // Always sync the localTagPersonal value (even if null, it represents a change)
-                    await _firebaseSync.syncEmailMeta(message.id, localTagPersonal: state);
+                    try {
+                      await _firebaseSync.syncEmailMeta(message.id, localTagPersonal: state);
+                    } catch (e) {
+                      // Log errors but don't crash the UI
+                      debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
+                      if (kReleaseMode) {
+                        print('[HomeScreen] ERROR in syncEmailMeta: $e');
+                      }
+                    }
                   }
                   
                   // Persist a sender preference (future emails rule)

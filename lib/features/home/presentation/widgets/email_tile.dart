@@ -631,11 +631,9 @@ class _EmailTileState extends State<EmailTile> {
                                   text: TextSpan(
                                     style: baseStyle,
                                     children: [
-                                    if (dateLabel != null) ...[
-                                      TextSpan(text: dateLabel),
-                                      const TextSpan(text: '  •  '),
-                                    ],
                                       if (display.isNotEmpty) TextSpan(text: display),
+                                      if (display.isNotEmpty && dateLabel != null) const TextSpan(text: '  •  '),
+                                      if (dateLabel != null) TextSpan(text: dateLabel),
                                       const TextSpan(text: '  '),
                                       TextSpan(
                                         text: isComplete ? 'Status: Complete' : 'Status: Incomplete',

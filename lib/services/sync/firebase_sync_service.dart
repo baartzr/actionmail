@@ -1,11 +1,22 @@
 import 'dart:async';
-// import 'dart:io'; // unused
+import 'dart:io';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
+import 'package:actionmail/services/sync/firebase_init.dart';
+
+// Helper to log in both debug and release modes
+void _logFirebaseSync(String message) {
+  // In release mode, debugPrint is a no-op, so use print for critical errors
+  debugPrint(message);
+  if (kReleaseMode) {
+    // In release builds, print critical errors to console
+    print('[FirebaseSync] $message');
+  }
+}
 
 /// Firebase sync service for cross-device data synchronization using Firestore
 /// Minimal traffic design: only syncs changed metadata, not full emails
@@ -43,21 +54,37 @@ class FirebaseSyncService {
   /// Returns false if Firebase is not configured
   Future<bool> initialize() async {
     try {
+      // Wait for Firebase initialization to complete if it's still in progress
+      await FirebaseInit.instance.whenReady;
+      
       // Check if Firebase apps are initialized
       final apps = Firebase.apps;
       if (apps.isEmpty) {
-        debugPrint('[FirebaseSync] ERROR: Firebase apps is empty - Firebase not initialized');
-        debugPrint('[FirebaseSync] On desktop, you MUST run: flutterfire configure');
-        debugPrint('[FirebaseSync] This generates lib/firebase_options.dart');
+        _logFirebaseSync('ERROR: Firebase apps is empty - Firebase not initialized');
+        _logFirebaseSync('On desktop, you MUST run: flutterfire configure');
+        _logFirebaseSync('This generates lib/firebase_options.dart');
+        _logFirebaseSync('Working directory: ${Directory.current.path}');
         return false;
       }
       
-      _firestore = FirebaseFirestore.instance;
-      debugPrint('[FirebaseSync] Initialized successfully, _firestore: ${_firestore != null}');
-      return _firestore != null;
-    } catch (e) {
-      debugPrint('[FirebaseSync] Initialization error (Firebase may not be configured): $e');
-      debugPrint('[FirebaseSync] On desktop, run: flutterfire configure');
+      // Try to get Firestore instance - this might throw if initialization failed
+      try {
+        _firestore = FirebaseFirestore.instance;
+        _logFirebaseSync('Initialized successfully, _firestore: ${_firestore != null}');
+        _logFirebaseSync('Firebase app name: ${apps.first.name}');
+        _logFirebaseSync('Firebase project ID: ${apps.first.options.projectId}');
+        return _firestore != null;
+      } catch (firestoreError) {
+        _logFirebaseSync('ERROR: Failed to get Firestore instance: $firestoreError');
+        _logFirebaseSync('Firebase apps exist but Firestore cannot be accessed');
+        _logFirebaseSync('This may indicate a network or permissions issue');
+        return false;
+      }
+    } catch (e, stackTrace) {
+      _logFirebaseSync('Initialization error (Firebase may not be configured): $e');
+      _logFirebaseSync('Stack trace: $stackTrace');
+      _logFirebaseSync('On desktop, run: flutterfire configure');
+      _logFirebaseSync('Working directory: ${Directory.current.path}');
       return false;
     }
   }
@@ -84,43 +111,51 @@ class FirebaseSyncService {
 
   /// Initialize user-specific sync (requires user ID)
   Future<void> initializeUser(String? userId) async {
-    debugPrint('[FirebaseSync] initializeUser called with userId: $userId');
+    _logFirebaseSync('initializeUser called with userId: $userId');
     
     if (userId == null) {
       _userId = null;
       _userDoc = null;
       _userCollection = null;
       await _stopSync();
-      debugPrint('[FirebaseSync] User ID is null, stopping sync');
+      _logFirebaseSync('User ID is null, stopping sync');
       return;
     }
 
     _userId = userId;
     final enabled = await isSyncEnabled();
     _syncEnabled = enabled;
-    debugPrint('[FirebaseSync] Sync enabled: $enabled, _firestore: ${_firestore != null}');
+    _logFirebaseSync('Sync enabled: $enabled, _firestore: ${_firestore != null}');
     
     // If _firestore is null, try to initialize Firebase (in case initialize() wasn't called yet)
     if (_firestore == null) {
-      debugPrint('[FirebaseSync] _firestore is null, attempting to initialize Firebase...');
+      _logFirebaseSync('_firestore is null, attempting to initialize Firebase...');
       final initialized = await initialize();
       if (!initialized) {
-        debugPrint('[FirebaseSync] Cannot initialize user: Firebase initialization failed');
+        _logFirebaseSync('Cannot initialize user: Firebase initialization failed');
         // Schedule a short retry to allow background Firebase.initializeApp to complete
         if (_initRetryCount < _maxInitRetries) {
           _initRetryTimer?.cancel();
           _initRetryCount++;
           final delay = Duration(milliseconds: 300 * _initRetryCount);
-          debugPrint('[FirebaseSync] Scheduling initializeUser retry #$_initRetryCount in ${delay.inMilliseconds}ms');
-          _initRetryTimer = Timer(delay, () {
-            // Ignore await; fire and forget retry
-            initializeUser(userId);
+          _logFirebaseSync('Scheduling initializeUser retry #$_initRetryCount in ${delay.inMilliseconds}ms');
+          _initRetryTimer = Timer(delay, () async {
+            // Make this async and await properly
+            await initializeUser(userId);
           });
         } else {
-          debugPrint('[FirebaseSync] Max initializeUser retries reached; giving up');
+          _logFirebaseSync('Max initializeUser retries reached; giving up');
         }
         return;
+      } else {
+        _logFirebaseSync('Firebase initialization succeeded in initializeUser, _firestore is now set');
       }
+    }
+    
+    // Double-check enabled state after potential Firebase initialization
+    if (!enabled) {
+      _logFirebaseSync('Sync is disabled, cannot initialize user');
+      return;
     }
     
     if (_firestore != null && enabled) {
@@ -128,21 +163,28 @@ class FirebaseSyncService {
       _initRetryTimer?.cancel();
       _initRetryTimer = null;
       _initRetryCount = 0;
+      _logFirebaseSync('Setting up user collections for userId: $userId');
       _userCollection = _firestore!.collection('users');
       _userDoc = _userCollection!.doc(userId);
-      _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
-      await _loadInitialValues();
+            _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
+      _logFirebaseSync('Collections set up, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+
+      // Load initial values in the background - don't block startup
+      // ignore: unawaited_futures
+      unawaited(_loadInitialValues());
+
       await _startListening();
-      debugPrint('[FirebaseSync] User initialized: $userId, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+      _logFirebaseSync('Started listening/polling');
+      
+      _logFirebaseSync('User initialized successfully: $userId, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
     } else {
-      if (!enabled) {
-        debugPrint('[FirebaseSync] Cannot initialize user: sync is disabled');
-      }
+      _logFirebaseSync('Cannot initialize user: _firestore is ${_firestore != null ? "set" : "null"}, enabled is $enabled');
     }
   }
 
   /// Load initial values from Firebase to avoid syncing unchanged data
   /// Loads from emailMeta subcollection
+  /// Also applies Firebase values to local database if they differ
   /// Ensures query is executed on the platform thread to avoid threading errors
   Future<void> _loadInitialValues() async {
     if (_emailMetaCollection == null) return;
@@ -154,6 +196,7 @@ class FirebaseSyncService {
       // Load all documents from the emailMeta subcollection
       final snapshot = await _emailMetaCollection!.get();
       
+      // First pass: Store in _initialValues for comparison
       for (final doc in snapshot.docs) {
         final messageId = doc.id;
         final data = doc.data() as Map<String, dynamic>?;
@@ -167,6 +210,38 @@ class FirebaseSyncService {
       }
 
       debugPrint('[FirebaseSync] Loaded initial values: ${_initialValues.keys.length} email metadata entries');
+      
+      // Second pass: Apply Firebase values to local database if they differ (non-blocking)
+      // We do this in the background so it doesn't delay startup
+      // We do this by temporarily clearing _initialValues entries, then calling
+      // _handleSingleEmailMetaUpdate which will apply values when lastKnown is null
+      // ignore: unawaited_futures
+      unawaited(Future(() async {
+        final initialValuesCopy = Map<String, Map<String, dynamic>>.from(
+          _initialValues.map((k, v) => MapEntry(k, Map<String, dynamic>.from(v as Map)))
+        );
+        
+        // Clear _initialValues temporarily so _handleSingleEmailMetaUpdate treats these as new
+        _initialValues.clear();
+        
+        // Apply each Firebase value to local database
+        for (final doc in snapshot.docs) {
+          final messageId = doc.id;
+          final data = doc.data() as Map<String, dynamic>?;
+          if (data != null) {
+            final current = data['current'] as Map<String, dynamic>?;
+            if (current != null) {
+              await _handleSingleEmailMetaUpdate(messageId, current);
+            }
+          }
+        }
+        
+        // Restore _initialValues to prevent re-syncing these values
+        _initialValues.clear();
+        _initialValues.addAll(initialValuesCopy);
+        
+        debugPrint('[FirebaseSync] Applied initial Firebase values to local database');
+      }));
     } catch (e) {
       debugPrint('[FirebaseSync] Error loading initial values: $e');
     }
@@ -239,8 +314,11 @@ class FirebaseSyncService {
                 debugPrint('[FirebaseSync] Poll detected ${updatedDocs.length} changed documents');
               }
             });
-          } catch (e) {
-            debugPrint('[FirebaseSync] Error polling emailMeta: $e');
+          } catch (e, stackTrace) {
+            _logFirebaseSync('Error polling emailMeta: $e');
+            if (kReleaseMode) {
+              _logFirebaseSync('Stack trace: $stackTrace');
+            }
           }
         });
 
@@ -268,7 +346,9 @@ class FirebaseSyncService {
     if (_userId != null && _firestore != null) {
       _userCollection = _firestore!.collection('users');
       _userDoc = _userCollection!.doc(_userId!);
-      await _loadInitialValues();
+      // Load initial values in the background - don't block startup
+      // ignore: unawaited_futures
+      unawaited(_loadInitialValues());
       await _startListening();
     }
   }
@@ -282,128 +362,172 @@ class FirebaseSyncService {
     String? actionInsightText,
     bool? actionComplete,
   }) async {
-    debugPrint('[FirebaseSync] syncEmailMeta called for $messageId');
-    debugPrint('[FirebaseSync]   _syncEnabled: $_syncEnabled');
-    debugPrint('[FirebaseSync]   _userDoc: ${_userDoc != null ? "set" : "null"}');
-    debugPrint('[FirebaseSync]   _firestore: ${_firestore != null ? "set" : "null"}');
-    debugPrint('[FirebaseSync]   _userId: $_userId');
-    
-    if (!_syncEnabled) {
-      debugPrint('[FirebaseSync] Sync is disabled, skipping');
-      return;
-    }
-    
-    if (_userDoc == null) {
-      debugPrint('[FirebaseSync] _userDoc is null, cannot sync. Firebase may not be initialized.');
-      return;
-    }
-
-    // Get current initial value for this message
-    final initialKey = 'emailMeta.$messageId.current';
-    final initial = _initialValues[initialKey] as Map<String, dynamic>? ?? {};
-
-    // Read current local values to determine which parameters were explicitly provided
-    // Strategy: If parameter is null AND local has a value, it wasn't provided (skip)
-    //           If parameter is non-null OR both are null, it was provided (check against initial)
-    final repo = MessageRepository();
-    final localMessage = await repo.getById(messageId);
-    
-    // Track which fields to update - only include fields that were explicitly provided
-    bool hasChanges = false;
-    final current = <String, dynamic>{};
-    
-    // Check localTagPersonal: provided if non-null OR if both are null
-    final localTagProvided = localTagPersonal != null || localMessage?.localTagPersonal == null;
-    if (localTagProvided) {
-      final initialTag = initial['localTagPersonal'];
-      if (localTagPersonal != initialTag) {
-        current['localTagPersonal'] = localTagPersonal;
-        hasChanges = true;
-        debugPrint('[FirebaseSync]   localTagPersonal changed: $initialTag -> $localTagPersonal');
-      } else {
-        debugPrint('[FirebaseSync]   localTagPersonal unchanged: $initialTag');
-      }
-    } else {
-      debugPrint('[FirebaseSync]   localTagPersonal not provided (null param with local value: ${localMessage?.localTagPersonal}), skipping');
-    }
-    
-    // Check actionDate: provided if non-null OR if both are null
-    final actionDateProvided = actionDate != null || localMessage?.actionDate == null;
-    bool actionDateChanged = false;
-    if (actionDateProvided) {
-      final initialDateStr = initial['actionDate'] as String?;
-      final newDateStr = actionDate?.toIso8601String();
-      if (newDateStr != initialDateStr) {
-        current['actionDate'] = newDateStr;
-        hasChanges = true;
-        actionDateChanged = true;
-        debugPrint('[FirebaseSync]   actionDate changed: $initialDateStr -> $newDateStr');
-      } else {
-        debugPrint('[FirebaseSync]   actionDate unchanged: $initialDateStr');
-      }
-    } else {
-      debugPrint('[FirebaseSync]   actionDate not provided (null param with local value), skipping');
-    }
-    
-    // Check actionInsightText: provided if non-null OR if both are null
-    final actionTextProvided = actionInsightText != null || localMessage?.actionInsightText == null;
-    bool actionTextChanged = false;
-    if (actionTextProvided) {
-      final initialText = initial['actionInsightText'] as String?;
-      if (actionInsightText != initialText) {
-        current['actionInsightText'] = actionInsightText;
-        hasChanges = true;
-        actionTextChanged = true;
-        debugPrint('[FirebaseSync]   actionInsightText changed: $initialText -> $actionInsightText');
-      } else {
-        debugPrint('[FirebaseSync]   actionInsightText unchanged: $initialText');
-      }
-    } else {
-      debugPrint('[FirebaseSync]   actionInsightText not provided (null param with local value), skipping');
-    }
-    
-    // Safeguard: If either actionDate or actionInsightText is being updated, ensure both are synced together
-    // to prevent inconsistent state (e.g., text without date or date without text)
-    if (actionDateChanged || actionTextChanged) {
-      // If one was updated but the other wasn't explicitly provided, include the current local value
-      if (actionDateChanged && !actionTextProvided) {
-        // Date was updated, include current text from local
-        current['actionInsightText'] = localMessage?.actionInsightText;
-        debugPrint('[FirebaseSync]   Safeguard: Including current actionInsightText: ${localMessage?.actionInsightText}');
-      }
-      if (actionTextChanged && !actionDateProvided) {
-        // Text was updated, include current date from local
-        current['actionDate'] = localMessage?.actionDate?.toIso8601String();
-        debugPrint('[FirebaseSync]   Safeguard: Including current actionDate: ${localMessage?.actionDate?.toIso8601String()}');
-      }
-    }
-    
-    // Check actionComplete: provided if non-null OR if both are false
-    final actionCompleteProvided = actionComplete != null || (localMessage?.actionComplete ?? false) == false;
-    if (actionCompleteProvided) {
-      final initialComplete = initial['actionComplete'] as bool? ?? false;
-      if (actionComplete != initialComplete) {
-        current['actionComplete'] = actionComplete ?? false;
-        hasChanges = true;
-        debugPrint('[FirebaseSync]   actionComplete changed: $initialComplete -> ${actionComplete ?? false}');
-      } else {
-        debugPrint('[FirebaseSync]   actionComplete unchanged: $initialComplete');
-      }
-    } else {
-      debugPrint('[FirebaseSync]   actionComplete not provided (null param with local value), skipping');
-    }
-
-    if (!hasChanges) {
-      debugPrint('[FirebaseSync] No changes for message $messageId, skipping sync');
-      return;
-    }
-
-    if (_emailMetaCollection == null) {
-      debugPrint('[FirebaseSync] _emailMetaCollection is null, cannot sync. Firebase may not be initialized.');
-      return;
-    }
-
     try {
+      // Only log in debug mode to reduce noise in release
+      if (kDebugMode) {
+        _logFirebaseSync('syncEmailMeta called for $messageId, localTagPersonal=$localTagPersonal');
+      }
+      
+      if (!_syncEnabled) {
+        _logFirebaseSync('Sync is disabled, skipping sync for $messageId');
+        return;
+      }
+      
+      if (_userDoc == null) {
+        _logFirebaseSync('_userDoc is null, cannot sync. Firebase may not be initialized. UserId: $_userId');
+        // Try to re-initialize user if we have a userId
+        if (_userId != null) {
+          _logFirebaseSync('Attempting to re-initialize user: $_userId');
+          await initializeUser(_userId);
+          // Check again after re-initialization
+          if (_userDoc == null) {
+            _logFirebaseSync('Re-initialization failed, _userDoc still null');
+            return;
+          }
+          _logFirebaseSync('Re-initialization succeeded, _userDoc is now set');
+        } else {
+          return;
+        }
+      }
+
+      // Get current initial value for this message
+      final initialKey = 'emailMeta.$messageId.current';
+      final initial = _initialValues[initialKey] as Map<String, dynamic>? ?? {};
+
+      // Read current local values to determine which parameters were explicitly provided
+      // Strategy: If parameter is null AND local has a value, it wasn't provided (skip)
+      //           If parameter is non-null OR both are null, it was provided (check against initial)
+      final repo = MessageRepository();
+      final localMessage = await repo.getById(messageId);
+      
+      // Track which fields to update - only include fields that were explicitly provided
+      bool hasChanges = false;
+      final current = <String, dynamic>{};
+      
+      // Check localTagPersonal: provided if non-null OR if both are null
+      final localTagProvided = localTagPersonal != null || localMessage?.localTagPersonal == null;
+      if (localTagProvided) {
+        final initialTag = initial['localTagPersonal'];
+        if (localTagPersonal != initialTag) {
+          current['localTagPersonal'] = localTagPersonal;
+          hasChanges = true;
+          debugPrint('[FirebaseSync]   localTagPersonal changed: $initialTag -> $localTagPersonal');
+        } else {
+          debugPrint('[FirebaseSync]   localTagPersonal unchanged: $initialTag');
+        }
+      } else {
+        debugPrint('[FirebaseSync]   localTagPersonal not provided (null param with local value: ${localMessage?.localTagPersonal}), skipping');
+      }
+      
+      // Check if we're explicitly removing the action (both are null)
+      // This happens when the user clicks "Remove Action" button
+      final isExplicitRemoval = actionDate == null && actionInsightText == null &&
+                                (localMessage?.actionDate != null || localMessage?.actionInsightText != null);
+      
+      // Check actionDate: provided if non-null OR if both are null OR if explicitly removing
+      final actionDateProvided = actionDate != null || localMessage?.actionDate == null || isExplicitRemoval;
+      bool actionDateChanged = false;
+      if (actionDateProvided) {
+        final initialDateStr = initial['actionDate'] as String?;
+        final hasInitialValue = initial.containsKey('actionDate');
+        final newDateStr = actionDate?.toIso8601String();
+        
+        // Only sync if it's different from initial
+        // IMPORTANT: If initial values haven't been loaded yet (empty initial map),
+        // don't sync null to avoid overwriting Firebase values that we haven't loaded
+        if (hasInitialValue) {
+          // We have initial values loaded
+          // If we're trying to sync null and Firebase has a value, only allow if it's an explicit removal
+          if (actionDate == null && initialDateStr != null && !isExplicitRemoval) {
+            debugPrint('[FirebaseSync]   actionDate not synced: Firebase has value "$initialDateStr" and this is not an explicit removal');
+          } else if (newDateStr != initialDateStr) {
+            current['actionDate'] = newDateStr;
+            hasChanges = true;
+            actionDateChanged = true;
+            debugPrint('[FirebaseSync]   actionDate changed: $initialDateStr -> $newDateStr');
+          } else {
+            debugPrint('[FirebaseSync]   actionDate unchanged: $initialDateStr');
+          }
+        } else {
+          // Initial values not loaded yet - only sync if we're setting a value (not clearing to null)
+          // This prevents overwriting Firebase with null before we know what's in Firebase
+          if (actionDate != null) {
+            current['actionDate'] = newDateStr;
+            hasChanges = true;
+            actionDateChanged = true;
+            debugPrint('[FirebaseSync]   actionDate set (initial values not loaded yet): $newDateStr');
+          } else {
+            debugPrint('[FirebaseSync]   actionDate not synced: initial values not loaded yet, preventing null overwrite');
+          }
+        }
+      } else {
+        debugPrint('[FirebaseSync]   actionDate not provided (null param with local value), skipping');
+      }
+      
+      // Check actionInsightText: provided if non-null OR if both are null OR if explicitly removing
+      final actionTextProvided = actionInsightText != null || localMessage?.actionInsightText == null || isExplicitRemoval;
+      bool actionTextChanged = false;
+      if (actionTextProvided) {
+        final initialText = initial['actionInsightText'] as String?;
+        final hasInitialValue = initial.containsKey('actionInsightText');
+        
+        // Only sync if it's different from initial
+        // IMPORTANT: If initial values haven't been loaded yet (empty initial map),
+        // don't sync null to avoid overwriting Firebase values that we haven't loaded
+        if (hasInitialValue) {
+          // We have initial values loaded
+          // If we're trying to sync null and Firebase has a value, only allow if it's an explicit removal
+          if (actionInsightText == null && initialText != null && !isExplicitRemoval) {
+            debugPrint('[FirebaseSync]   actionInsightText not synced: Firebase has value "$initialText" and this is not an explicit removal');
+          } else if (actionInsightText != initialText) {
+            current['actionInsightText'] = actionInsightText;
+            hasChanges = true;
+            actionTextChanged = true;
+            debugPrint('[FirebaseSync]   actionInsightText changed: $initialText -> $actionInsightText');
+          } else {
+            debugPrint('[FirebaseSync]   actionInsightText unchanged: $initialText');
+          }
+        } else {
+          // Initial values not loaded yet - only sync if we're setting a value (not clearing to null)
+          // This prevents overwriting Firebase with null before we know what's in Firebase
+          if (actionInsightText != null) {
+            current['actionInsightText'] = actionInsightText;
+            hasChanges = true;
+            actionTextChanged = true;
+            debugPrint('[FirebaseSync]   actionInsightText set (initial values not loaded yet): $actionInsightText');
+          } else {
+            debugPrint('[FirebaseSync]   actionInsightText not synced: initial values not loaded yet, preventing null overwrite');
+          }
+        }
+      } else {
+        debugPrint('[FirebaseSync]   actionInsightText not provided (null param with local value), skipping');
+      }
+
+      // Check actionComplete: provided if non-null OR if both are false
+      final actionCompleteProvided = actionComplete != null || (localMessage?.actionComplete ?? false) == false;
+      if (actionCompleteProvided) {
+        final initialComplete = initial['actionComplete'] as bool? ?? false;
+        if (actionComplete != initialComplete) {
+          current['actionComplete'] = actionComplete ?? false;
+          hasChanges = true;
+          debugPrint('[FirebaseSync]   actionComplete changed: $initialComplete -> ${actionComplete ?? false}');
+        } else {
+          debugPrint('[FirebaseSync]   actionComplete unchanged: $initialComplete');
+        }
+      } else {
+        debugPrint('[FirebaseSync]   actionComplete not provided (null param with local value), skipping');
+      }
+
+      if (!hasChanges) {
+        _logFirebaseSync('No changes for message $messageId, skipping sync');
+        return;
+      }
+
+      if (_emailMetaCollection == null) {
+        _logFirebaseSync('_emailMetaCollection is null, cannot sync. Firebase may not be initialized.');
+        return;
+      }
+
       // Defer Firestore operations until after the current frame to ensure we're on the main thread
       await SchedulerBinding.instance.endOfFrame;
       
@@ -413,7 +537,7 @@ class FirebaseSyncService {
       // Check if document exists
       final existingDoc = await emailDoc.get();
       
-      debugPrint('[FirebaseSync] Updating fields: ${current.keys.toList()}');
+      _logFirebaseSync('Updating fields: ${current.keys.toList()}');
       
       // Use update() with field paths to update ONLY the changed fields
       // Firestore will preserve other fields in the nested 'current' object automatically
@@ -457,9 +581,15 @@ class FirebaseSyncService {
         initialMap['actionComplete'] = actionComplete ?? false;
       }
       
-      debugPrint('[FirebaseSync] Synced email meta for $messageId');
+      if (kDebugMode) {
+        _logFirebaseSync('Synced email meta for $messageId successfully');
+      }
     } catch (e) {
-      debugPrint('[FirebaseSync] Error syncing email meta: $e');
+      _logFirebaseSync('Error syncing email meta for $messageId: $e');
+      if (kReleaseMode) {
+        print('[FirebaseSync] ERROR syncing $messageId: $e');
+      }
+      rethrow; // Re-throw so caller knows it failed
     }
   }
 
@@ -484,10 +614,14 @@ class FirebaseSyncService {
       
       // Read existing local message to check if it exists and has data
       final existingMessage = await repo.getById(messageId);
-      final hasLocalData = existingMessage != null;
       
-      final localTag = current['localTagPersonal']?.toString();
-      final lastKnownTag = lastKnown?['localTagPersonal']?.toString();
+      final firebaseTag = current['localTagPersonal']?.toString();
+      final localTagInDb = existingMessage?.localTagPersonal;
+      
+      // Log for debugging (only in debug mode to reduce noise)
+      if (kDebugMode) {
+        _logFirebaseSync('_handleSingleEmailMetaUpdate: messageId=$messageId, firebaseTag=$firebaseTag, localTagInDb=$localTagInDb');
+      }
       
       DateTime? actionDate;
       String? lastKnownDateStr;
@@ -513,11 +647,19 @@ class FirebaseSyncService {
       DateTime? updatedActionDate;
       String? updatedActionText;
       
-      // For localTag: update if changed OR if no local data exists
-      if (localTag != lastKnownTag || (!hasLocalData && localTag != null)) {
+      // For localTag: update if Firebase value differs from LOCAL database value
+      // Compare against actual local DB value, not against lastKnown (which is from Firebase)
+      // Also handle null case: if Firebase has null but local has a tag, clear it
+      final tagChanged = firebaseTag != localTagInDb;
+      
+      if (tagChanged) {
+        // Firebase value differs from local - apply it (even if null, to clear the tag)
+        if (kDebugMode) {
+          _logFirebaseSync('Applying localTag update for $messageId: localTagInDb=$localTagInDb -> firebaseTag=$firebaseTag');
+        }
         needsUpdate = true;
-        updatedLocalTag = localTag;
-        await repo.updateLocalTag(messageId, localTag);
+        updatedLocalTag = firebaseTag; // Can be null to clear tag
+        await repo.updateLocalTag(messageId, firebaseTag);
         
         // Derive and update sender preference locally (don't sync to Firebase)
         final message = await repo.getById(messageId);
@@ -534,16 +676,16 @@ class FirebaseSyncService {
           
           // Only update if we have a valid email
           if (senderEmail.contains('@')) {
-            await repo.setSenderDefaultLocalTag(senderEmail.trim(), localTag);
-            debugPrint('[FirebaseSync] Updated sender preference for $senderEmail to $localTag (from emailMeta update)');
+            await repo.setSenderDefaultLocalTag(senderEmail.trim(), firebaseTag);
+            debugPrint('[FirebaseSync] Updated sender preference for $senderEmail to $firebaseTag (from emailMeta update)');
           }
         }
         
-        // Update initial values to track this change
+        // Update initial values to track this change (so we don't re-sync it)
         if (!_initialValues.containsKey(initialKey)) {
           _initialValues[initialKey] = <String, dynamic>{};
         }
-        (_initialValues[initialKey] as Map<String, dynamic>)['localTagPersonal'] = localTag;
+        (_initialValues[initialKey] as Map<String, dynamic>)['localTagPersonal'] = firebaseTag;
       }
       
       // Update action if actionDate, actionText, or actionComplete is present and different
@@ -579,7 +721,7 @@ class FirebaseSyncService {
           textUpdated = true;
         }
       }
-      
+
       if (current.containsKey('actionComplete')) {
         // Update if changed OR if no local action data exists
         if (!hasLocalAction || actionComplete != lastKnownComplete) {
@@ -587,20 +729,7 @@ class FirebaseSyncService {
           actionChanged = true;
         }
       }
-      
-      // Safeguard: If either actionDate or actionInsightText was updated, ensure both are set
-      // to prevent inconsistent state (e.g., text without date or date without text)
-      if (dateUpdated && !textUpdated) {
-        // Date was updated but text wasn't - preserve existing text
-        finalActionText = existingMessage?.actionInsightText;
-        debugPrint('[FirebaseSync]   Safeguard: Preserving existing actionInsightText: $finalActionText');
-      }
-      if (textUpdated && !dateUpdated) {
-        // Text was updated but date wasn't - preserve existing date
-        finalActionDate = existingMessage?.actionDate;
-        debugPrint('[FirebaseSync]   Safeguard: Preserving existing actionDate: $finalActionDate');
-      }
-      
+
       if (actionChanged) {
         needsUpdate = true;
         updatedActionDate = finalActionDate;
@@ -624,14 +753,18 @@ class FirebaseSyncService {
       }
       
       if (needsUpdate) {
-        debugPrint('[FirebaseSync] Applied update for message $messageId');
+        if (kDebugMode) {
+          _logFirebaseSync('Applied update for message $messageId: localTag=$updatedLocalTag');
+        }
         
         // Notify UI to update the provider state
         if (onUpdateApplied != null) {
           onUpdateApplied!(messageId, updatedLocalTag, updatedActionDate, updatedActionText);
+        } else if (kDebugMode) {
+          _logFirebaseSync('onUpdateApplied callback is null, UI will not be updated');
         }
-      } else {
-        debugPrint('[FirebaseSync] No changes detected for message $messageId (already up to date)');
+      } else if (kDebugMode) {
+        _logFirebaseSync('No changes detected for message $messageId (already up to date)');
       }
     } catch (e) {
       debugPrint('[FirebaseSync] Error applying email meta update for $messageId: $e');

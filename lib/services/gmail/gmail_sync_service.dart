@@ -544,8 +544,24 @@ class GmailSyncService {
     if (resp.statusCode != 200) return null;
     final map = jsonDecode(resp.body) as Map<String, dynamic>;
     final gm = GmailMessage.fromJson(map);
-    // Collect HTML/plain bodies from parts tree (MessagePayload.body is not used here)
+    // Collect HTML/plain bodies from parts tree and top-level body
     final bodies = <String>[];
+    
+    // Check top-level payload body first (some emails have body here, not in parts)
+    // Note: MessagePayload.body is a String?, not a MessageBody object
+    if (gm.payload?.body != null) {
+      try {
+        final mime = (gm.payload?.mimeType ?? '').toLowerCase();
+        if (mime.contains('text/html') || mime.contains('text/plain')) {
+          final decoded = utf8.decode(
+            base64Url.decode((gm.payload!.body!).replaceAll('-', '+').replaceAll('_', '/')),
+          );
+          bodies.add(decoded);
+        }
+      } catch (_) {}
+    }
+    
+    // Also walk parts tree
     void walkPart(MessagePart? part) {
       if (part == null) return;
       final mime = (part.mimeType ?? '').toLowerCase();
@@ -568,16 +584,23 @@ class GmailSyncService {
         walkPart(p);
       }
     }
-    // Regex for unsubscribe-like links - multiple patterns to catch various formats
+    // Regex for unsubscribe-like links - only test for keywords in link TEXT, not URL
+    // Common variations: unsubscribe, unsub, opt-out, opt out, optout, opt_out
+    // We capture the actual link URL regardless of what it contains
     final patterns = [
-      // Standard href links
-      RegExp(r'''href=["']([^"']*(?:unsubscribe|opt[-_]?out|preferences|manage\s*(?:subscription|email)|email\s*preferences)[^"']*)["']''', caseSensitive: false),
-      // mailto: links
-      RegExp(r'''mailto:[^\s"\'<>]*unsubscribe[^\s"\'<>]*''', caseSensitive: false),
-      // Plain URL with unsubscribe
-      RegExp(r'''https?://[^\s"\'<>]*(?:unsubscribe|opt[-_]?out)[^\s"\'<>]*''', caseSensitive: false),
-      // List-Unsubscribe header style (often in headers, but check body too)
-      RegExp(r'''<(https?://[^\s<>]*unsubscribe[^\s<>]*)>''', caseSensitive: false),
+      // mailto: links - these are legitimate unsubscribe links even if URL doesn't say "unsubscribe"
+      RegExp(r'''mailto:[^\s"\'<>]*(?:unsubscribe|unsub|opt[-_]?out|optout)[^\s"\'<>]*''', caseSensitive: false),
+      // Catch links where href is followed by "Unsubscribe" text inside the tag
+      // Matches: <a href="tracking-url">Unsubscribe</a> or <a href="url">Unsubscribe</a>
+      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>(?:[^<]*<[^>]*>)*[^<]*(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*</a>''', caseSensitive: false),
+      // Catch links where "Unsubscribe" text precedes the href
+      // Matches: <a>Unsubscribe</a> with href elsewhere, or text before href
+      RegExp(r'''(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<>]*?<a[^>]*href=["']([^"']+)["']''', caseSensitive: false),
+      // Catch links where href and unsubscribe text are in the same tag area
+      // More flexible: allows whitespace and other attributes between href and text
+      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,500}?(?:unsubscribe|unsub|opt[-_\s]?out|optout)[\s\S]{0,500}?</a>''', caseSensitive: false),
+      // Reverse: href followed by unsubscribe text (within reasonable distance)
+      RegExp(r'''href=["']([^"']+)["'][^>]*>[\s\S]{0,500}?(?:unsubscribe|unsub|opt[-_\s]?out|optout)''', caseSensitive: false),
     ];
     
     for (final body in bodies) {
