@@ -5,7 +5,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/widgets.dart';
 import 'package:actionmail/data/repositories/message_repository.dart';
+import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/sync/firebase_init.dart';
 
 // Helper to log in both debug and release modes
@@ -14,6 +16,7 @@ void _logFirebaseSync(String message) {
   debugPrint(message);
   if (kReleaseMode) {
     // In release builds, print critical errors to console
+    // ignore: avoid_print
     print('[FirebaseSync] $message');
   }
 }
@@ -36,10 +39,7 @@ class FirebaseSyncService {
   CollectionReference? _emailMetaCollection; // Subcollection for email metadata
   String? _userId;
   bool _syncEnabled = false;
-  final Map<String, StreamSubscription> _subscriptions = {};
-  Timer? _pollTimer; // Polling timer instead of real-time listener
-  final Map<String, dynamic> _initialValues = {}; // Track initial values to avoid syncing on load
-  final Map<String, Map<String, dynamic>> _lastKnownDocs = {}; // Track last known document versions for polling
+  StreamSubscription<QuerySnapshot>? _emailMetaSubscription; // Real-time listener subscription
   // Retry state for delayed initialization when Firebase isn't ready yet
   Timer? _initRetryTimer;
   int _initRetryCount = 0;
@@ -164,181 +164,243 @@ class FirebaseSyncService {
       _initRetryTimer = null;
       _initRetryCount = 0;
       _logFirebaseSync('Setting up user collections for userId: $userId');
-      _userCollection = _firestore!.collection('users');
-      _userDoc = _userCollection!.doc(userId);
-            _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
-      _logFirebaseSync('Collections set up, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
-
-      // Load initial values in the background - don't block startup
-      // ignore: unawaited_futures
-      unawaited(_loadInitialValues());
-
-      await _startListening();
-      _logFirebaseSync('Started listening/polling');
       
-      _logFirebaseSync('User initialized successfully: $userId, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+      // Collection references and all Firebase operations must be created/called on platform thread
+      // Since this is called after local email load completes, we're on a stable thread context
+      // Use a single frame callback to ensure platform thread execution
+      final scheduler = SchedulerBinding.instance;
+      scheduler.addPostFrameCallback((_) async {
+          // Create collection references (synchronous, but must be on platform thread)
+          _userCollection = _firestore!.collection('users');
+          _userDoc = _userCollection!.doc(userId);
+          _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
+          _logFirebaseSync('Collections set up, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+
+          // Start listening (must be on platform thread)
+          await _startListening();
+          _logFirebaseSync('Started listening');
+          
+          // Load initial values in background (must also be on platform thread)
+          unawaited(_loadInitialValues());
+          
+          _logFirebaseSync('User initialized successfully: $userId, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+        });
     } else {
       _logFirebaseSync('Cannot initialize user: _firestore is ${_firestore != null ? "set" : "null"}, enabled is $enabled');
     }
   }
 
-  /// Load initial values from Firebase to avoid syncing unchanged data
-  /// Loads from emailMeta subcollection
-  /// Also applies Firebase values to local database if they differ
-  /// Ensures query is executed on the platform thread to avoid threading errors
+  /// Helper to ensure Firebase operations run on the platform thread
+  /// Uses SchedulerBinding.scheduleFrameCallback to ensure platform thread execution
+  Future<T> _runOnMainThread<T>(Future<T> Function() operation) async {
+    final scheduler = SchedulerBinding.instance;
+    final completer = Completer<T>();
+    // scheduleFrameCallback ensures execution on the platform thread
+    scheduler.scheduleFrameCallback((_) async {
+      try {
+        final result = await operation();
+        if (!completer.isCompleted) {
+          completer.complete(result);
+        }
+      } catch (e) {
+        if (!completer.isCompleted) {
+          completer.completeError(e);
+        }
+      }
+    });
+    return completer.future;
+  }
+
+  /// Load initial values from Firebase and reconcile with local changes
+  /// Uses timestamp comparison: if local.lastUpdated > firebase.lastModified, push local → Firebase
+  /// Otherwise, pull Firebase → local
+  /// NOTE: This must be called from the main thread context
   Future<void> _loadInitialValues() async {
     if (_emailMetaCollection == null) return;
     
     try {
-      // Defer query execution until after the current frame to ensure we're on the main thread
-      await SchedulerBinding.instance.endOfFrame;
+      // Load all documents from Firebase - ensure .get() is called on platform thread
+      final snapshot = await _runOnMainThread(() => _emailMetaCollection!.get());
       
-      // Load all documents from the emailMeta subcollection
-      final snapshot = await _emailMetaCollection!.get();
-      
-      // First pass: Store in _initialValues for comparison
-      for (final doc in snapshot.docs) {
-        final messageId = doc.id;
-        final data = doc.data() as Map<String, dynamic>?;
-        if (data != null) {
-          final current = data['current'] as Map<String, dynamic>?;
-          if (current != null) {
-            final initialKey = 'emailMeta.$messageId.current';
-            _initialValues[initialKey] = Map<String, dynamic>.from(current);
-          }
-        }
-      }
-
-      debugPrint('[FirebaseSync] Loaded initial values: ${_initialValues.keys.length} email metadata entries');
-      
-      // Second pass: Apply Firebase values to local database if they differ (non-blocking)
-      // We do this in the background so it doesn't delay startup
-      // We do this by temporarily clearing _initialValues entries, then calling
-      // _handleSingleEmailMetaUpdate which will apply values when lastKnown is null
-      // ignore: unawaited_futures
-      unawaited(Future(() async {
-        final initialValuesCopy = Map<String, Map<String, dynamic>>.from(
-          _initialValues.map((k, v) => MapEntry(k, Map<String, dynamic>.from(v as Map)))
-        );
+      // Reconcile each document (non-blocking, but ensure Firebase operations on main thread)
+      // Use scheduleMicrotask to ensure immediate execution on main thread
+      scheduleMicrotask(() async {
+        final repo = MessageRepository();
         
-        // Clear _initialValues temporarily so _handleSingleEmailMetaUpdate treats these as new
-        _initialValues.clear();
-        
-        // Apply each Firebase value to local database
         for (final doc in snapshot.docs) {
           final messageId = doc.id;
           final data = doc.data() as Map<String, dynamic>?;
-          if (data != null) {
-            final current = data['current'] as Map<String, dynamic>?;
-            if (current != null) {
-              await _handleSingleEmailMetaUpdate(messageId, current);
+          if (data == null) continue;
+          
+          final current = data['current'] as Map<String, dynamic>?;
+          if (current == null) continue;
+          
+          // Get Firebase lastModified timestamp (Unix milliseconds)
+          final lastModifiedObj = data['lastModified'];
+          int? firebaseTimestamp;
+          if (lastModifiedObj != null) {
+            if (lastModifiedObj is Timestamp) {
+              firebaseTimestamp = lastModifiedObj.millisecondsSinceEpoch;
+            } else if (lastModifiedObj is int) {
+              firebaseTimestamp = lastModifiedObj;
+            } else if (lastModifiedObj is String) {
+              // Try parsing ISO string
+              try {
+                final dt = DateTime.parse(lastModifiedObj);
+                firebaseTimestamp = dt.millisecondsSinceEpoch;
+              } catch (_) {}
             }
+          }
+          
+          // Get local message with lastUpdated timestamp
+          final localMessage = await repo.getById(messageId);
+          final localTimestamp = localMessage != null 
+              ? await _getLocalLastUpdated(messageId)
+              : null;
+          
+          // Compare timestamps (Unix milliseconds)
+          if (localTimestamp != null && firebaseTimestamp != null) {
+            if (localTimestamp > firebaseTimestamp) {
+              // Local is newer - push local → Firebase
+              await _pushLocalToFirebase(messageId, localMessage!);
+              continue;
+            }
+            // Firebase is newer or equal - pull Firebase → local
+            await _handleSingleEmailMetaUpdate(messageId, current);
+          } else if (firebaseTimestamp != null) {
+            // Only Firebase has timestamp - pull Firebase → local
+            await _handleSingleEmailMetaUpdate(messageId, current);
+          } else if (localTimestamp != null && localMessage != null) {
+            // Only local has timestamp - push local → Firebase
+            await _pushLocalToFirebase(messageId, localMessage);
+          } else {
+            // Neither has timestamp - just apply Firebase values
+            await _handleSingleEmailMetaUpdate(messageId, current);
           }
         }
         
-        // Restore _initialValues to prevent re-syncing these values
-        _initialValues.clear();
-        _initialValues.addAll(initialValuesCopy);
-        
-        debugPrint('[FirebaseSync] Applied initial Firebase values to local database');
-      }));
+        debugPrint('[FirebaseSync] Completed reconciliation of Firebase and local values');
+      });
     } catch (e) {
-      debugPrint('[FirebaseSync] Error loading initial values: $e');
+      _logFirebaseSync('Error loading initial values: $e');
+    }
+  }
+  
+  /// Get local lastUpdated timestamp for a message (Unix milliseconds)
+  Future<int?> _getLocalLastUpdated(String messageId) async {
+    try {
+      final repo = MessageRepository();
+      return await repo.getLastUpdated(messageId);
+    } catch (_) {
+      return null;
+    }
+  }
+  
+  /// Push all local fields to Firebase (used when local.lastUpdated > firebase.lastModified)
+  Future<void> _pushLocalToFirebase(String messageId, MessageIndex localMessage) async {
+    try {
+      if (!_syncEnabled || _emailMetaCollection == null) return;
+      
+      await _runOnMainThread(() async {
+        final emailDoc = _emailMetaCollection!.doc(messageId);
+        final updateData = <String, dynamic>{
+          'lastModified': FieldValue.serverTimestamp(),
+        };
+        
+        // Push all local fields to Firebase
+        updateData['current.localTagPersonal'] = localMessage.localTagPersonal;
+        
+        if (localMessage.actionDate != null) {
+          updateData['current.actionDate'] = localMessage.actionDate!.toIso8601String();
+          updateData['current.actionInsightText'] = localMessage.actionInsightText;
+        } else {
+          updateData['current.actionDate'] = null;
+          updateData['current.actionInsightText'] = localMessage.actionInsightText;
+        }
+        
+        updateData['current.actionComplete'] = localMessage.actionComplete;
+        
+        final existingDoc = await emailDoc.get();
+        
+        if (!existingDoc.exists) {
+          final current = <String, dynamic>{
+            'localTagPersonal': localMessage.localTagPersonal,
+            'actionDate': localMessage.actionDate?.toIso8601String(),
+            'actionInsightText': localMessage.actionInsightText,
+            'actionComplete': localMessage.actionComplete,
+          };
+          await emailDoc.set({
+            'current': current,
+            'lastModified': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        } else {
+          await emailDoc.update(updateData);
+        }
+        
+        if (kDebugMode) {
+          _logFirebaseSync('Pushed local changes to Firebase for $messageId (local was newer)');
+        }
+      });
+    } catch (e) {
+      _logFirebaseSync('Error pushing local to Firebase for $messageId: $e');
     }
   }
 
-  /// Start listening to Firebase changes using polling instead of real-time listeners
-  /// This avoids the threading error that occurs with Firestore snapshot listeners
-  /// Polls every 5 seconds to check for changes
+  /// Start listening to Firebase changes using real-time listener
+  /// Processes changes on main thread to avoid threading errors
   Future<void> _startListening() async {
     if (_emailMetaCollection == null || !_syncEnabled) return;
 
     try {
-      // Defer polling setup until after the current frame to ensure we're on the main thread
-      SchedulerBinding.instance.addPostFrameCallback((_) {
-        // Double-check we're still enabled and have collection
-        if (_emailMetaCollection == null || !_syncEnabled) return;
-        
-        // Cancel any existing timer
-        _pollTimer?.cancel();
-        
-        // Clear last known docs when restarting
-        _lastKnownDocs.clear();
-        
-        // Poll every 5 seconds for changes
-        _pollTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-          if (_emailMetaCollection == null || !_syncEnabled) {
-            timer.cancel();
-            return;
-          }
-          
-          try {
-            // Poll for all documents - this is safe to do on any thread
-            final snapshot = await _emailMetaCollection!.get();
-            
-            // Process on main thread
-            scheduleMicrotask(() {
-              final updatedDocs = <String, Map<String, dynamic>>{};
-              
-              for (final doc in snapshot.docs) {
-                final messageId = doc.id;
-                final data = doc.data() as Map<String, dynamic>?;
+      // Cancel any existing subscription
+      await _emailMetaSubscription?.cancel();
+      
+      // The .snapshots() call creates a platform channel that must be created on the platform thread
+      // Use WidgetsBinding to ensure we're on the platform thread when creating the listener
+      final binding = WidgetsBinding.instance;
+      final completer = Completer<void>();
+      binding.addPostFrameCallback((_) {
+        // Create the listener on the platform thread
+        _emailMetaSubscription = _emailMetaCollection!.snapshots().listen(
+          (snapshot) {
+            // Process on main thread - use scheduleMicrotask for async operations
+            scheduleMicrotask(() async {
+              for (final docChange in snapshot.docChanges) {
+                final messageId = docChange.doc.id;
+                final data = docChange.doc.data() as Map<String, dynamic>?;
                 
                 if (data == null) continue;
                 
                 final current = data['current'] as Map<String, dynamic>?;
                 if (current == null) continue;
                 
-                // Check if this document changed
-                final lastKnown = _lastKnownDocs[messageId];
-                final isChanged = lastKnown == null || 
-                    !_mapsEqual(Map<String, dynamic>.from(lastKnown), Map<String, dynamic>.from(current));
-                
-                if (isChanged) {
-                  updatedDocs[messageId] = current;
-                  _lastKnownDocs[messageId] = Map<String, dynamic>.from(current);
-                  
-                  // Process this single email change
-                  _handleSingleEmailMetaUpdate(messageId, current);
+                // Process this email change (await to ensure errors are caught)
+                try {
+                  await _handleSingleEmailMetaUpdate(messageId, current);
+                } catch (e) {
+                  _logFirebaseSync('Error processing update for $messageId: $e');
                 }
               }
-              
-              // Remove documents that no longer exist
-              final existingIds = snapshot.docs.map((d) => d.id).toSet();
-              final removedIds = _lastKnownDocs.keys.where((id) => !existingIds.contains(id)).toList();
-              for (final id in removedIds) {
-                _lastKnownDocs.remove(id);
-              }
-              
-              if (updatedDocs.isNotEmpty) {
-                debugPrint('[FirebaseSync] Poll detected ${updatedDocs.length} changed documents');
-              }
             });
-          } catch (e, stackTrace) {
-            _logFirebaseSync('Error polling emailMeta: $e');
-            if (kReleaseMode) {
-              _logFirebaseSync('Stack trace: $stackTrace');
-            }
-          }
-        });
-
-        debugPrint('[FirebaseSync] Started polling emailMeta subcollection (every 5 seconds)');
+          },
+          onError: (error) {
+            _logFirebaseSync('Error in emailMeta listener: $error');
+          },
+        );
+        debugPrint('[FirebaseSync] Started real-time listener for emailMeta subcollection');
+        completer.complete();
       });
+      await completer.future;
     } catch (e) {
-      debugPrint('[FirebaseSync] Error scheduling polling: $e');
+      _logFirebaseSync('Error starting listener: $e');
     }
   }
 
-  /// Stop all Firebase listeners and polling
+  /// Stop all Firebase listeners
   Future<void> _stopSync() async {
-    for (final sub in _subscriptions.values) {
-      await sub.cancel();
-    }
-    _subscriptions.clear();
-    _pollTimer?.cancel();
-    _pollTimer = null;
-    _lastKnownDocs.clear();
-    debugPrint('[FirebaseSync] Stopped listening and polling');
+    await _emailMetaSubscription?.cancel();
+    _emailMetaSubscription = null;
+    debugPrint('[FirebaseSync] Stopped listening');
   }
 
   /// Initialize user sync if enabled
@@ -354,8 +416,10 @@ class FirebaseSyncService {
   }
 
   /// Sync email metadata (personal/business tag, action date, action message, action complete)
-  /// Only syncs fields that are explicitly provided and have changed from initial value
-  /// Note: Pass values to sync, null to clear (if previously set)
+  /// Simple push: updates Firebase with whatever values are provided
+  /// Since Dart can't distinguish "not passed" from "passed as null" for optional params,
+  /// we update fields based on what's provided. The caller is responsible for only passing
+  /// the fields they want to update.
   Future<void> syncEmailMeta(String messageId, {
     String? localTagPersonal,
     DateTime? actionDate,
@@ -363,233 +427,84 @@ class FirebaseSyncService {
     bool? actionComplete,
   }) async {
     try {
-      // Only log in debug mode to reduce noise in release
-      if (kDebugMode) {
-        _logFirebaseSync('syncEmailMeta called for $messageId, localTagPersonal=$localTagPersonal');
-      }
-      
-      if (!_syncEnabled) {
-        _logFirebaseSync('Sync is disabled, skipping sync for $messageId');
-        return;
-      }
-      
-      if (_userDoc == null) {
-        _logFirebaseSync('_userDoc is null, cannot sync. Firebase may not be initialized. UserId: $_userId');
-        // Try to re-initialize user if we have a userId
-        if (_userId != null) {
-          _logFirebaseSync('Attempting to re-initialize user: $_userId');
+      if (!_syncEnabled || _emailMetaCollection == null) {
+        if (_userId != null && _emailMetaCollection == null) {
           await initializeUser(_userId);
-          // Check again after re-initialization
-          if (_userDoc == null) {
-            _logFirebaseSync('Re-initialization failed, _userDoc still null');
-            return;
-          }
-          _logFirebaseSync('Re-initialization succeeded, _userDoc is now set');
+          if (_emailMetaCollection == null) return;
         } else {
           return;
         }
       }
 
-      // Get current initial value for this message
-      final initialKey = 'emailMeta.$messageId.current';
-      final initial = _initialValues[initialKey] as Map<String, dynamic>? ?? {};
-
-      // Read current local values to determine which parameters were explicitly provided
-      // Strategy: If parameter is null AND local has a value, it wasn't provided (skip)
-      //           If parameter is non-null OR both are null, it was provided (check against initial)
-      final repo = MessageRepository();
-      final localMessage = await repo.getById(messageId);
-      
-      // Track which fields to update - only include fields that were explicitly provided
-      bool hasChanges = false;
-      final current = <String, dynamic>{};
-      
-      // Check localTagPersonal: provided if non-null OR if both are null
-      final localTagProvided = localTagPersonal != null || localMessage?.localTagPersonal == null;
-      if (localTagProvided) {
-        final initialTag = initial['localTagPersonal'];
-        if (localTagPersonal != initialTag) {
-          current['localTagPersonal'] = localTagPersonal;
-          hasChanges = true;
-          debugPrint('[FirebaseSync]   localTagPersonal changed: $initialTag -> $localTagPersonal');
-        } else {
-          debugPrint('[FirebaseSync]   localTagPersonal unchanged: $initialTag');
-        }
-      } else {
-        debugPrint('[FirebaseSync]   localTagPersonal not provided (null param with local value: ${localMessage?.localTagPersonal}), skipping');
-      }
-      
-      // Check if we're explicitly removing the action (both are null)
-      // This happens when the user clicks "Remove Action" button
-      final isExplicitRemoval = actionDate == null && actionInsightText == null &&
-                                (localMessage?.actionDate != null || localMessage?.actionInsightText != null);
-      
-      // Check actionDate: provided if non-null OR if both are null OR if explicitly removing
-      final actionDateProvided = actionDate != null || localMessage?.actionDate == null || isExplicitRemoval;
-      bool actionDateChanged = false;
-      if (actionDateProvided) {
-        final initialDateStr = initial['actionDate'] as String?;
-        final hasInitialValue = initial.containsKey('actionDate');
-        final newDateStr = actionDate?.toIso8601String();
-        
-        // Only sync if it's different from initial
-        // IMPORTANT: If initial values haven't been loaded yet (empty initial map),
-        // don't sync null to avoid overwriting Firebase values that we haven't loaded
-        if (hasInitialValue) {
-          // We have initial values loaded
-          // If we're trying to sync null and Firebase has a value, only allow if it's an explicit removal
-          if (actionDate == null && initialDateStr != null && !isExplicitRemoval) {
-            debugPrint('[FirebaseSync]   actionDate not synced: Firebase has value "$initialDateStr" and this is not an explicit removal');
-          } else if (newDateStr != initialDateStr) {
-            current['actionDate'] = newDateStr;
-            hasChanges = true;
-            actionDateChanged = true;
-            debugPrint('[FirebaseSync]   actionDate changed: $initialDateStr -> $newDateStr');
-          } else {
-            debugPrint('[FirebaseSync]   actionDate unchanged: $initialDateStr');
-          }
-        } else {
-          // Initial values not loaded yet - only sync if we're setting a value (not clearing to null)
-          // This prevents overwriting Firebase with null before we know what's in Firebase
-          if (actionDate != null) {
-            current['actionDate'] = newDateStr;
-            hasChanges = true;
-            actionDateChanged = true;
-            debugPrint('[FirebaseSync]   actionDate set (initial values not loaded yet): $newDateStr');
-          } else {
-            debugPrint('[FirebaseSync]   actionDate not synced: initial values not loaded yet, preventing null overwrite');
-          }
-        }
-      } else {
-        debugPrint('[FirebaseSync]   actionDate not provided (null param with local value), skipping');
-      }
-      
-      // Check actionInsightText: provided if non-null OR if both are null OR if explicitly removing
-      final actionTextProvided = actionInsightText != null || localMessage?.actionInsightText == null || isExplicitRemoval;
-      bool actionTextChanged = false;
-      if (actionTextProvided) {
-        final initialText = initial['actionInsightText'] as String?;
-        final hasInitialValue = initial.containsKey('actionInsightText');
-        
-        // Only sync if it's different from initial
-        // IMPORTANT: If initial values haven't been loaded yet (empty initial map),
-        // don't sync null to avoid overwriting Firebase values that we haven't loaded
-        if (hasInitialValue) {
-          // We have initial values loaded
-          // If we're trying to sync null and Firebase has a value, only allow if it's an explicit removal
-          if (actionInsightText == null && initialText != null && !isExplicitRemoval) {
-            debugPrint('[FirebaseSync]   actionInsightText not synced: Firebase has value "$initialText" and this is not an explicit removal');
-          } else if (actionInsightText != initialText) {
-            current['actionInsightText'] = actionInsightText;
-            hasChanges = true;
-            actionTextChanged = true;
-            debugPrint('[FirebaseSync]   actionInsightText changed: $initialText -> $actionInsightText');
-          } else {
-            debugPrint('[FirebaseSync]   actionInsightText unchanged: $initialText');
-          }
-        } else {
-          // Initial values not loaded yet - only sync if we're setting a value (not clearing to null)
-          // This prevents overwriting Firebase with null before we know what's in Firebase
-          if (actionInsightText != null) {
-            current['actionInsightText'] = actionInsightText;
-            hasChanges = true;
-            actionTextChanged = true;
-            debugPrint('[FirebaseSync]   actionInsightText set (initial values not loaded yet): $actionInsightText');
-          } else {
-            debugPrint('[FirebaseSync]   actionInsightText not synced: initial values not loaded yet, preventing null overwrite');
-          }
-        }
-      } else {
-        debugPrint('[FirebaseSync]   actionInsightText not provided (null param with local value), skipping');
-      }
-
-      // Check actionComplete: provided if non-null OR if both are false
-      final actionCompleteProvided = actionComplete != null || (localMessage?.actionComplete ?? false) == false;
-      if (actionCompleteProvided) {
-        final initialComplete = initial['actionComplete'] as bool? ?? false;
-        if (actionComplete != initialComplete) {
-          current['actionComplete'] = actionComplete ?? false;
-          hasChanges = true;
-          debugPrint('[FirebaseSync]   actionComplete changed: $initialComplete -> ${actionComplete ?? false}');
-        } else {
-          debugPrint('[FirebaseSync]   actionComplete unchanged: $initialComplete');
-        }
-      } else {
-        debugPrint('[FirebaseSync]   actionComplete not provided (null param with local value), skipping');
-      }
-
-      if (!hasChanges) {
-        _logFirebaseSync('No changes for message $messageId, skipping sync');
-        return;
-      }
-
-      if (_emailMetaCollection == null) {
-        _logFirebaseSync('_emailMetaCollection is null, cannot sync. Firebase may not be initialized.');
-        return;
-      }
-
-      // Defer Firestore operations until after the current frame to ensure we're on the main thread
-      await SchedulerBinding.instance.endOfFrame;
-      
-      // Write to the subcollection - each email is its own document
-      final emailDoc = _emailMetaCollection!.doc(messageId);
-      
-      // Check if document exists
-      final existingDoc = await emailDoc.get();
-      
-      _logFirebaseSync('Updating fields: ${current.keys.toList()}');
-      
-      // Use update() with field paths to update ONLY the changed fields
-      // Firestore will preserve other fields in the nested 'current' object automatically
-      final updateData = <String, dynamic>{
-        'lastModified': FieldValue.serverTimestamp(),
-      };
-      
-      // Update only the fields that changed using field paths
-      for (final key in current.keys) {
-        updateData['current.$key'] = current[key];
-      }
-      
-      // If document doesn't exist, use set() with merge to create it
-      if (!existingDoc.exists) {
-        await emailDoc.set({
-          'current': current,
+      await _runOnMainThread(() async {
+        final emailDoc = _emailMetaCollection!.doc(messageId);
+        final updateData = <String, dynamic>{
           'lastModified': FieldValue.serverTimestamp(),
-        }, SetOptions(merge: true));
-      } else {
-        // Use update() with field paths - Firestore preserves other nested fields
-        await emailDoc.update(updateData);
-      }
-      
-      // Update initial values to prevent re-syncing
-      if (!_initialValues.containsKey(initialKey)) {
-        _initialValues[initialKey] = <String, dynamic>{};
-      }
-      final initialMap = _initialValues[initialKey] as Map<String, dynamic>;
-      
-      // Update only the fields that were synced
-      if (current.containsKey('localTagPersonal')) {
-        initialMap['localTagPersonal'] = localTagPersonal;
-      }
-      if (current.containsKey('actionDate')) {
-        initialMap['actionDate'] = actionDate?.toIso8601String();
-      }
-      if (current.containsKey('actionInsightText')) {
-        initialMap['actionInsightText'] = actionInsightText;
-      }
-      if (current.containsKey('actionComplete')) {
-        initialMap['actionComplete'] = actionComplete ?? false;
-      }
-      
-      if (kDebugMode) {
-        _logFirebaseSync('Synced email meta for $messageId successfully');
-      }
+        };
+        
+        // Simple: update fields that are provided
+        // Since we can't distinguish "not passed" from "null", we use heuristics:
+        // - If only tag is "provided" (no action params), update tag
+        // - If action params are provided, update actions (and tag only if explicitly non-null)
+        bool hasUpdates = false;
+        final isTagOnly = actionDate == null && actionInsightText == null && actionComplete == null;
+        
+        if (isTagOnly) {
+          // Tag-only update
+          updateData['current.localTagPersonal'] = localTagPersonal;
+          hasUpdates = true;
+        } else {
+          // Action update - only update tag if it's explicitly non-null
+          if (localTagPersonal != null) {
+            updateData['current.localTagPersonal'] = localTagPersonal;
+            hasUpdates = true;
+          }
+        }
+        
+        // Update action fields
+        if (actionDate != null) {
+          updateData['current.actionDate'] = actionDate.toIso8601String();
+          updateData['current.actionInsightText'] = actionInsightText;
+          hasUpdates = true;
+        } else if (actionInsightText != null) {
+          updateData['current.actionInsightText'] = actionInsightText;
+          hasUpdates = true;
+        }
+        
+        if (actionComplete != null) {
+          updateData['current.actionComplete'] = actionComplete;
+          hasUpdates = true;
+        }
+        
+        if (!hasUpdates) return;
+        
+        final existingDoc = await emailDoc.get();
+        
+        if (!existingDoc.exists) {
+          final current = <String, dynamic>{};
+          if (isTagOnly || localTagPersonal != null) {
+            current['localTagPersonal'] = localTagPersonal;
+          }
+          if (actionDate != null) {
+            current['actionDate'] = actionDate.toIso8601String();
+            current['actionInsightText'] = actionInsightText;
+          } else if (actionInsightText != null) {
+            current['actionInsightText'] = actionInsightText;
+          }
+          if (actionComplete != null) {
+            current['actionComplete'] = actionComplete;
+          }
+          await emailDoc.set({
+            'current': current,
+            'lastModified': FieldValue.serverTimestamp(),
+          }, SetOptions(merge: true));
+        } else {
+          await emailDoc.update(updateData);
+        }
+      });
     } catch (e) {
       _logFirebaseSync('Error syncing email meta for $messageId: $e');
-      if (kReleaseMode) {
-        print('[FirebaseSync] ERROR syncing $messageId: $e');
-      }
-      rethrow; // Re-throw so caller knows it failed
+      rethrow;
     }
   }
 
@@ -603,171 +518,116 @@ class FirebaseSyncService {
   }
 
   /// Handle a single email metadata update from Firebase
-  /// Called when a single email document changes in the subcollection
+  /// Simple: compare Firebase values to local, update if different
   Future<void> _handleSingleEmailMetaUpdate(String messageId, Map<String, dynamic> current) async {
     try {
       final repo = MessageRepository();
+      final localMessage = await repo.getById(messageId);
       
-      // Check what we have locally for this message to avoid unnecessary updates
-      final initialKey = 'emailMeta.$messageId.current';
-      final lastKnown = _initialValues[initialKey] as Map<String, dynamic>?;
-      
-      // Read existing local message to check if it exists and has data
-      final existingMessage = await repo.getById(messageId);
-      
-      final firebaseTag = current['localTagPersonal']?.toString();
-      final localTagInDb = existingMessage?.localTagPersonal;
-      
-      // Log for debugging (only in debug mode to reduce noise)
-      if (kDebugMode) {
-        _logFirebaseSync('_handleSingleEmailMetaUpdate: messageId=$messageId, firebaseTag=$firebaseTag, localTagInDb=$localTagInDb');
-      }
-      
-      DateTime? actionDate;
-      String? lastKnownDateStr;
-      if (current['actionDate'] != null) {
-        try {
-          actionDate = DateTime.parse(current['actionDate'].toString());
-        } catch (_) {}
-      }
-      if (lastKnown?['actionDate'] != null) {
-        lastKnownDateStr = lastKnown!['actionDate'].toString();
-      }
-      
-      final actionText = current['actionInsightText']?.toString();
-      final lastKnownText = lastKnown?['actionInsightText']?.toString();
-      
-      final actionComplete = current['actionComplete'] as bool? ?? false;
-      final lastKnownComplete = lastKnown?['actionComplete'] as bool? ?? false;
-      
-      // Only update if values actually changed
-      // IMPORTANT: For fresh installs (no local data), always apply Firebase data
       bool needsUpdate = false;
       String? updatedLocalTag;
       DateTime? updatedActionDate;
       String? updatedActionText;
+      bool? updatedActionComplete;
       
-      // For localTag: update if Firebase value differs from LOCAL database value
-      // Compare against actual local DB value, not against lastKnown (which is from Firebase)
-      // Also handle null case: if Firebase has null but local has a tag, clear it
-      final tagChanged = firebaseTag != localTagInDb;
+      // Compare and update localTagPersonal
+      // Handle null values: if Firebase has null (or field missing), it should clear local tag
+      final firebaseTagValue = current['localTagPersonal'];
+      // Get the actual value - preserve null if it's null in Firebase
+      final firebaseTag = firebaseTagValue?.toString();
+      final localTag = localMessage?.localTagPersonal;
       
-      if (tagChanged) {
-        // Firebase value differs from local - apply it (even if null, to clear the tag)
-        if (kDebugMode) {
-          _logFirebaseSync('Applying localTag update for $messageId: localTagInDb=$localTagInDb -> firebaseTag=$firebaseTag');
-        }
+      // Check if Firebase has the field (even if null)
+      final hasFirebaseField = current.containsKey('localTagPersonal');
+      
+      // Determine what value to apply
+      final tagToApply = hasFirebaseField ? firebaseTag : null;
+      
+      // Update if values differ (explicitly compare null vs non-null)
+      // This handles: null != "Personal", "Personal" != null, "Personal" != "Business", etc.
+      final shouldUpdate = tagToApply != localTag;
+      
+      if (shouldUpdate) {
+        updatedLocalTag = tagToApply;
+        // Don't update lastUpdated when applying Firebase changes (not a user change)
+        await repo.updateLocalTag(messageId, tagToApply, updateTimestamp: false);
         needsUpdate = true;
-        updatedLocalTag = firebaseTag; // Can be null to clear tag
-        await repo.updateLocalTag(messageId, firebaseTag);
         
-        // Derive and update sender preference locally (don't sync to Firebase)
-        final message = await repo.getById(messageId);
-        if (message != null && message.from.isNotEmpty) {
-          // Extract email from "Name <email@domain.com>" or "email@domain.com"
-          final fromStr = message.from;
-          String senderEmail = fromStr;
-          
-          // Try to extract email from angle brackets
+        // Update sender preference locally
+        if (localMessage != null && localMessage.from.isNotEmpty) {
+          final fromStr = localMessage.from;
           final emailMatch = RegExp(r'<([^>]+)>').firstMatch(fromStr);
-          if (emailMatch != null) {
-            senderEmail = emailMatch.group(1) ?? fromStr;
-          }
-          
-          // Only update if we have a valid email
+          final senderEmail = emailMatch?.group(1) ?? fromStr;
           if (senderEmail.contains('@')) {
-            await repo.setSenderDefaultLocalTag(senderEmail.trim(), firebaseTag);
-            debugPrint('[FirebaseSync] Updated sender preference for $senderEmail to $firebaseTag (from emailMeta update)');
+            await repo.setSenderDefaultLocalTag(senderEmail.trim(), tagToApply);
           }
         }
-        
-        // Update initial values to track this change (so we don't re-sync it)
-        if (!_initialValues.containsKey(initialKey)) {
-          _initialValues[initialKey] = <String, dynamic>{};
-        }
-        (_initialValues[initialKey] as Map<String, dynamic>)['localTagPersonal'] = firebaseTag;
       }
       
-      // Update action if actionDate, actionText, or actionComplete is present and different
-      // IMPORTANT: Only update fields that are actually in the 'current' map from Firebase
-      // For fresh installs (no local data), always apply Firebase action data
-      DateTime? finalActionDate = existingMessage?.actionDate;
-      String? finalActionText = existingMessage?.actionInsightText;
-      bool finalActionComplete = existingMessage?.actionComplete ?? false;
+      // Compare and update action fields
+      DateTime? firebaseActionDate;
+      if (current.containsKey('actionDate') && current['actionDate'] != null) {
+        try {
+          firebaseActionDate = DateTime.parse(current['actionDate'].toString());
+        } catch (_) {}
+      }
       
-      final currentDateStr = actionDate?.toIso8601String();
+      final firebaseActionText = current.containsKey('actionInsightText') 
+          ? current['actionInsightText']?.toString() 
+          : null;
+      final firebaseActionComplete = current.containsKey('actionComplete')
+          ? current['actionComplete'] as bool?
+          : null;
+      
+      final localActionDate = localMessage?.actionDate;
+      final localActionText = localMessage?.actionInsightText;
+      final localActionComplete = localMessage?.actionComplete ?? false;
+      
       bool actionChanged = false;
-      bool dateUpdated = false;
-      bool textUpdated = false;
       
-      // For actions: if no local action data exists, apply all Firebase action data
-      // Otherwise, only update if values changed
-      final hasLocalAction = existingMessage?.hasAction ?? false;
-      
+      // Update if Firebase has actionDate key (even if null, to clear)
       if (current.containsKey('actionDate')) {
-        // Update if changed OR if no local action data exists (even if message exists, it might not have action)
-        if (!hasLocalAction || currentDateStr != lastKnownDateStr) {
-          finalActionDate = actionDate;
+        if (firebaseActionDate?.toIso8601String() != localActionDate?.toIso8601String()) {
+          updatedActionDate = firebaseActionDate;
+          updatedActionText = current.containsKey('actionInsightText') 
+              ? firebaseActionText 
+              : localActionText; // Preserve local text if Firebase doesn't provide it
           actionChanged = true;
-          dateUpdated = true;
         }
       }
       
-      if (current.containsKey('actionInsightText')) {
-        // Update if changed OR if no local action data exists
-        if (!hasLocalAction || actionText != lastKnownText) {
-          finalActionText = actionText;
-          actionChanged = true;
-          textUpdated = true;
-        }
-      }
-
-      if (current.containsKey('actionComplete')) {
-        // Update if changed OR if no local action data exists
-        if (!hasLocalAction || actionComplete != lastKnownComplete) {
-          finalActionComplete = actionComplete;
+      // Update text if key present and different
+      if (current.containsKey('actionInsightText') && !actionChanged) {
+        if (firebaseActionText != localActionText) {
+          updatedActionText = firebaseActionText;
           actionChanged = true;
         }
       }
-
+      
+      // Update complete if key present and different
+      if (firebaseActionComplete != null && firebaseActionComplete != localActionComplete) {
+        updatedActionComplete = firebaseActionComplete;
+        actionChanged = true;
+      }
+      
       if (actionChanged) {
+        // Don't update lastUpdated when applying Firebase changes (not a user change)
+        await repo.updateAction(
+          messageId, 
+          updatedActionDate ?? localActionDate,
+          updatedActionText ?? localActionText,
+          null,
+          updatedActionComplete ?? localActionComplete,
+          false, // updateTimestamp = false
+        );
         needsUpdate = true;
-        updatedActionDate = finalActionDate;
-        updatedActionText = finalActionText;
-        // Update with preserved existing values + new values
-        await repo.updateAction(messageId, finalActionDate, finalActionText, null, finalActionComplete);
-        // Update initial values
-        if (!_initialValues.containsKey(initialKey)) {
-          _initialValues[initialKey] = <String, dynamic>{};
-        }
-        final initialMap = _initialValues[initialKey] as Map<String, dynamic>;
-        if (current.containsKey('actionDate')) {
-          initialMap['actionDate'] = finalActionDate?.toIso8601String();
-        }
-        if (current.containsKey('actionInsightText')) {
-          initialMap['actionInsightText'] = finalActionText;
-        }
-        if (current.containsKey('actionComplete')) {
-          initialMap['actionComplete'] = finalActionComplete;
-        }
       }
       
-      if (needsUpdate) {
-        if (kDebugMode) {
-          _logFirebaseSync('Applied update for message $messageId: localTag=$updatedLocalTag');
-        }
-        
-        // Notify UI to update the provider state
-        if (onUpdateApplied != null) {
-          onUpdateApplied!(messageId, updatedLocalTag, updatedActionDate, updatedActionText);
-        } else if (kDebugMode) {
-          _logFirebaseSync('onUpdateApplied callback is null, UI will not be updated');
-        }
-      } else if (kDebugMode) {
-        _logFirebaseSync('No changes detected for message $messageId (already up to date)');
+      if (needsUpdate && onUpdateApplied != null) {
+        onUpdateApplied!(messageId, updatedLocalTag, updatedActionDate, updatedActionText);
       }
     } catch (e) {
-      debugPrint('[FirebaseSync] Error applying email meta update for $messageId: $e');
+      _logFirebaseSync('Error applying email meta update for $messageId: $e');
     }
   }
 
@@ -778,28 +638,5 @@ class FirebaseSyncService {
   // ignore: unused_element
   Future<void> _handleSenderPrefsUpdate(Map<Object?, Object?> data) async {}
 
-  /// Helper to compare two maps for equality (deep comparison)
-  // ignore: unused_element
-  bool _mapsEqual(Map<String, dynamic> map1, Map<String, dynamic> map2) {
-    if (map1.length != map2.length) return false;
-    
-    for (final entry in map1.entries) {
-      if (!map2.containsKey(entry.key)) return false;
-      if (entry.value != map2[entry.key]) {
-        // Deep compare for nested maps
-        if (entry.value is Map && map2[entry.key] is Map) {
-          if (!_mapsEqual(
-            Map<String, dynamic>.from(entry.value as Map),
-            Map<String, dynamic>.from(map2[entry.key] as Map),
-          )) {
-            return false;
-          }
-        } else {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
 }
 

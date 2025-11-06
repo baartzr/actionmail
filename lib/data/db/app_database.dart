@@ -21,7 +21,7 @@ class AppDatabase {
     final path = p.join(dbPath, 'actionmail.db');
     return openDatabase(
       path,
-      version: 13,
+      version: 14,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -51,7 +51,8 @@ class AppDatabase {
             isStarred INTEGER NOT NULL,
             isImportant INTEGER NOT NULL,
             folderLabel TEXT NOT NULL,
-            prevFolderLabel TEXT
+            prevFolderLabel TEXT,
+            lastUpdated INTEGER
           )
         ''');
         await db.execute('''
@@ -241,6 +242,10 @@ class AppDatabase {
             }
           }
           await batch.commit(noResult: true);
+        }
+        if (oldVersion < 14) {
+          // Add lastUpdated field for timestamp-based conflict resolution
+          await db.execute('ALTER TABLE messages ADD COLUMN lastUpdated INTEGER');
         }
       },
     );

@@ -93,11 +93,17 @@ class MessageRepository {
     await _dbProvider.deleteDatabase();
   }
 
-  Future<void> updateLocalTag(String messageId, String? localTag) async {
+  Future<void> updateLocalTag(String messageId, String? localTag, {bool updateTimestamp = true}) async {
     final db = await _dbProvider.database;
+    final data = <String, Object?>{
+      'localTagPersonal': localTag,
+    };
+    if (updateTimestamp) {
+      data['lastUpdated'] = DateTime.now().millisecondsSinceEpoch;
+    }
     await db.update(
       'messages',
-      {'localTagPersonal': localTag},
+      data,
       where: 'id=?',
       whereArgs: [messageId],
     );
@@ -304,7 +310,21 @@ class MessageRepository {
     await db.update('pending_ops', {'status': 'failed'}, where: 'id = ?', whereArgs: [id]);
   }
 
-  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence, bool? actionComplete]) async {
+  /// Get lastUpdated timestamp for a message (Unix milliseconds)
+  Future<int?> getLastUpdated(String messageId) async {
+    final db = await _dbProvider.database;
+    final rows = await db.query(
+      'messages',
+      columns: ['lastUpdated'],
+      where: 'id=?',
+      whereArgs: [messageId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['lastUpdated'] as int?;
+  }
+
+  Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence, bool? actionComplete, bool updateTimestamp = true]) async {
     final db = await _dbProvider.database;
     // Determine if action exists (has date or text)
     final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
@@ -312,6 +332,7 @@ class MessageRepository {
       'actionDate': actionDate?.millisecondsSinceEpoch,
       'actionInsightText': actionText,
       'hasAction': hasAction ? 1 : 0,
+      if (updateTimestamp) 'lastUpdated': DateTime.now().millisecondsSinceEpoch,
       if (confidence != null) 'actionConfidence': confidence,
       if (actionComplete != null) 'actionComplete': actionComplete ? 1 : 0,
     };

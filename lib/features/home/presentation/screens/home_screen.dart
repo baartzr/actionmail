@@ -145,10 +145,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Initialize Firebase sync if enabled and an account is selected
     final syncEnabled = await _firebaseSync.isSyncEnabled();
     if (syncEnabled && _selectedAccountId != null && list.isNotEmpty) {
-      // Find the selected account's email
+      // Set callback to update provider state when Firebase updates are applied
       try {
-        final selectedAccount = list.firstWhere((acc) => acc.id == _selectedAccountId);
-        // Set callback to update provider state when Firebase updates are applied
         _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
           // Update provider state to reflect Firebase changes in UI
           if (localTag != null) {
@@ -159,9 +157,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           }
         };
         
-        await _firebaseSync.initializeUser(selectedAccount.email);
-        // Load sender preferences from Firebase on startup
-        await _loadSenderPrefsFromFirebase();
+        // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
+        // Load sender preferences from Firebase on startup (after Firebase sync is ready)
+        unawaited(_loadSenderPrefsFromFirebase());
       } catch (e) {
         // Selected account not found in list - stop Firebase sync
         debugPrint('[HomeScreen] Selected account $_selectedAccountId not found, stopping Firebase sync');
@@ -236,12 +234,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           selectedAccountId: _selectedAccountId,
         ),
       );
-      // Kick off a background refresh for accounts (includes Firebase wiring) without blocking UI
-      // ignore: unawaited_futures
-      _loadAccounts();
+      // Reload accounts to ensure new account is in the list
+      await _loadAccounts();
       if (!mounted) return;
       if (selectedAccount != null) {
-      // Verify the account still exists in the list
+      // Verify the account still exists in the list (should be there after reload)
       if (_accounts.any((acc) => acc.id == selectedAccount)) {
         setState(() {
           _selectedAccountId = selectedAccount;
@@ -254,8 +251,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // Re-initialize Firebase sync with the new account's email
         final syncEnabled = await _firebaseSync.isSyncEnabled();
         if (syncEnabled) {
-          final selectedAccountObj = _accounts.firstWhere((acc) => acc.id == selectedAccount);
-          
           // Set callback to update provider state when Firebase updates are applied
           _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
             // Update provider state to reflect Firebase changes in UI
@@ -267,12 +262,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             }
           };
           
-          await _firebaseSync.initializeUser(selectedAccountObj.email);
+          // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
         }
         
+        // Load emails immediately (non-blocking UI update)
+        // Then run sync in background (incremental if history exists, initial if not)
+        // Firebase sync will start after local load completes
         if (_selectedAccountId != null) {
-          // Use loadFolder to ensure the folder is properly loaded for any account
-          await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+          // Load emails from local DB immediately (fast UI update)
+          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+          
+          // Run sync in background (non-blocking)
+          unawaited(Future(() async {
+            try {
+              final syncService = GmailSyncService();
+              await syncService.processPendingOps();
+              final hasHistory = await syncService.hasHistoryId(_selectedAccountId!);
+              if (hasHistory) {
+                // Account already has history - run incremental sync
+                await syncService.incrementalSync(_selectedAccountId!);
+              }
+              // If no history, loadEmails already triggered initial sync in background
+              
+              // Switch unread count to local after sync
+              await _switchUnreadCountToLocal(_selectedAccountId!);
+            } catch (e) {
+              debugPrint('[HomeScreen] Error during background sync on account switch: $e');
+              await _switchUnreadCountToLocal(_selectedAccountId!);
+            }
+          }));
         }
       }
     } else {
@@ -296,16 +314,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Initialize selected account from route args if provided
+    // Initialize selected account from route args if provided (e.g., new account sign-in)
     if (!_initializedFromRoute) {
       final args = ModalRoute.of(context)?.settings.arguments;
-      if (args is String && args.isNotEmpty) {
-        _selectedAccountId = args;
-      }
+      final accountIdFromRoute = args is String && args.isNotEmpty ? args : null;
+      
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         await _loadAccounts();
-        if (_selectedAccountId == null && _accounts.isNotEmpty) {
-          // Try to load last active account from preferences
+        
+        // If account ID was provided in route args (new sign-in), always use it and make it active
+        if (accountIdFromRoute != null) {
+          // Reload accounts again to ensure new account is in the list (in case it was just added)
+          await _loadAccounts();
+          if (_accounts.any((acc) => acc.id == accountIdFromRoute)) {
+            setState(() {
+              _selectedAccountId = accountIdFromRoute;
+            });
+            await _saveLastActiveAccount(accountIdFromRoute);
+          }
+        } else if (_selectedAccountId == null && _accounts.isNotEmpty) {
+          // No route args: try to load last active account from preferences
           final lastAccount = await _loadLastActiveAccount();
           if (lastAccount != null && _accounts.any((acc) => acc.id == lastAccount)) {
             _selectedAccountId = lastAccount;
@@ -317,7 +345,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             await _saveLastActiveAccount(_selectedAccountId!);
           }
         }
+        
         if (_selectedAccountId != null) {
+          // Load emails - this will trigger initial sync if no history, or incremental sync if history exists
           await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
         // Load initial unread counts in background (non-blocking) and start periodic refresh
@@ -697,8 +727,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           });
                           await _saveLastActiveAccount(account.id);
                           if (_selectedAccountId != null) {
-                            // Use loadFolder to ensure the folder is properly loaded for any account
-                            await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
+                            // Load emails from local DB immediately (fast UI update)
+                            await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+                            
+                            // Run sync in background (non-blocking)
+                            unawaited(Future(() async {
+                              try {
+                                final syncService = GmailSyncService();
+                                await syncService.processPendingOps();
+                                final hasHistory = await syncService.hasHistoryId(_selectedAccountId!);
+                                if (hasHistory) {
+                                  // Account already has history - run incremental sync
+                                  await syncService.incrementalSync(_selectedAccountId!);
+                                }
+                                // If no history, loadEmails already triggered initial sync in background
+                                
+                                // Switch unread count to local after sync
+                                await _switchUnreadCountToLocal(_selectedAccountId!);
+                              } catch (e) {
+                                debugPrint('[HomeScreen] Error during background sync on account tap: $e');
+                                await _switchUnreadCountToLocal(_selectedAccountId!);
+                              }
+                            }));
                           }
                         }
                       },
@@ -2457,6 +2507,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     } catch (e) {
                       // Log errors but don't crash the UI
                       debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
+                      // ignore: avoid_print
                       if (kReleaseMode) {
                         print('[HomeScreen] ERROR in syncEmailMeta: $e');
                       }
@@ -2699,7 +2750,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
     /// Refresh unread counts for all accounts
-  /// Active account: uses local data only (no API calls)
+  /// Active account: uses local data only (no API calls) - but switching happens AFTER incremental sync
   /// Inactive accounts: uses local data first, then refreshes from API in background
   Future<void> _refreshAccountUnreadCounts() async {
     if (_accounts.isEmpty) return;
@@ -2723,9 +2774,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     // Then refresh from API in background for inactive accounts only (non-blocking)
-    // Active account uses local data only - no API calls needed
+    // Active account will switch to local count AFTER incremental sync (handled in account switch)
     for (final account in _accounts) {
-      // Skip API call for active account - it uses local data only
+      // Skip API call for active account - it will use local data after incremental sync
       if (account.id == _selectedAccountId) {
         continue;
       }
@@ -2743,6 +2794,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Keep local count if API fails - counts already set from local DB above
         }
       }());
+    }
+  }
+
+  /// Switch unread count to local for a specific account (called after incremental sync)
+  Future<void> _switchUnreadCountToLocal(String accountId) async {
+    try {
+      final localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      if (mounted) {
+        setState(() {
+          _accountUnreadCounts[accountId] = localCount;
+        });
+      }
+    } catch (_) {
+      // Keep existing count if refresh fails
     }
   }
 

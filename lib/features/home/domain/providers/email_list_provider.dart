@@ -33,7 +33,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   bool _isInitialSyncing = false;
   bool _isViewingLocalFolder = false; // Track if viewing local folder (prevents sync overwrites)
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
-  static bool _firebaseInitStarted = false;
+  static String? _lastFirebaseAccountId; // Track which account Firebase was initialized for
 
   EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading());
 
@@ -57,8 +57,16 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           print('[perf] loadLocal($_folderLabel) returned ${local.length} in ${dt}ms');
         }
         state = AsyncValue.data(local);
-        // Start Firebase init in background after local emails are visible
-        unawaited(_startFirebaseAfterLocalLoad(accountId));
+        
+        // Check if this is a new account (no history = no emails locally)
+        final hasHistory = await _syncService.hasHistoryId(accountId);
+        
+        if (hasHistory && local.isNotEmpty) {
+          // Existing account with emails: start Firebase after local load (fast path)
+          unawaited(_startFirebaseAfterLocalLoad(accountId));
+        }
+        // For new accounts (no history), Firebase will start after initial sync completes
+        
         _ref.read(emailLoadingLocalProvider.notifier).state = false;
       } else {
         state = const AsyncValue.data([]);
@@ -73,16 +81,24 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   }
 
   Future<void> _startFirebaseAfterLocalLoad(String accountId) async {
-    if (_firebaseInitStarted) return;
-    _firebaseInitStarted = true;
+    // Only initialize if this is a different account or Firebase hasn't been initialized yet
+    if (_lastFirebaseAccountId == accountId) {
+      // Already initialized for this account
+      return;
+    }
+    
     try {
-      final t0 = DateTime.now();
-      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-      final ms = DateTime.now().difference(t0).inMilliseconds;
-      if (kDebugMode) {
-        // ignore: avoid_print
-        print('[FirebaseInit] Firebase.initializeApp completed in ${ms}ms (post-local-load)');
+      // Initialize Firebase app if not already done
+      if (Firebase.apps.isEmpty) {
+        final t0 = DateTime.now();
+        await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+        final ms = DateTime.now().difference(t0).inMilliseconds;
+        if (kDebugMode) {
+          // ignore: avoid_print
+          print('[FirebaseInit] Firebase.initializeApp completed in ${ms}ms (post-local-load)');
+        }
       }
+      
       final syncService = FirebaseSyncService();
       final initialized = await syncService.initialize();
       final enabled = await syncService.isSyncEnabled();
@@ -92,9 +108,10 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         final email = acct?.email;
         if (email != null && email.isNotEmpty) {
           await syncService.initializeUser(email);
+          _lastFirebaseAccountId = accountId; // Track that we initialized for this account
           if (kDebugMode) {
             // ignore: avoid_print
-            print('[FirebaseInit] Firebase user initialized for $email');
+            print('[FirebaseInit] Firebase user initialized for $email (account: $accountId)');
           }
         }
       }
@@ -281,6 +298,12 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
                 print('[perf] initial sync reload $_folderLabel in ${dt}ms');
               }
             }
+          }
+          
+          // After initial sync completes for new account, start Firebase sync
+          // This ensures emails are downloaded before Firebase sync begins
+          if (_currentAccountId == accountId) {
+            unawaited(_startFirebaseAfterLocalLoad(accountId));
           }
         } finally {
           _isInitialSyncing = false;
