@@ -150,9 +150,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       try {
         _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
           // Update provider state to reflect Firebase changes in UI
-          if (localTag != null) {
-            ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-          }
+          ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
           if (actionDate != null || actionText != null) {
             ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
           }
@@ -256,9 +254,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Set callback to update provider state when Firebase updates are applied
           _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
             // Update provider state to reflect Firebase changes in UI
-            if (localTag != null) {
-              ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-            }
+            ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
             if (actionDate != null || actionText != null) {
               ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
             }

@@ -458,12 +458,10 @@ class FirebaseSyncService {
               .doc(accountEmail)
               .collection('emailMeta');
         } else {
-          if (_emailMetaCollection == null) {
-            _emailMetaCollection = _firestore!
-                .collection('users')
-                .doc(targetEmail)
-                .collection('emailMeta');
-          }
+          _emailMetaCollection ??= _firestore!
+              .collection('users')
+              .doc(targetEmail)
+              .collection('emailMeta');
           targetCollection = _emailMetaCollection;
         }
 

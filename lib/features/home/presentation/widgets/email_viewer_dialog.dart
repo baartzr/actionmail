@@ -29,6 +29,8 @@ class AttachmentInfo {
   });
 }
 
+enum _ReplyMenuAction { reply, replyAll, forward }
+
 /// Dialog for viewing email content in a webview
 class EmailViewerDialog extends StatefulWidget {
   final MessageIndex message;
@@ -56,7 +58,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   String? _error;
   bool _isFullscreen = false;
   bool _canGoBack = false;
-  bool _canReloadOriginal = false;
+  bool _showNavigationExtras = false;
+  bool _isViewingOriginal = true;
+  Uri? _currentUrl;
   List<AttachmentInfo> _attachments = [];
 
   @override
@@ -629,23 +633,41 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     });
   }
 
+  Future<void> _openCurrentInBrowser() async {
+    final url = _currentUrl;
+    if (url == null) {
+      return;
+    }
+
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Cannot open in browser: ${url.toString()}')),
+      );
+    }
+  }
+
   Future<void> _updateNavigationState() async {
     final controller = _webViewController;
     if (controller == null) {
-      if (_canGoBack || _canReloadOriginal) {
+      if (_canGoBack || _showNavigationExtras) {
         setState(() {
           _canGoBack = false;
-          _canReloadOriginal = false;
+          _showNavigationExtras = false;
         });
       }
       return;
     }
 
     final canGoBack = await controller.canGoBack();
-    if (mounted && (canGoBack != _canGoBack || !_canReloadOriginal)) {
+    final shouldShowExtras = !_isViewingOriginal;
+    final nextCanGoBack = shouldShowExtras && canGoBack;
+    if (mounted && (nextCanGoBack != _canGoBack || shouldShowExtras != _showNavigationExtras)) {
       setState(() {
-        _canGoBack = canGoBack;
-        _canReloadOriginal = true;
+        _canGoBack = nextCanGoBack;
+        _showNavigationExtras = shouldShowExtras;
       });
     }
   }
@@ -661,7 +683,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         title: 'Email',
         fullscreen: _isFullscreen,
         headerActions: [
-          if (_canGoBack)
+          if (_showNavigationExtras && _canGoBack)
             IconButton(
               tooltip: 'Back',
               icon: const Icon(Icons.arrow_back, size: 20),
@@ -673,13 +695,19 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                 }
               },
             ),
-          if (_canReloadOriginal)
+          if (_showNavigationExtras)
             IconButton(
               tooltip: 'Original Email',
               icon: const Icon(Icons.home, size: 20),
               color: theme.appBarTheme.foregroundColor,
               onPressed: () async {
                 if (_webViewController != null && _htmlContent != null) {
+                  if (mounted) {
+                    setState(() {
+                      _isViewingOriginal = true;
+                      _currentUrl = null;
+                    });
+                  }
                   await _webViewController!.loadData(
                     data: _htmlContent!,
                     mimeType: 'text/html',
@@ -689,23 +717,43 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                 }
               },
             ),
-          IconButton(
-            tooltip: 'Reply',
-            icon: const Icon(Icons.reply, size: 20),
-            color: theme.appBarTheme.foregroundColor,
-            onPressed: _handleReply,
-          ),
-          IconButton(
-            tooltip: 'Reply All',
-            icon: const Icon(Icons.reply_all, size: 20),
-            color: theme.appBarTheme.foregroundColor,
-            onPressed: _handleReplyAll,
-          ),
-          IconButton(
-            tooltip: 'Forward',
-            icon: const Icon(Icons.forward, size: 20),
-            color: theme.appBarTheme.foregroundColor,
-            onPressed: _handleForward,
+          if (_showNavigationExtras && _currentUrl != null)
+            IconButton(
+              tooltip: 'Open in Browser',
+              icon: const Icon(Icons.open_in_new, size: 20),
+              color: theme.appBarTheme.foregroundColor,
+              onPressed: _openCurrentInBrowser,
+            ),
+          PopupMenuButton<_ReplyMenuAction>(
+            tooltip: 'Reply options',
+            icon: const Icon(Icons.reply, size: 20, color: Colors.white),
+            onSelected: (value) {
+              switch (value) {
+                case _ReplyMenuAction.reply:
+                  _handleReply();
+                  break;
+                case _ReplyMenuAction.replyAll:
+                  _handleReplyAll();
+                  break;
+                case _ReplyMenuAction.forward:
+                  _handleForward();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.reply,
+                child: Text('Reply'),
+              ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.replyAll,
+                child: Text('Reply all'),
+              ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.forward,
+                child: Text('Forward'),
+              ),
+            ],
           ),
           IconButton(
             tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
@@ -793,12 +841,29 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                     ),
                                     onWebViewCreated: (controller) {
                                       _webViewController = controller;
+                                      _isViewingOriginal = true;
+                                      _currentUrl = null;
                                       _updateNavigationState();
                                     },
                                     onLoadStart: (controller, url) {
+                                      final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
+                                      if (mounted) {
+                                        setState(() {
+                                          _isViewingOriginal = !isExternal;
+                                          _currentUrl = isExternal ? url : null;
+                                        });
+                                      }
                                       _updateNavigationState();
                                     },
                                     onLoadStop: (controller, url) async {
+                                      final currentUrl = await controller.getUrl();
+                                      final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
+                                      if (mounted) {
+                                        setState(() {
+                                          _isViewingOriginal = !isExternal;
+                                          _currentUrl = isExternal ? currentUrl : null;
+                                        });
+                                      }
                                       await _updateNavigationState();
                                     },
                                     onReceivedError: (controller, request, error) {
@@ -817,16 +882,19 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                       }
 
                                       if (scheme == 'mailto') {
-                                        if (await canLaunchUrl(url)) {
+                                        final messenger = ScaffoldMessenger.of(context);
+                                        final canLaunch = await canLaunchUrl(url);
+                                        if (!mounted) {
+                                          return NavigationActionPolicy.CANCEL;
+                                        }
+
+                                        if (canLaunch) {
                                           await launchUrl(
                                             url,
                                             mode: LaunchMode.externalApplication,
                                           );
                                         } else {
-                                          if (!mounted) {
-                                            return NavigationActionPolicy.CANCEL;
-                                          }
-                                          ScaffoldMessenger.of(context).showSnackBar(
+                                          messenger.showSnackBar(
                                             SnackBar(content: Text('Cannot open link: ${url.toString()}')),
                                           );
                                         }
