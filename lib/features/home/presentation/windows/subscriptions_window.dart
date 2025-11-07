@@ -297,6 +297,7 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
   void _openEmail(MessageIndex message) {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => EmailViewerDialog(
         message: message,
         accountId: message.accountId,

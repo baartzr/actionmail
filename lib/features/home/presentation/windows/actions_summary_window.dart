@@ -32,6 +32,13 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   // Personal/Business filter state
   String? _selectedLocalState;
 
+  GoogleAccount? _findAccount(String accountId) {
+    for (final account in _accounts) {
+      if (account.id == accountId) return account;
+    }
+    return null;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -436,6 +443,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   Future<void> _openEmail(MessageIndex message) async {
     await showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => EmailViewerDialog(
         message: message,
         accountId: message.accountId,
@@ -477,7 +485,8 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     
     // Sync to Firebase if enabled
     final syncEnabled = await _firebaseSync.isSyncEnabled();
-    if (syncEnabled) {
+    final accountEmail = _findAccount(message.accountId)?.email;
+    if (syncEnabled && accountEmail != null) {
       // Check if actionComplete actually changed
       final currentComplete = message.actionComplete;
       if (currentComplete != newComplete) {
@@ -486,6 +495,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
           actionDate: message.actionDate,
           actionInsightText: message.actionInsightText,
           actionComplete: newComplete,
+          accountEmail: accountEmail,
         );
       }
     }
@@ -625,7 +635,8 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       
       // Sync to Firebase if enabled
       final syncEnabled = await _firebaseSync.isSyncEnabled();
-      if (syncEnabled) {
+      final accountEmail = _findAccount(message.accountId)?.email;
+      if (syncEnabled && accountEmail != null) {
         // Get current message to check if action actually changed
         final currentDate = message.actionDate;
         final currentText = message.actionInsightText;
@@ -635,6 +646,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
             actionDate: actionDate,
             actionInsightText: actionText,
             actionComplete: currentComplete,
+            accountEmail: accountEmail,
           );
         }
       }

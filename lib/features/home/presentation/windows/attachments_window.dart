@@ -224,6 +224,7 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
   void _openEmail(MessageIndex message) {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => EmailViewerDialog(
         message: message,
         accountId: message.accountId,

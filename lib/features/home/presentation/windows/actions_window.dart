@@ -192,6 +192,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
   void _openEmailViewer(MessageIndex message) {
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => EmailViewerDialog(
         message: message,
         accountId: message.accountId,

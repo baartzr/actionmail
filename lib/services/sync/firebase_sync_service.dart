@@ -425,19 +425,50 @@ class FirebaseSyncService {
     DateTime? actionDate,
     String? actionInsightText,
     bool? actionComplete,
+    String? accountEmail,
   }) async {
     try {
-      if (!_syncEnabled || _emailMetaCollection == null) {
-        if (_userId != null && _emailMetaCollection == null) {
+      if (!_syncEnabled) {
+        _syncEnabled = await isSyncEnabled();
+        if (!_syncEnabled) return;
+      }
+
+      if (_firestore == null) {
+        final initialized = await initialize();
+        if (!initialized) return;
+      }
+
+      final targetEmail = accountEmail ?? _userId;
+      if (targetEmail == null || targetEmail.isEmpty) {
+        return;
+      }
+
+      if ((accountEmail == null || accountEmail == _userId) && _userId != null && _emailMetaCollection == null) {
           await initializeUser(_userId);
-          if (_emailMetaCollection == null) return;
-        } else {
+        if (_emailMetaCollection == null) {
           return;
         }
       }
 
       await _runOnMainThread(() async {
-        final emailDoc = _emailMetaCollection!.doc(messageId);
+        CollectionReference? targetCollection;
+        if (accountEmail != null && accountEmail != _userId) {
+          targetCollection = _firestore!
+              .collection('users')
+              .doc(accountEmail)
+              .collection('emailMeta');
+        } else {
+          if (_emailMetaCollection == null) {
+            _emailMetaCollection = _firestore!
+                .collection('users')
+                .doc(targetEmail)
+                .collection('emailMeta');
+          }
+          targetCollection = _emailMetaCollection;
+        }
+
+        final emailDoc = targetCollection?.doc(messageId);
+        if (emailDoc == null) return;
         final updateData = <String, dynamic>{
           'lastModified': FieldValue.serverTimestamp(),
         };

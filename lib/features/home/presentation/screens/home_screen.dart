@@ -55,6 +55,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   
   // Account unread counts (for left panel display)
   Map<String, int> _accountUnreadCounts = {};
+  final Set<String> _pendingLocalUnreadAccounts = {};
   Timer? _unreadCountRefreshTimer;
   
   // Selected local state filter: null (show all), 'Personal', or 'Business'
@@ -240,6 +241,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (selectedAccount != null) {
       // Verify the account still exists in the list (should be there after reload)
       if (_accounts.any((acc) => acc.id == selectedAccount)) {
+        _pendingLocalUnreadAccounts.add(selectedAccount);
         setState(() {
           _selectedAccountId = selectedAccount;
         });
@@ -359,16 +361,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     // Listen to email list changes and refresh active account's unread count
     ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider, (previous, next) {
-      // Only refresh if we have data and an active account
-      if (next.hasValue && _selectedAccountId != null && mounted) {
-        // Refresh active account's unread count from local DB when emails change
-        // Use post-frame callback to avoid updating during build
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _selectedAccountId != null) {
-            _refreshAccountUnreadCountLocal(_selectedAccountId!);
-          }
-        });
+      final activeAccountId = _selectedAccountId;
+      if (!mounted || !next.hasValue || activeAccountId == null) {
+        return;
       }
+      if (_pendingLocalUnreadAccounts.contains(activeAccountId)) {
+        return;
+      }
+      // Refresh active account's unread count from local DB when emails change
+      // Use post-frame callback to avoid updating during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_selectedAccountId != activeAccountId) return;
+        if (_pendingLocalUnreadAccounts.contains(activeAccountId)) return;
+        _refreshAccountUnreadCountLocal(activeAccountId);
+      });
     });
 
     return Scaffold(
@@ -722,6 +729,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     child: InkWell(
                       onTap: () async {
                         if (account.id != _selectedAccountId) {
+                          _pendingLocalUnreadAccounts.add(account.id);
                           setState(() {
                             _selectedAccountId = account.id;
                           });
@@ -2467,6 +2475,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   if (_selectedAccountId != null) {
                     showDialog(
                       context: context,
+                      barrierDismissible: false,
                       builder: (ctx) => EmailViewerDialog(
                         message: message,
                         accountId: _selectedAccountId!,
@@ -2767,10 +2776,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     // Update UI immediately with local counts
+    final updatedCounts = Map<String, int>.from(_accountUnreadCounts);
+    for (final entry in localCounts.entries) {
+      if (_pendingLocalUnreadAccounts.contains(entry.key)) {
+        continue;
+      }
+      updatedCounts[entry.key] = entry.value;
+    }
     if (mounted) {
       setState(() {
-        _accountUnreadCounts = localCounts;
+        _accountUnreadCounts = updatedCounts;
       });
+    } else {
+      _accountUnreadCounts = updatedCounts;
     }
 
     // Then refresh from API in background for inactive accounts only (non-blocking)
@@ -2799,26 +2817,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Switch unread count to local for a specific account (called after incremental sync)
   Future<void> _switchUnreadCountToLocal(String accountId) async {
+    int? localCount;
     try {
-      final localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
-      if (mounted) {
-        setState(() {
-          _accountUnreadCounts[accountId] = localCount;
-        });
-      }
+      localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
     } catch (_) {
       // Keep existing count if refresh fails
     }
+
+    if (!mounted) {
+      _pendingLocalUnreadAccounts.remove(accountId);
+      if (localCount != null) {
+        _accountUnreadCounts[accountId] = localCount;
+      }
+      return;
+    }
+
+    setState(() {
+      _pendingLocalUnreadAccounts.remove(accountId);
+      if (localCount != null) {
+        _accountUnreadCounts[accountId] = localCount;
+      }
+    });
   }
 
   /// Refresh unread count for a specific account from local DB
   Future<void> _refreshAccountUnreadCountLocal(String accountId) async {
+    if (_pendingLocalUnreadAccounts.contains(accountId)) {
+      return;
+    }
     try {
       final localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
       if (mounted) {
         setState(() {
           _accountUnreadCounts[accountId] = localCount;
         });
+      } else {
+        _accountUnreadCounts[accountId] = localCount;
       }
     } catch (_) {
       // Keep existing count if refresh fails

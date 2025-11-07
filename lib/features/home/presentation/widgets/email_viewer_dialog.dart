@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/services/auth/google_auth_service.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
@@ -53,6 +55,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   bool _isLoading = true;
   String? _error;
   bool _isFullscreen = false;
+  bool _canGoBack = false;
+  bool _canReloadOriginal = false;
   List<AttachmentInfo> _attachments = [];
 
   @override
@@ -625,135 +629,219 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     });
   }
 
+  Future<void> _updateNavigationState() async {
+    final controller = _webViewController;
+    if (controller == null) {
+      if (_canGoBack || _canReloadOriginal) {
+        setState(() {
+          _canGoBack = false;
+          _canReloadOriginal = false;
+        });
+      }
+      return;
+    }
+
+    final canGoBack = await controller.canGoBack();
+    if (mounted && (canGoBack != _canGoBack || !_canReloadOriginal)) {
+      setState(() {
+        _canGoBack = canGoBack;
+        _canReloadOriginal = true;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return AppWindowDialog(
-      title: 'Email',
-      fullscreen: _isFullscreen,
-      headerActions: [
-        IconButton(
-          tooltip: 'Reply',
-          icon: const Icon(Icons.reply, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _handleReply,
-        ),
-        IconButton(
-          tooltip: 'Reply All',
-          icon: const Icon(Icons.reply_all, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _handleReplyAll,
-        ),
-        IconButton(
-          tooltip: 'Forward',
-          icon: const Icon(Icons.forward, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _handleForward,
-        ),
-        IconButton(
-          tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
-          icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _toggleFullscreen,
-        ),
-      ],
-      child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _error != null
-                    ? Center(
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
-                            const SizedBox(height: 16),
-                            Text(
-                              _error!,
-                              style: Theme.of(context).textTheme.bodyLarge,
-                              textAlign: TextAlign.center,
-                            ),
-                            const SizedBox(height: 16),
-                            ElevatedButton(
-                              onPressed: () {
-                                setState(() {
-                                  _isLoading = true;
-                                  _error = null;
-                                });
-                                _loadEmailBody();
-                              },
-                              child: const Text('Retry'),
-                            ),
-                          ],
-                        ),
-                      )
-                    : _htmlContent != null
-                        ? Column(
+    return Shortcuts(
+      shortcuts: <LogicalKeySet, Intent>{
+        LogicalKeySet(LogicalKeyboardKey.escape): DoNothingIntent(),
+      },
+      child: AppWindowDialog(
+        title: 'Email',
+        fullscreen: _isFullscreen,
+        headerActions: [
+          if (_canGoBack)
+            IconButton(
+              tooltip: 'Back',
+              icon: const Icon(Icons.arrow_back, size: 20),
+              color: theme.appBarTheme.foregroundColor,
+              onPressed: () async {
+                if (_webViewController != null && await _webViewController!.canGoBack()) {
+                  await _webViewController!.goBack();
+                  await _updateNavigationState();
+                }
+              },
+            ),
+          if (_canReloadOriginal)
+            IconButton(
+              tooltip: 'Original Email',
+              icon: const Icon(Icons.home, size: 20),
+              color: theme.appBarTheme.foregroundColor,
+              onPressed: () async {
+                if (_webViewController != null && _htmlContent != null) {
+                  await _webViewController!.loadData(
+                    data: _htmlContent!,
+                    mimeType: 'text/html',
+                    encoding: 'utf8',
+                  );
+                  await _updateNavigationState();
+                }
+              },
+            ),
+          IconButton(
+            tooltip: 'Reply',
+            icon: const Icon(Icons.reply, size: 20),
+            color: theme.appBarTheme.foregroundColor,
+            onPressed: _handleReply,
+          ),
+          IconButton(
+            tooltip: 'Reply All',
+            icon: const Icon(Icons.reply_all, size: 20),
+            color: theme.appBarTheme.foregroundColor,
+            onPressed: _handleReplyAll,
+          ),
+          IconButton(
+            tooltip: 'Forward',
+            icon: const Icon(Icons.forward, size: 20),
+            color: theme.appBarTheme.foregroundColor,
+            onPressed: _handleForward,
+          ),
+          IconButton(
+            tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
+            icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),
+            color: theme.appBarTheme.foregroundColor,
+            onPressed: _toggleFullscreen,
+          ),
+        ],
+        child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              // Attachments section
-                              if (_attachments.isNotEmpty)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                    border: Border(
-                                      bottom: BorderSide(
-                                        color: Theme.of(context).dividerColor,
-                                        width: 1,
-                                      ),
-                                    ),
-                                  ),
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: SingleChildScrollView(
-                                      scrollDirection: Axis.horizontal,
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              // Email content
-                              Expanded(
-                                child: InAppWebView(
-                                  initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
-                                  // ignore: deprecated_member_use
-                                  initialOptions: InAppWebViewGroupOptions(
-                                    // ignore: deprecated_member_use
-                                    crossPlatform: InAppWebViewOptions(
-                                      useShouldOverrideUrlLoading: true,
-                                      mediaPlaybackRequiresUserGesture: false,
-                                      supportZoom: true,
-                                      javaScriptEnabled: true,
-                                    ),
-                                    // ignore: deprecated_member_use
-                                    android: AndroidInAppWebViewOptions(
-                                      useHybridComposition: true,
-                                    ),
-                                    // ignore: deprecated_member_use
-                                    ios: IOSInAppWebViewOptions(
-                                      allowsInlineMediaPlayback: true,
-                                    ),
-                                  ),
-                                  onWebViewCreated: (controller) {
-                                    // Controller stored for potential future use
-                                    // ignore: unused_local_variable
-                                    _webViewController = controller;
-                                  },
-                                  shouldOverrideUrlLoading: (controller, navigationAction) async {
-                                    // Open external links in default browser
-                                    final url = navigationAction.request.url;
-                                    if (url != null && (url.scheme == 'http' || url.scheme == 'https')) {
-                                      // Allow navigation within the email HTML (like images, anchors)
-                                      // but we could block external links if desired
-                                      return NavigationActionPolicy.ALLOW;
-                                    }
-                                    return NavigationActionPolicy.CANCEL;
-                                  },
-                                ),
+                              Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
+                              const SizedBox(height: 16),
+                              Text(
+                                _error!,
+                                style: Theme.of(context).textTheme.bodyLarge,
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: () {
+                                  setState(() {
+                                    _isLoading = true;
+                                    _error = null;
+                                  });
+                                  _loadEmailBody();
+                                },
+                                child: const Text('Retry'),
                               ),
                             ],
-                          )
-                        : const Center(child: Text('No content available')),
+                          ),
+                        )
+                      : _htmlContent != null
+                          ? Column(
+                              children: [
+                                // Attachments section
+                                if (_attachments.isNotEmpty)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                      border: Border(
+                                        bottom: BorderSide(
+                                          color: Theme.of(context).dividerColor,
+                                          width: 1,
+                                        ),
+                                      ),
+                                    ),
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: SingleChildScrollView(
+                                        scrollDirection: Axis.horizontal,
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                // Email content
+                                Expanded(
+                                  child: InAppWebView(
+                                    initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                                    // ignore: deprecated_member_use
+                                    initialOptions: InAppWebViewGroupOptions(
+                                      // ignore: deprecated_member_use
+                                      crossPlatform: InAppWebViewOptions(
+                                        useShouldOverrideUrlLoading: true,
+                                        mediaPlaybackRequiresUserGesture: false,
+                                        supportZoom: true,
+                                        javaScriptEnabled: true,
+                                      ),
+                                      // ignore: deprecated_member_use
+                                      android: AndroidInAppWebViewOptions(
+                                        useHybridComposition: true,
+                                      ),
+                                      // ignore: deprecated_member_use
+                                      ios: IOSInAppWebViewOptions(
+                                        allowsInlineMediaPlayback: true,
+                                      ),
+                                    ),
+                                    onWebViewCreated: (controller) {
+                                      _webViewController = controller;
+                                      _updateNavigationState();
+                                    },
+                                    onLoadStart: (controller, url) {
+                                      _updateNavigationState();
+                                    },
+                                    onLoadStop: (controller, url) async {
+                                      await _updateNavigationState();
+                                    },
+                                    onReceivedError: (controller, request, error) {
+                                      _updateNavigationState();
+                                    },
+                                    shouldOverrideUrlLoading: (controller, navigationAction) async {
+                                      final url = navigationAction.request.url;
+                                      if (url == null) {
+                                        return NavigationActionPolicy.ALLOW;
+                                      }
+
+                                      final scheme = url.scheme.toLowerCase();
+
+                                      if (scheme.isEmpty || scheme == 'about') {
+                                        return NavigationActionPolicy.ALLOW;
+                                      }
+
+                                      if (scheme == 'mailto') {
+                                        if (await canLaunchUrl(url)) {
+                                          await launchUrl(
+                                            url,
+                                            mode: LaunchMode.externalApplication,
+                                          );
+                                        } else {
+                                          if (!mounted) {
+                                            return NavigationActionPolicy.CANCEL;
+                                          }
+                                          ScaffoldMessenger.of(context).showSnackBar(
+                                            SnackBar(content: Text('Cannot open link: ${url.toString()}')),
+                                          );
+                                        }
+                                        return NavigationActionPolicy.CANCEL;
+                                      }
+
+                                      // Allow HTTP/HTTPS to load inside the webview so users can navigate back
+                                      return NavigationActionPolicy.ALLOW;
+                                    },
+                                  ),
+                                ),
+                              ],
+                            )
+                          : const Center(child: Text('No content available')),
+      ),
     );
   }
 }
