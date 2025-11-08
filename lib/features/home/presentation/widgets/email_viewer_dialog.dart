@@ -1,18 +1,22 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:actionmail/app/theme/actionmail_theme.dart';
+import 'package:actionmail/data/models/message_index.dart';
+import 'package:actionmail/data/repositories/message_repository.dart';
+import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:actionmail/services/auth/google_auth_service.dart';
+import 'package:actionmail/services/local_folders/local_folder_service.dart';
+import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
-import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
-import 'package:path/path.dart' as path;
 import 'package:open_file/open_file.dart';
-import 'dart:io';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// Information about an attachment
 class AttachmentInfo {
@@ -53,6 +57,8 @@ class EmailViewerDialog extends StatefulWidget {
 class _EmailViewerDialogState extends State<EmailViewerDialog> {
   // ignore: unused_field
   InAppWebViewController? _webViewController;
+  late MessageIndex _currentMessage;
+  String? _accountEmail;
   String? _htmlContent;
   bool _isLoading = true;
   String? _error;
@@ -60,19 +66,35 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   bool _canGoBack = false;
   bool _showNavigationExtras = false;
   bool _isViewingOriginal = true;
+  bool _isConversationMode = false;
+  bool _isThreadLoading = false;
+  String? _threadError;
   Uri? _currentUrl;
+  List<MessageIndex> _threadMessages = [];
   List<AttachmentInfo> _attachments = [];
+  final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
+  final Set<String> _loadingConversationAttachmentIds = {};
 
   @override
   void initState() {
     super.initState();
+    _currentMessage = widget.message;
+    _loadAccountEmail();
     _loadEmailBody();
     // Mark as read when dialog opens
-    if (!widget.message.isRead && widget.onMarkRead != null) {
+    if (!_currentMessage.isRead && widget.onMarkRead != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         widget.onMarkRead!();
       });
     }
+  }
+
+  Future<void> _loadAccountEmail() async {
+    final account = await GoogleAuthService().getAccountById(widget.accountId);
+    if (!mounted) return;
+    setState(() {
+      _accountEmail = account?.email.toLowerCase();
+    });
   }
 
   Future<void> _loadEmailBody() async {
@@ -80,25 +102,17 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       // If viewing from local folder, load from saved file
       if (widget.localFolderName != null) {
         final folderService = LocalFolderService();
-        final body = await folderService.loadEmailBody(widget.localFolderName!, widget.message.id);
+        final body = await folderService.loadEmailBody(widget.localFolderName!, _currentMessage.id);
         if (!mounted) return;
         if (body != null) {
           debugPrint('[EmailViewer] Email body loaded from local folder, loading attachments...');
-          debugPrint('[EmailViewer] Message hasAttachments flag: ${widget.message.hasAttachments}');
+          debugPrint('[EmailViewer] Message hasAttachments flag: ${_currentMessage.hasAttachments}');
           
           // Load attachments from local folder
-          final localAttachments = await folderService.loadAttachments(widget.localFolderName!, widget.message.id);
+          final localAttachments = await folderService.loadAttachments(widget.localFolderName!, _currentMessage.id);
           debugPrint('[EmailViewer] loadAttachments returned ${localAttachments.length} attachments');
-          
-          final attachments = localAttachments.map((att) {
-            debugPrint('[EmailViewer] Converting attachment: ${att['filename']}');
-            return AttachmentInfo(
-              filename: att['filename'] as String,
-              mimeType: att['mimeType'] as String,
-              attachmentId: att['attachmentId'] as String,
-              size: att['size'] as int?,
-            );
-          }).toList();
+
+          final attachments = _mapLocalAttachments(localAttachments);
           
           debugPrint('[EmailViewer] Created ${attachments.length} AttachmentInfo objects');
           
@@ -106,6 +120,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             _htmlContent = body;
             _attachments = attachments;
             _isLoading = false;
+            _conversationAttachments[_currentMessage.id] = attachments;
           });
           debugPrint('[EmailViewer] Loaded from local folder - found ${attachments.length} attachments, setState called');
           return;
@@ -119,7 +134,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       }
       
       // Otherwise load from Gmail API
-      debugPrint('[EmailViewer] Starting to load email ${widget.message.id} from Gmail API');
+      debugPrint('[EmailViewer] Starting to load email ${_currentMessage.id} from Gmail API');
       final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
       final accessToken = account?.accessToken;
       if (accessToken == null || accessToken.isEmpty) {
@@ -134,7 +149,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
       debugPrint('[EmailViewer] Fetching message from Gmail API...');
       final resp = await http.get(
-        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/${widget.message.id}?format=full'),
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/${_currentMessage.id}?format=full'),
         headers: {'Authorization': 'Bearer $accessToken'},
       );
       
@@ -193,133 +208,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       debugPrint('[EmailViewer] Body extracted, starting attachment extraction...');
       
       // Extract real attachments from payload
-      final attachments = <AttachmentInfo>[];
-      void extractAttachments(dynamic part) {
-        if (part is! Map<String, dynamic>) return;
-        
-        final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
-        var filename = part['filename'] as String?;
-        final body = part['body'] as Map<String, dynamic>?;
-        final attachmentId = body?['attachmentId'] as String?;
-        final size = body?['size'] as int?;
-        final headers = (part['headers'] as List<dynamic>?) ?? [];
-        
-        // Must have attachmentId — this marks it as an actual attachment part
-        if (attachmentId == null || attachmentId.isEmpty) {
-          // Recursively check nested parts even if this part isn't an attachment
-          final parts = part['parts'] as List<dynamic>?;
-          if (parts != null) {
-            for (final p in parts) {
-              extractAttachments(p);
-            }
-          }
-          return;
-        }
-        
-        // Build header map for easier lookup
-        final headerMap = <String, String>{};
-        for (final h in headers) {
-          if (h is Map<String, dynamic>) {
-            final name = (h['name'] as String? ?? '').toLowerCase();
-            final value = h['value'] as String? ?? '';
-            if (name.isNotEmpty) {
-              headerMap[name] = value;
-            }
-          }
-        }
-        
-        final disp = headerMap['content-disposition'] ?? '';
-        final cid = headerMap['content-id'] ?? '';
-        final dispLower = disp.toLowerCase();
-        
-        // Skip inline parts unless explicitly marked as attachment
-        if (dispLower.contains('inline') && !dispLower.contains('attachment')) {
-          // Skip - recursively check nested parts
-          final parts = part['parts'] as List<dynamic>?;
-          if (parts != null) {
-            for (final p in parts) {
-              extractAttachments(p);
-            }
-          }
-          return;
-        }
-        
-        // Skip if has Content-ID (inline images)
-        if (cid.isNotEmpty) {
-          // Skip - recursively check nested parts
-          final parts = part['parts'] as List<dynamic>?;
-          if (parts != null) {
-            for (final p in parts) {
-              extractAttachments(p);
-            }
-          }
-          return;
-        }
-        
-        // Skip image/* types (unless explicitly marked as attachment)
-        if (mimeType.startsWith('image/')) {
-          // Only include images if explicitly marked as attachment
-          if (!dispLower.contains('attachment')) {
-            // Skip - recursively check nested parts
-            final parts = part['parts'] as List<dynamic>?;
-            if (parts != null) {
-              for (final p in parts) {
-                extractAttachments(p);
-              }
-            }
-            return;
-          }
-        }
-        
-        // Determine the filename - extract from headers if not present
-        if (filename == null || filename.isEmpty) {
-          // Try to extract from Content-Disposition header
-          final matchFilename = RegExp(r'filename="?([^";]+)"?', caseSensitive: false).firstMatch(disp);
-          if (matchFilename != null) {
-            filename = matchFilename.group(1)?.trim();
-          } else {
-            // Try Content-Type header
-            final contentType = headerMap['content-type'] ?? '';
-            final matchName = RegExp(r'name="?([^";]+)"?', caseSensitive: false).firstMatch(contentType);
-            if (matchName != null) {
-              filename = matchName.group(1)?.trim();
-            }
-          }
-        }
-        
-        // Must have filename to be considered an attachment
-        if (filename == null || filename.isEmpty) {
-          // Skip - recursively check nested parts
-          final parts = part['parts'] as List<dynamic>?;
-          if (parts != null) {
-            for (final p in parts) {
-              extractAttachments(p);
-            }
-          }
-          return;
-        }
-        
-        // This is a real attachment
-        attachments.add(AttachmentInfo(
-          filename: filename,
-          mimeType: mimeType,
-          attachmentId: attachmentId,
-          size: size,
-        ));
-        
-        // Recursively check nested parts
-        final parts = part['parts'] as List<dynamic>?;
-        if (parts != null) {
-          for (final p in parts) {
-            extractAttachments(p);
-          }
-        }
-      }
-      
-      extractAttachments(payload ?? {});
+      final attachments = _extractAttachmentsFromPayload(payload);
 
       // Prefer HTML over plain text
-      final bodyContent = htmlBody ?? plainBody ?? widget.message.snippet ?? 'No content available';
+      final bodyContent = htmlBody ?? plainBody ?? _currentMessage.snippet ?? 'No content available';
       final bodyHtml = htmlBody != null 
           ? bodyContent 
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
@@ -379,11 +271,11 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 </head>
 <body>
   <div class="email-header">
-    <h2>${_escapeHtml(widget.message.subject)}</h2>
+    <h2>${_escapeHtml(_currentMessage.subject)}</h2>
     <div class="meta">
-      <div><strong>From:</strong> ${_escapeHtml(widget.message.from)}</div>
-      <div><strong>To:</strong> ${_escapeHtml(widget.message.to)}</div>
-      <div><strong>Date:</strong> ${_formatDate(widget.message.internalDate)}</div>
+      <div><strong>From:</strong> ${_escapeHtml(_currentMessage.from)}</div>
+      <div><strong>To:</strong> ${_escapeHtml(_currentMessage.to)}</div>
+      <div><strong>Date:</strong> ${_formatDate(_currentMessage.internalDate)}</div>
     </div>
   </div>
   <div class="email-body">
@@ -398,17 +290,18 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         _htmlContent = fullHtml;
         _attachments = attachments;
         _isLoading = false;
+        _conversationAttachments[_currentMessage.id] = attachments;
       });
       
       // Debug: Print attachment count
-      debugPrint('[EmailViewer] Attachment extraction complete for message ${widget.message.id}');
-      debugPrint('[EmailViewer]   hasAttachments flag: ${widget.message.hasAttachments}');
+      debugPrint('[EmailViewer] Attachment extraction complete for message ${_currentMessage.id}');
+      debugPrint('[EmailViewer]   hasAttachments flag: ${_currentMessage.hasAttachments}');
       debugPrint('[EmailViewer]   Found ${attachments.length} real attachments');
       if (attachments.isNotEmpty) {
         for (final att in attachments) {
           debugPrint('[EmailViewer]     - ${att.filename} (${att.mimeType}, ${att.size ?? 0} bytes, attachmentId: ${att.attachmentId})');
         }
-      } else if (widget.message.hasAttachments) {
+      } else if (_currentMessage.hasAttachments) {
         debugPrint('[EmailViewer]   WARNING: Message has hasAttachments=true but no real attachments found!');
       }
     } catch (e, stackTrace) {
@@ -444,41 +337,299 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     return '';
   }
 
+  String _extractSenderName(String from) {
+    final regex = RegExp(r'<([^>]+)>');
+    final match = regex.firstMatch(from);
+    if (match != null) {
+      final cleaned = from.replaceAll(match.group(0)!, '').trim();
+      if (cleaned.isNotEmpty) {
+        return cleaned.replaceAll('"', '');
+      }
+    }
+    final email = _extractEmail(from);
+    return email.isNotEmpty ? email : from;
+  }
+
   Widget _buildAttachmentChip(AttachmentInfo attachment) {
     final theme = Theme.of(context);
     
     return Padding(
       padding: const EdgeInsets.only(right: 8),
-      child: ActionChip(
-        avatar: Icon(
-          Icons.insert_drive_file,
-          size: 18,
-          color: theme.colorScheme.primary,
-        ),
-        label: Text(
-          attachment.filename,
-          style: theme.textTheme.bodySmall,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
-        onPressed: () => _downloadAttachment(attachment),
-        backgroundColor: theme.colorScheme.surfaceContainerHighest,
-        side: BorderSide(
-          color: theme.colorScheme.outline.withValues(alpha: 0.2),
-          width: 1,
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _downloadAttachment(attachment),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(alpha: 0.2),
+                width: 1,
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.insert_drive_file,
+                  size: 18,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    attachment.filename,
+                    style: theme.textTheme.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Future<void> _downloadAttachment(AttachmentInfo attachment) async {
+  List<AttachmentInfo> _mapLocalAttachments(List<Map<String, dynamic>> localAttachments) {
+    return localAttachments
+        .map((raw) {
+          final attachmentId = raw['attachmentId'] as String?;
+          if (attachmentId == null || attachmentId.isEmpty) {
+            return null;
+          }
+          return AttachmentInfo(
+            filename: raw['filename'] as String? ?? 'attachment',
+            mimeType: raw['mimeType'] as String? ?? 'application/octet-stream',
+            attachmentId: attachmentId,
+            size: raw['size'] as int?,
+          );
+        })
+        .whereType<AttachmentInfo>()
+        .toList();
+  }
+
+  List<AttachmentInfo> _extractAttachmentsFromPayload(Map<String, dynamic>? payload) {
+    final attachments = <AttachmentInfo>[];
+
+    void walk(dynamic part) {
+      if (part is! Map<String, dynamic>) return;
+
+      final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+      var filename = part['filename'] as String?;
+      final body = part['body'] as Map<String, dynamic>?;
+      final attachmentId = body?['attachmentId'] as String?;
+      final size = body?['size'] as int?;
+      final headers = (part['headers'] as List<dynamic>?) ?? [];
+
+      final parts = part['parts'] as List<dynamic>?;
+
+      if (attachmentId == null || attachmentId.isEmpty) {
+        if (parts != null) {
+          for (final p in parts) {
+            walk(p);
+          }
+        }
+        return;
+      }
+
+      final headerMap = <String, String>{};
+      for (final h in headers) {
+        if (h is Map<String, dynamic>) {
+          final name = (h['name'] as String? ?? '').toLowerCase();
+          final value = h['value'] as String? ?? '';
+          if (name.isNotEmpty) {
+            headerMap[name] = value;
+          }
+        }
+      }
+
+      final disp = headerMap['content-disposition'] ?? '';
+      final cid = headerMap['content-id'] ?? '';
+      final dispLower = disp.toLowerCase();
+
+      if (dispLower.contains('inline') && !dispLower.contains('attachment')) {
+        if (parts != null) {
+          for (final p in parts) {
+            walk(p);
+          }
+        }
+        return;
+      }
+
+      if (cid.isNotEmpty) {
+        if (parts != null) {
+          for (final p in parts) {
+            walk(p);
+          }
+        }
+        return;
+      }
+
+      if (mimeType.startsWith('image/') && !dispLower.contains('attachment')) {
+        if (parts != null) {
+          for (final p in parts) {
+            walk(p);
+          }
+        }
+        return;
+      }
+
+      if (filename == null || filename.isEmpty) {
+        final matchFilename = RegExp(r'filename="?([^";]+)"?', caseSensitive: false).firstMatch(disp);
+        if (matchFilename != null) {
+          filename = matchFilename.group(1)?.trim();
+        } else {
+          final contentType = headerMap['content-type'] ?? '';
+          final matchName = RegExp(r'name="?([^";]+)"?', caseSensitive: false).firstMatch(contentType);
+          if (matchName != null) {
+            filename = matchName.group(1)?.trim();
+          }
+        }
+      }
+
+      if (filename == null || filename.isEmpty) {
+        if (parts != null) {
+          for (final p in parts) {
+            walk(p);
+          }
+        }
+        return;
+      }
+
+      attachments.add(AttachmentInfo(
+        filename: filename!,
+        mimeType: mimeType,
+        attachmentId: attachmentId,
+        size: size,
+      ));
+
+      if (parts != null) {
+        for (final p in parts) {
+          walk(p);
+        }
+      }
+    }
+
+    walk(payload ?? {});
+    return attachments;
+  }
+
+  Future<void> _loadAttachmentsForConversationMessage(MessageIndex message) async {
+    if (_conversationAttachments.containsKey(message.id)) {
+      return;
+    }
+    if (_loadingConversationAttachmentIds.contains(message.id)) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _loadingConversationAttachmentIds.add(message.id);
+      });
+    } else {
+      _loadingConversationAttachmentIds.add(message.id);
+    }
+
+    try {
+      List<AttachmentInfo> attachments = const [];
+
+      if (widget.localFolderName != null) {
+        final folderService = LocalFolderService();
+        final localAttachments = await folderService.loadAttachments(widget.localFolderName!, message.id);
+        attachments = _mapLocalAttachments(localAttachments);
+      } else {
+        final account = await GoogleAuthService().ensureValidAccessToken(message.accountId);
+        final accessToken = account?.accessToken;
+        if (accessToken == null || accessToken.isEmpty) {
+          throw Exception('No access token available');
+        }
+
+        final resp = await http.get(
+          Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}?format=full'),
+          headers: {'Authorization': 'Bearer $accessToken'},
+        );
+
+        if (resp.statusCode != 200) {
+          throw Exception('Failed to load attachments (${resp.statusCode})');
+        }
+
+        final map = jsonDecode(resp.body) as Map<String, dynamic>;
+        final payload = map['payload'] as Map<String, dynamic>?;
+        attachments = _extractAttachmentsFromPayload(payload);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _conversationAttachments[message.id] = attachments;
+      });
+    } catch (e) {
+      debugPrint('[EmailViewer] Failed to load conversation attachments for ${message.id}: $e');
+      if (!mounted) return;
+      setState(() {
+        _conversationAttachments[message.id] = const [];
+      });
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _loadingConversationAttachmentIds.remove(message.id);
+      });
+    }
+  }
+
+  Widget _buildConversationAttachmentChip(MessageIndex message, AttachmentInfo attachment, Color textColor) {
+    final theme = Theme.of(context);
+    return Material(
+      type: MaterialType.transparency,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => _downloadAttachment(attachment, sourceMessage: message),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: textColor.withOpacity(0.2),
+              width: 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.attach_file,
+                size: 18,
+                color: textColor,
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  attachment.filename,
+                  style: theme.textTheme.bodySmall?.copyWith(color: textColor),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _downloadAttachment(AttachmentInfo attachment, {MessageIndex? sourceMessage}) async {
+    final message = sourceMessage ?? _currentMessage;
     try {
       // If viewing from local folder, open the file directly
       if (widget.localFolderName != null) {
         final folderService = LocalFolderService();
         final localPath = await folderService.getAttachmentPath(
           widget.localFolderName!,
-          widget.message.id,
+          message.id,
           attachment.attachmentId,
         );
         
@@ -522,7 +673,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       // Download attachment from Gmail API
       final resp = await http.get(
         Uri.parse(
-          'https://gmail.googleapis.com/gmail/v1/users/me/messages/${widget.message.id}/attachments/${attachment.attachmentId}',
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}/attachments/${attachment.attachmentId}',
         ),
         headers: {'Authorization': 'Bearer $accessToken'},
       );
@@ -580,51 +731,296 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   }
 
   void _handleReply() {
-    final to = _extractEmail(widget.message.from);
-    final subject = widget.message.subject.startsWith('Re:') 
-        ? widget.message.subject 
-        : 'Re: ${widget.message.subject}';
+    final to = _extractEmail(_currentMessage.from);
+    final subject = _currentMessage.subject.startsWith('Re:') 
+        ? _currentMessage.subject 
+        : 'Re: ${_currentMessage.subject}';
     showDialog(
       context: context,
       builder: (ctx) => ComposeEmailDialog(
         to: to,
         subject: subject,
         accountId: widget.accountId,
-        originalMessage: widget.message,
+        originalMessage: _currentMessage,
       ),
     );
   }
 
   void _handleReplyAll() {
-    final to = _extractEmail(widget.message.from);
+    final to = _extractEmail(_currentMessage.from);
     // TODO: Extract all recipients from the email
-    final subject = widget.message.subject.startsWith('Re:') 
-        ? widget.message.subject 
-        : 'Re: ${widget.message.subject}';
+    final subject = _currentMessage.subject.startsWith('Re:') 
+        ? _currentMessage.subject 
+        : 'Re: ${_currentMessage.subject}';
     showDialog(
       context: context,
       builder: (ctx) => ComposeEmailDialog(
         to: to,
         subject: subject,
         accountId: widget.accountId,
-        originalMessage: widget.message,
+        originalMessage: _currentMessage,
       ),
     );
   }
 
   void _handleForward() {
-    final subject = widget.message.subject.startsWith('Fwd:') 
-        ? widget.message.subject 
-        : 'Fwd: ${widget.message.subject}';
+    final subject = _currentMessage.subject.startsWith('Fwd:') 
+        ? _currentMessage.subject 
+        : 'Fwd: ${_currentMessage.subject}';
     showDialog(
       context: context,
       builder: (ctx) => ComposeEmailDialog(
         subject: subject,
-        body: '\n\n--- Forwarded message ---\nFrom: ${widget.message.from}\nDate: ${_formatDate(widget.message.internalDate)}\nSubject: ${widget.message.subject}\n\n',
+        body: '\n\n--- Forwarded message ---\nFrom: ${_currentMessage.from}\nDate: ${_formatDate(_currentMessage.internalDate)}\nSubject: ${_currentMessage.subject}\n\n',
         accountId: widget.accountId,
-        originalMessage: widget.message,
+        originalMessage: _currentMessage,
       ),
     );
+  }
+
+  void _toggleConversationMode() {
+    if (_isConversationMode) {
+      setState(() {
+        _isConversationMode = false;
+      });
+      _updateNavigationState();
+      return;
+    }
+
+    setState(() {
+      _isConversationMode = true;
+      _isThreadLoading = true;
+      _threadError = null;
+      _showNavigationExtras = false;
+      _canGoBack = false;
+    });
+
+    unawaited(_loadThreadMessages());
+  }
+
+  Future<void> _loadThreadMessages() async {
+    final threadId = _currentMessage.threadId;
+    if (threadId == null || threadId.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _threadMessages = [_currentMessage];
+        _isThreadLoading = false;
+        _threadError = 'No conversation history available for this email.';
+      });
+      return;
+    }
+
+    try {
+      final repo = MessageRepository();
+      final messages = await repo.getMessagesByThread(widget.accountId, threadId);
+      if (!mounted) return;
+      setState(() {
+        _threadMessages = messages.isEmpty ? [_currentMessage] : messages;
+        _isThreadLoading = false;
+        _threadError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _threadMessages = [_currentMessage];
+        _isThreadLoading = false;
+        _threadError = 'Failed to load conversation: $e';
+      });
+    }
+  }
+
+  bool _isOutgoing(MessageIndex message) {
+    final accountEmail = _accountEmail;
+    if (accountEmail == null || accountEmail.isEmpty) {
+      return false;
+    }
+    final senderEmail = _extractEmail(message.from).toLowerCase();
+    return senderEmail == accountEmail;
+  }
+
+  Widget _buildConversationList() {
+    if (_isThreadLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_threadError != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+          child: Text(
+            _threadError!,
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
+
+    final messages = _threadMessages.isEmpty ? <MessageIndex>[_currentMessage] : _threadMessages;
+    final showConversationHint = messages.length <= 1;
+    final itemCount = showConversationHint ? messages.length + 1 : messages.length;
+    final theme = Theme.of(context);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth <= 600 ? constraints.maxWidth * 0.8 : 520.0;
+        final minWidth = constraints.maxWidth <= 600 ? constraints.maxWidth * 0.6 : maxWidth * 0.6;
+        final resolvedMinWidth = minWidth > maxWidth ? maxWidth : minWidth;
+
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          itemCount: itemCount,
+          itemBuilder: (context, index) {
+            if (showConversationHint && index == itemCount - 1) {
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12.0),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: Text(
+                    'No additional messages in this conversation yet.',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              );
+            }
+
+            final message = messages[index];
+            final isOutgoing = _isOutgoing(message);
+            final alignment = isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start;
+            final bubbleColor = isOutgoing
+                ? ActionMailTheme.sentMessageColor
+                : ActionMailTheme.incomingMessageColor;
+            final textColor = theme.colorScheme.onPrimary;
+            final metaColor = textColor.withOpacity(0.8);
+            final isActive = message.id == _currentMessage.id;
+
+            final senderEmail = _extractEmail(message.from);
+            final senderName = _extractSenderName(message.from);
+            final attachments = _conversationAttachments[message.id];
+            final isLoadingAttachments = _loadingConversationAttachmentIds.contains(message.id);
+
+            if ((message.hasAttachments || (attachments != null && attachments.isNotEmpty)) && attachments == null && !isLoadingAttachments) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted) return;
+                _loadAttachmentsForConversationMessage(message);
+              });
+            }
+
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                mainAxisAlignment: alignment,
+                children: [
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxWidth: maxWidth,
+                      minWidth: resolvedMinWidth,
+                    ),
+                    child: Material(
+                      color: bubbleColor,
+                      elevation: isActive ? 2 : 0,
+                      borderRadius: BorderRadius.circular(18),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: () => _showMessageFromThread(message),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '$senderName <$senderEmail>',
+                                style: theme.textTheme.titleSmall?.copyWith(
+                                  color: textColor,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                _formatDate(message.internalDate),
+                                style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                              ),
+                              if (message.to.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  'To: ${message.to}',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: metaColor),
+                                ),
+                              ],
+                              const SizedBox(height: 12),
+                              Text(
+                                message.subject,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  color: textColor,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              if (message.snippet != null && message.snippet!.isNotEmpty) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  message.snippet!,
+                                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                ),
+                              ],
+                              if ((attachments != null && attachments.isNotEmpty) || isLoadingAttachments) ...[
+                                const SizedBox(height: 12),
+                                if (attachments != null && attachments.isNotEmpty)
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 8,
+                                    children: attachments
+                                        .map((attachment) => _buildConversationAttachmentChip(message, attachment, textColor))
+                                        .toList(),
+                                  )
+                                else if (isLoadingAttachments)
+                                  const Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: SizedBox(
+                                      width: 20,
+                                      height: 20,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    ),
+                                  ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Future<void> _showMessageFromThread(MessageIndex message) async {
+    if (message.id == _currentMessage.id) {
+      setState(() {
+        _isConversationMode = false;
+      });
+      _updateNavigationState();
+      return;
+    }
+
+    setState(() {
+      _currentMessage = message;
+      _isConversationMode = false;
+      _htmlContent = null;
+      _attachments = [];
+      _error = null;
+      _isLoading = true;
+      _isViewingOriginal = true;
+      _showNavigationExtras = false;
+      _canGoBack = false;
+      _currentUrl = null;
+    });
+
+    await _loadEmailBody();
   }
 
   void _toggleFullscreen() {
@@ -683,7 +1079,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         title: 'Email',
         fullscreen: _isFullscreen,
         headerActions: [
-          if (_showNavigationExtras && _canGoBack)
+          if (!_isConversationMode && _showNavigationExtras && _canGoBack)
             IconButton(
               tooltip: 'Back',
               icon: const Icon(Icons.arrow_back, size: 20),
@@ -695,7 +1091,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                 }
               },
             ),
-          if (_showNavigationExtras)
+          if (!_isConversationMode && _showNavigationExtras)
             IconButton(
               tooltip: 'Original Email',
               icon: const Icon(Icons.home, size: 20),
@@ -717,12 +1113,24 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                 }
               },
             ),
-          if (_showNavigationExtras && _currentUrl != null)
+          if (!_isConversationMode && _showNavigationExtras && _currentUrl != null)
             IconButton(
               tooltip: 'Open in Browser',
               icon: const Icon(Icons.open_in_new, size: 20),
               color: theme.appBarTheme.foregroundColor,
               onPressed: _openCurrentInBrowser,
+            ),
+          if (_currentMessage.threadId != null && _currentMessage.threadId!.isNotEmpty)
+            IconButton(
+              tooltip: _isConversationMode ? 'Exit Conversation Mode' : 'Conversation Mode',
+              icon: Icon(
+                _isConversationMode ? Icons.forum : Icons.forum_outlined,
+                size: 20,
+              ),
+              color: _isConversationMode
+                  ? theme.colorScheme.primary
+                  : theme.appBarTheme.foregroundColor,
+              onPressed: _toggleConversationMode,
             ),
           PopupMenuButton<_ReplyMenuAction>(
             tooltip: 'Reply options',
@@ -790,125 +1198,129 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                             ],
                           ),
                         )
-                      : _htmlContent != null
+                      : _isConversationMode
                           ? Column(
                               children: [
-                                // Attachments section
-                                if (_attachments.isNotEmpty)
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                    decoration: BoxDecoration(
-                                      color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                      border: Border(
-                                        bottom: BorderSide(
-                                          color: Theme.of(context).dividerColor,
-                                          width: 1,
-                                        ),
-                                      ),
-                                    ),
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: SingleChildScrollView(
-                                        scrollDirection: Axis.horizontal,
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                // Email content
-                                Expanded(
-                                  child: InAppWebView(
-                                    initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
-                                    // ignore: deprecated_member_use
-                                    initialOptions: InAppWebViewGroupOptions(
-                                      // ignore: deprecated_member_use
-                                      crossPlatform: InAppWebViewOptions(
-                                        useShouldOverrideUrlLoading: true,
-                                        mediaPlaybackRequiresUserGesture: false,
-                                        supportZoom: true,
-                                        javaScriptEnabled: true,
-                                      ),
-                                      // ignore: deprecated_member_use
-                                      android: AndroidInAppWebViewOptions(
-                                        useHybridComposition: true,
-                                      ),
-                                      // ignore: deprecated_member_use
-                                      ios: IOSInAppWebViewOptions(
-                                        allowsInlineMediaPlayback: true,
-                                      ),
-                                    ),
-                                    onWebViewCreated: (controller) {
-                                      _webViewController = controller;
-                                      _isViewingOriginal = true;
-                                      _currentUrl = null;
-                                      _updateNavigationState();
-                                    },
-                                    onLoadStart: (controller, url) {
-                                      final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
-                                      if (mounted) {
-                                        setState(() {
-                                          _isViewingOriginal = !isExternal;
-                                          _currentUrl = isExternal ? url : null;
-                                        });
-                                      }
-                                      _updateNavigationState();
-                                    },
-                                    onLoadStop: (controller, url) async {
-                                      final currentUrl = await controller.getUrl();
-                                      final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
-                                      if (mounted) {
-                                        setState(() {
-                                          _isViewingOriginal = !isExternal;
-                                          _currentUrl = isExternal ? currentUrl : null;
-                                        });
-                                      }
-                                      await _updateNavigationState();
-                                    },
-                                    onReceivedError: (controller, request, error) {
-                                      _updateNavigationState();
-                                    },
-                                    shouldOverrideUrlLoading: (controller, navigationAction) async {
-                                      final url = navigationAction.request.url;
-                                      if (url == null) {
-                                        return NavigationActionPolicy.ALLOW;
-                                      }
-
-                                      final scheme = url.scheme.toLowerCase();
-
-                                      if (scheme.isEmpty || scheme == 'about') {
-                                        return NavigationActionPolicy.ALLOW;
-                                      }
-
-                                      if (scheme == 'mailto') {
-                                        final messenger = ScaffoldMessenger.of(context);
-                                        final canLaunch = await canLaunchUrl(url);
-                                        if (!mounted) {
-                                          return NavigationActionPolicy.CANCEL;
-                                        }
-
-                                        if (canLaunch) {
-                                          await launchUrl(
-                                            url,
-                                            mode: LaunchMode.externalApplication,
-                                          );
-                                        } else {
-                                          messenger.showSnackBar(
-                                            SnackBar(content: Text('Cannot open link: ${url.toString()}')),
-                                          );
-                                        }
-                                        return NavigationActionPolicy.CANCEL;
-                                      }
-
-                                      // Allow HTTP/HTTPS to load inside the webview so users can navigate back
-                                      return NavigationActionPolicy.ALLOW;
-                                    },
-                                  ),
-                                ),
+                                Expanded(child: _buildConversationList()),
                               ],
                             )
-                          : const Center(child: Text('No content available')),
+                          : _htmlContent != null
+                              ? Column(
+                                  children: [
+                                    if (_attachments.isNotEmpty)
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                        decoration: BoxDecoration(
+                                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                          border: Border(
+                                            bottom: BorderSide(
+                                              color: Theme.of(context).dividerColor,
+                                              width: 1,
+                                            ),
+                                          ),
+                                        ),
+                                        child: Align(
+                                          alignment: Alignment.centerLeft,
+                                          child: SingleChildScrollView(
+                                            scrollDirection: Axis.horizontal,
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    Expanded(
+                                      child: InAppWebView(
+                                        initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                                        // ignore: deprecated_member_use
+                                        initialOptions: InAppWebViewGroupOptions(
+                                          // ignore: deprecated_member_use
+                                          crossPlatform: InAppWebViewOptions(
+                                            useShouldOverrideUrlLoading: true,
+                                            mediaPlaybackRequiresUserGesture: false,
+                                            supportZoom: true,
+                                            javaScriptEnabled: true,
+                                          ),
+                                          // ignore: deprecated_member_use
+                                          android: AndroidInAppWebViewOptions(
+                                            useHybridComposition: true,
+                                          ),
+                                          // ignore: deprecated_member_use
+                                          ios: IOSInAppWebViewOptions(
+                                            allowsInlineMediaPlayback: true,
+                                          ),
+                                        ),
+                                        onWebViewCreated: (controller) {
+                                          _webViewController = controller;
+                                          _isViewingOriginal = true;
+                                          _currentUrl = null;
+                                          _updateNavigationState();
+                                        },
+                                        onLoadStart: (controller, url) {
+                                          final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
+                                          if (mounted) {
+                                            setState(() {
+                                              _isViewingOriginal = !isExternal;
+                                              _currentUrl = isExternal ? url : null;
+                                            });
+                                          }
+                                          _updateNavigationState();
+                                        },
+                                        onLoadStop: (controller, url) async {
+                                          final currentUrl = await controller.getUrl();
+                                          final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
+                                          if (mounted) {
+                                            setState(() {
+                                              _isViewingOriginal = !isExternal;
+                                              _currentUrl = isExternal ? currentUrl : null;
+                                            });
+                                          }
+                                          await _updateNavigationState();
+                                        },
+                                        onReceivedError: (controller, request, error) {
+                                          _updateNavigationState();
+                                        },
+                                        shouldOverrideUrlLoading: (controller, navigationAction) async {
+                                          final url = navigationAction.request.url;
+                                          if (url == null) {
+                                            return NavigationActionPolicy.ALLOW;
+                                          }
+
+                                          final scheme = url.scheme.toLowerCase();
+
+                                          if (scheme.isEmpty || scheme == 'about') {
+                                            return NavigationActionPolicy.ALLOW;
+                                          }
+
+                                          if (scheme == 'mailto') {
+                                            final messenger = ScaffoldMessenger.of(context);
+                                            final canLaunch = await canLaunchUrl(url);
+                                            if (!mounted) {
+                                              return NavigationActionPolicy.CANCEL;
+                                            }
+
+                                            if (canLaunch) {
+                                              await launchUrl(
+                                                url,
+                                                mode: LaunchMode.externalApplication,
+                                              );
+                                            } else {
+                                              messenger.showSnackBar(
+                                                SnackBar(content: Text('Cannot open link: ${url.toString()}')),
+                                              );
+                                            }
+                                            return NavigationActionPolicy.CANCEL;
+                                          }
+
+                                          // Allow HTTP/HTTPS to load inside the webview so users can navigate back
+                                          return NavigationActionPolicy.ALLOW;
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : const Center(child: Text('No content available')),
       ),
     );
   }

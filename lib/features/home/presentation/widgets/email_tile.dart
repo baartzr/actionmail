@@ -5,6 +5,7 @@ import 'package:actionmail/data/models/message_index.dart';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:intl/intl.dart';
 import 'package:actionmail/shared/widgets/app_switch_button.dart';
+import 'package:actionmail/features/home/presentation/widgets/action_edit_dialog.dart';
 import 'package:actionmail/services/domain_icon_service.dart';
 
 /// Email tile widget with action insight line
@@ -289,6 +290,7 @@ class _EmailTileState extends State<EmailTile> {
       _actionDate = widget.message.actionDate;
       _actionText = widget.message.actionInsightText;
       _actionComplete = widget.message.actionComplete;
+      _showActionLine = true;
     }
   }
 
@@ -868,133 +870,35 @@ class _EmailTileState extends State<EmailTile> {
   // Dismiss background removed; custom swipe implemented above
 
   Future<void> _openEditActionDialog() async {
-    DateTime? tempDate = _actionDate ?? DateTime.now();
-    // Use action text as-is (no need to remove "(Complete)" since we use boolean field now)
-    final currentText = _actionText ?? '';
-    final textController = TextEditingController(text: currentText);
-
-    await showDialog<void>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, sbSet) {
-            return Dialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(0), // Square corners
-              ),
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 400),
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    // Title
-                    Text(
-                      'Edit Action',
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    // Action text field
-                    TextField(
-                      controller: textController,
-                      decoration: InputDecoration(
-                        labelText: 'Action',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                      ),
-                      maxLines: 3,
-                      minLines: 1,
-                    ),
-                    const SizedBox(height: 16),
-                    // Date picker button
-                    OutlinedButton.icon(
-                      onPressed: () async {
-                        final picked = await showDatePicker(
-                          context: context,
-                          initialDate: tempDate ?? DateTime.now(),
-                          firstDate: DateTime(2000),
-                          lastDate: DateTime(2100),
-                          builder: (context, child) {
-                            return Theme(
-                              data: Theme.of(context).copyWith(
-                                dialogTheme: DialogThemeData(
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(0), // Square corners
-                                  ),
-                                ),
-                              ),
-                              child: child!,
-                            );
-                          },
-                        );
-                        if (picked != null) {
-                          sbSet(() {
-                            tempDate = picked;
-                          });
-                        }
-                      },
-                      icon: const Icon(Icons.calendar_today, size: 18),
-                      label: Text(
-                        tempDate != null
-                            ? DateFormat('dd MMM yyyy').format(tempDate!)
-                            : 'Pick date',
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 24),
-                    // Action buttons
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                          ),
-                          child: const Text('Cancel'),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton(
-                          onPressed: () {
-                            final newText = textController.text.trim();
-                            setState(() {
-                              _actionDate = tempDate;
-                              _actionText = newText.isEmpty ? null : newText;
-                              // Note: actionComplete state is preserved when editing (not reset)
-                            });
-                            if (widget.onActionUpdated != null) {
-                              widget.onActionUpdated!(_actionDate, _actionText, actionComplete: _actionComplete);
-                            }
-                            Navigator.of(context).pop();
-                          },
-                          style: FilledButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: const Text('Save'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
+    final hasExistingAction = _actionDate != null || (_actionText != null && _actionText!.isNotEmpty);
+    final result = await ActionEditDialog.show(
+      context,
+      initialDate: _actionDate,
+      initialText: _actionText,
+      allowRemove: hasExistingAction,
     );
+
+    if (result == null) return;
+
+    final removed = result.removed;
+    final newDate = removed ? null : result.actionDate;
+    final newText = removed
+        ? null
+        : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
+    final hasActionNow = !removed && (newDate != null || (newText != null && newText.isNotEmpty));
+
+    setState(() {
+      _actionDate = newDate;
+      _actionText = newText;
+      if (!hasActionNow) {
+        _actionComplete = false;
+      }
+      _showActionLine = true;
+    });
+
+    if (widget.onActionUpdated != null) {
+      widget.onActionUpdated!(newDate, newText, actionComplete: _actionComplete);
+    }
   }
 
   void _handleMarkActionComplete() {

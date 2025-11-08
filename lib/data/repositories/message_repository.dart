@@ -425,6 +425,17 @@ class MessageRepository {
     );
   }
 
+  Future<List<MessageIndex>> getMessagesByThread(String accountId, String threadId) async {
+    final db = await _dbProvider.database;
+    final rows = await db.query(
+      'messages',
+      where: 'accountId=? AND threadId=?',
+      whereArgs: [accountId, threadId],
+      orderBy: 'internalDate DESC',
+    );
+    return rows.map(_fromRow).toList();
+  }
+
   Map<String, Object?> _toRow(MessageIndex m) {
     return {
       'id': m.id,
@@ -486,7 +497,7 @@ class MessageRepository {
       from: row['fromAddr'] as String,
       to: row['toAddr'] as String,
       subject: row['subject'] as String,
-      snippet: row['snippet'] as String?,
+      snippet: _decodeHtmlEntities(row['snippet'] as String?),
       hasAttachments: (row['hasAttachments'] as int) == 1,
       gmailCategories: gmailCategories,
       gmailSmartLabels: gmailSmartLabels,
@@ -550,6 +561,24 @@ class MessageRepository {
     );
     return Sqflite.firstIntValue(result) ?? 0;
   }
+}
+
+String? _decodeHtmlEntities(String? value) {
+  if (value == null || value.isEmpty) {
+    return value;
+  }
+
+  // Quick check: if there's no &...; sequence, skip transformation
+  if (!value.contains('&')) {
+    return value;
+  }
+
+  return value
+      .replaceAll('&amp;', '&')
+      .replaceAll('&#39;', "'")
+      .replaceAll('&quot;', '"')
+      .replaceAll('&lt;', '<')
+      .replaceAll('&gt;', '>');
 }
 
 

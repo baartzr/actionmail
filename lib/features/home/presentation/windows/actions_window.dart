@@ -12,6 +12,14 @@ import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:intl/intl.dart';
+import 'package:tuple/tuple.dart';
+import 'package:actionmail/features/home/presentation/widgets/email_tile.dart';
+import 'package:actionmail/features/home/presentation/widgets/action_edit_dialog.dart';
+import 'package:actionmail/features/home/domain/providers/email_syncing_provider.dart';
+import 'package:actionmail/services/auth/google_auth_service.dart';
+import 'package:actionmail/services/gmail/gmail_api_service.dart';
+import 'package:actionmail/services/ml/ml_action_extractor.dart';
+import 'package:actionmail/features/home/domain/providers/email_loading_local_provider.dart';
 
 class ActionsWindow extends ConsumerStatefulWidget {
   const ActionsWindow({super.key});
@@ -201,113 +209,21 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
   }
 
   Future<void> _openEditActionDialog(MessageIndex message) async {
-    DateTime? tempDate = message.actionDate ?? DateTime.now();
-    final textController = TextEditingController(text: message.actionInsightText ?? '');
-
-    final result = await showDialog<Map<String, dynamic>?>(
-      context: context,
-      builder: (context) {
-        return StatefulBuilder(
-          builder: (context, sbSet) {
-            return AlertDialog(
-              title: const Text('Edit Action'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  TextField(
-                    controller: textController,
-                    decoration: const InputDecoration(
-                      labelText: 'Action',
-                    ),
-                    maxLines: 2,
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: tempDate ?? DateTime.now(),
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (picked != null) {
-                        sbSet(() {
-                          tempDate = picked;
-                        });
-                      }
-                    },
-                    icon: const Icon(Icons.calendar_today),
-                    label: Text(tempDate != null
-                        ? DateFormat('dd-MMM, y').format(tempDate!)
-                        : 'Pick date'),
-                  ),
-                ],
-              ),
-              actions: [
-                // Remove button (only show if action exists)
-                if (message.hasAction)
-                  TextButton.icon(
-                    onPressed: () async {
-                      final confirmed = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          title: const Text('Remove Action'),
-                          content: const Text('Are you sure you want to remove this action?'),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.of(ctx).pop(false),
-                              child: const Text('Cancel'),
-                            ),
-                            FilledButton(
-                              onPressed: () => Navigator.of(ctx).pop(true),
-                              style: FilledButton.styleFrom(
-                                backgroundColor: Theme.of(ctx).colorScheme.error,
-                                foregroundColor: Theme.of(ctx).colorScheme.onError,
-                              ),
-                              child: const Text('Remove'),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (confirmed == true) {
-                        if (!context.mounted) return;
-                        Navigator.of(context).pop({
-                          'actionDate': null,
-                          'actionText': null,
-                        });
-                      }
-                    },
-                    icon: Icon(Icons.delete_outline, size: 18, color: Theme.of(context).colorScheme.error),
-                    label: Text(
-                      'Remove',
-                      style: TextStyle(color: Theme.of(context).colorScheme.error),
-                    ),
-                  ),
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(null),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () {
-                    Navigator.of(context).pop({
-                      'actionDate': tempDate,
-                      'actionText': textController.text.trim().isEmpty ? null : textController.text.trim(),
-                    });
-                  },
-                  child: const Text('Save'),
-                ),
-              ],
-            );
-          },
-        );
-      },
+    final result = await ActionEditDialog.show(
+      context,
+      initialDate: message.actionDate,
+      initialText: message.actionInsightText,
+      allowRemove: message.hasAction,
     );
 
     if (result != null) {
-      final actionDate = result['actionDate'] as DateTime?;
-      final actionText = result['actionText'] as String?;
-      
+      final removed = result.removed;
+      final actionDate = removed ? null : result.actionDate;
+      final actionText = removed
+          ? null
+          : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
+      final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+ 
       // Capture original detected action for feedback
       final originalAction = message.hasAction
           ? ActionResult(
@@ -316,10 +232,11 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
               insightText: message.actionInsightText ?? '',
             )
           : null;
-      
+       
       // Preserve actionComplete when editing (don't reset it)
-      final currentComplete = message.actionComplete;
-      
+      final currentComplete = hasActionNow ? message.actionComplete : false;
+      final shouldClearAction = !hasActionNow;
+ 
       // Persist to database
       await MessageRepository().updateAction(message.id, actionDate, actionText, null, currentComplete);
       // Update in-memory state
@@ -329,32 +246,33 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
         actionText,
         actionComplete: currentComplete,
       );
-      
+       
       // Sync to Firebase if enabled
       final syncEnabled = await _firebaseSync.isSyncEnabled();
       if (syncEnabled) {
         // Get current message to check if action actually changed
         final currentDate = message.actionDate;
         final currentText = message.actionInsightText;
-        if (currentDate != actionDate || currentText != actionText || currentComplete != message.actionComplete) {
+        if (currentDate != actionDate || currentText != actionText || currentComplete != message.actionComplete || shouldClearAction) {
           await _firebaseSync.syncEmailMeta(
             message.id,
-            actionDate: actionDate,
-            actionInsightText: actionText,
-            actionComplete: currentComplete,
+            actionDate: hasActionNow ? actionDate : null,
+            actionInsightText: hasActionNow ? actionText : null,
+            actionComplete: hasActionNow ? currentComplete : null,
+            clearAction: shouldClearAction,
           );
         }
       }
-      
+       
       // Record feedback for ML training
-      final userAction = actionDate != null || actionText != null
+      final userAction = hasActionNow
           ? ActionResult(
               actionDate: actionDate ?? DateTime.now(),
               confidence: 1.0, // User-provided actions have max confidence
               insightText: actionText ?? '',
             )
           : null;
-      
+       
       // Determine feedback type
       FeedbackType? feedbackType = _determineFeedbackType(originalAction, userAction);
       

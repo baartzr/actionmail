@@ -11,6 +11,9 @@ class ActionMailTheme {
   static const Color upcomingColor = Color(0xFF6BC688); // Muted green for Upcoming
   static const Color overdueColor = Color(0xFFE57373); // Soft red for Overdue
   static const Color actionColor = Color(0xFF9E7CC1); // Subtle purple for actions
+  static const Color sentMessageColor = Color(0xFFFF6F61);
+  static const Color incomingMessageColor = Color(0xFFA288E3);
+  static const Color alertColor = Color(0xFFFFC857);
   
   // Dark teal colors for appbars and window headers (consistent across themes)
   static const Color darkTeal = Color(0xFF00695C); // Material Teal 800 - dark teal

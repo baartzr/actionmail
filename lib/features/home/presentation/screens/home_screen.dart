@@ -30,6 +30,7 @@ import 'package:actionmail/services/local_folders/local_folder_service.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:actionmail/app/theme/actionmail_theme.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -285,7 +286,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               // Switch unread count to local after sync
               await _switchUnreadCountToLocal(_selectedAccountId!);
             } catch (e) {
-              debugPrint('[HomeScreen] Error during background sync on account switch: $e');
+              debugPrint('[HomeScreen] Error during background sync on account tap: $e');
               await _switchUnreadCountToLocal(_selectedAccountId!);
             }
           }));
@@ -1835,33 +1836,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 final now = DateTime.now();
                 final today = DateTime(now.year, now.month, now.day);
                 for (final m in emails) {
-                  // Filter by Personal/Business selection
                   if (_selectedLocalState != null && m.localTagPersonal != _selectedLocalState) {
                     continue;
                   }
-                  // Exclude completed actions (using actionComplete field)
                   if (m.actionComplete) {
                     continue;
                   }
-                  // Only include messages that have an action
-                  if (!m.hasAction) {
+                  if (!m.hasAction || m.actionDate == null) {
                     continue;
                   }
-                  // Categorize based on date if available
-                  if (m.actionDate != null) {
-                    final local = m.actionDate!.toLocal();
-                    final d = DateTime(local.year, local.month, local.day);
-                    if (d == today) {
-                      countToday++;
-                    } else if (d.isAfter(today)) {
-                      countUpcoming++;
-                    } else {
-                      countOverdue++;
-                    }
-                  } else {
-                    // Messages with action text but no date - count as "today" for now
-                    // (or we could add a separate "unscheduled" count)
+                  final local = m.actionDate!.toLocal();
+                  final d = DateTime(local.year, local.month, local.day);
+                  if (d == today) {
                     countToday++;
+                  } else if (d.isAfter(today)) {
+                    countUpcoming++;
+                  } else {
+                    countOverdue++;
                   }
                 }
               });
@@ -2237,7 +2228,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               displayText,
               style: theme.textTheme.labelMedium?.copyWith(
                 color: selected ? cs.primary : cs.onSurfaceVariant,
-                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+                fontWeight: FontWeight.w700,
                 fontSize: 12,
               ),
             ),
@@ -2436,9 +2427,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           return true;
         }).toList();
 
+        final filterBanner = _buildFilterBanner(context);
+
         final content = Column(
           children: [
             if (isLoadingLocal || isSyncing) const LinearProgressIndicator(minHeight: 2),
+            if (filterBanner != null) filterBanner,
             Expanded(
               child: RefreshIndicator(
           onRefresh: () async {
@@ -2623,6 +2617,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   
                   await MessageRepository().updateAction(message.id, date, text, null, actionComplete);
                   ref.read(emailListProvider.notifier).setAction(message.id, date, text, actionComplete: actionComplete);
+                  final hasActionNow = date != null || (text != null && text.isNotEmpty);
                   
                   // Record feedback for ML training
                   final userAction = date != null || text != null
@@ -2654,12 +2649,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     final currentDate = message.actionDate;
                     final currentText = message.actionInsightText;
                     final currentComplete = message.actionComplete;
-                    if (currentDate != date || currentText != text || currentComplete != actionComplete) {
+                    if (currentDate != date || currentText != text || currentComplete != actionComplete || !hasActionNow) {
                       await _firebaseSync.syncEmailMeta(
                         message.id,
-                        actionDate: date,
-                        actionInsightText: text,
-                        actionComplete: actionComplete,
+                        actionDate: hasActionNow ? date : null,
+                        actionInsightText: hasActionNow ? text : null,
+                        actionComplete: hasActionNow ? actionComplete : null,
+                        clearAction: !hasActionNow,
                       );
                     }
                   }
@@ -2883,6 +2879,114 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _unreadCountRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  List<String> _activeFilterLabels() {
+    final labels = <String>[];
+
+    if (_selectedLocalState != null) {
+      labels.add('Local: ${_selectedLocalState!}');
+    }
+
+    if (_stateFilter != null) {
+      labels.add(_stateFilter!);
+    }
+
+    if (_selectedActionFilter != null) {
+      labels.add('Action: ${_selectedActionFilter!}');
+    }
+
+    if (_selectedCategories.isNotEmpty) {
+      final names = _selectedCategories
+          .map((c) => AppConstants.categoryDisplayNames[c] ?? c)
+          .join(', ');
+      labels.add('Categories: $names');
+    }
+
+    if (_searchQuery.isNotEmpty) {
+      final raw = _searchController.text.trim();
+      if (raw.isNotEmpty) {
+        labels.add('Search: "$raw"');
+      } else {
+        labels.add('Search filters applied');
+      }
+    }
+
+    return labels;
+  }
+
+  Widget? _buildFilterBanner(BuildContext context) {
+    final labels = _activeFilterLabels();
+    if (labels.isEmpty) return null;
+
+    final theme = Theme.of(context);
+    final textColor = const Color(0xFF333333);
+    final bannerColor = ActionMailTheme.alertColor.withOpacity(0.5);
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: bannerColor,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              alignment: WrapAlignment.start,
+              runAlignment: WrapAlignment.center,
+              children: labels
+                  .map(
+                    (label) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: textColor.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        label,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: textColor,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 12),
+          TextButton(
+            onPressed: _clearAllFilters,
+            style: TextButton.styleFrom(
+              foregroundColor: textColor,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              minimumSize: const Size(0, 0),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: const Text('Clear filters'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _clearAllFilters() {
+    setState(() {
+      _selectedLocalState = null;
+      _selectedActionFilter = null;
+      _stateFilter = null;
+      _selectedCategories.clear();
+      _searchQuery = '';
+      _searchController.clear();
+      _showSearch = false;
+    });
+    FocusScope.of(context).unfocus();
   }
 }
 

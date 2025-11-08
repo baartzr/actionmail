@@ -426,6 +426,7 @@ class FirebaseSyncService {
     String? actionInsightText,
     bool? actionComplete,
     String? accountEmail,
+    bool clearAction = false,
   }) async {
     try {
       if (!_syncEnabled) {
@@ -476,7 +477,7 @@ class FirebaseSyncService {
         // - If only tag is "provided" (no action params), update tag
         // - If action params are provided, update actions (and tag only if explicitly non-null)
         bool hasUpdates = false;
-        final isTagOnly = actionDate == null && actionInsightText == null && actionComplete == null;
+        final isTagOnly = !clearAction && actionDate == null && actionInsightText == null && actionComplete == null;
         
         if (isTagOnly) {
           // Tag-only update
@@ -504,6 +505,13 @@ class FirebaseSyncService {
           updateData['current.actionComplete'] = actionComplete;
           hasUpdates = true;
         }
+
+        if (clearAction) {
+          updateData['current.actionDate'] = null;
+          updateData['current.actionInsightText'] = null;
+          updateData['current.actionComplete'] = null;
+          hasUpdates = true;
+        }
         
         if (!hasUpdates) return;
         
@@ -522,6 +530,11 @@ class FirebaseSyncService {
           }
           if (actionComplete != null) {
             current['actionComplete'] = actionComplete;
+          }
+          if (clearAction) {
+            current['actionDate'] = null;
+            current['actionInsightText'] = null;
+            current['actionComplete'] = null;
           }
           await emailDoc.set({
             'current': current,
