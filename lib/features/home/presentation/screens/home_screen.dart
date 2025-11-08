@@ -498,6 +498,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                         context: context,
                                         builder: (ctx) => ComposeEmailDialog(
                                           accountId: _selectedAccountId!,
+                                          mode: ComposeEmailMode.newEmail,
                                         ),
                                       );
                                     }

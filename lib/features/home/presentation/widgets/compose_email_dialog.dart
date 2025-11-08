@@ -5,6 +5,13 @@ import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:actionmail/data/models/message_index.dart';
 
+enum ComposeEmailMode {
+  newEmail,
+  reply,
+  replyAll,
+  forward,
+}
+
 /// Dialog for composing new emails
 class ComposeEmailDialog extends StatefulWidget {
   final String? to;
@@ -12,6 +19,7 @@ class ComposeEmailDialog extends StatefulWidget {
   final String? body;
   final String accountId;
   final MessageIndex? originalMessage; // Original email when replying/forwarding
+  final ComposeEmailMode mode;
 
   const ComposeEmailDialog({
     super.key,
@@ -20,6 +28,7 @@ class ComposeEmailDialog extends StatefulWidget {
     this.body,
     required this.accountId,
     this.originalMessage,
+    this.mode = ComposeEmailMode.newEmail,
   });
 
   @override
@@ -67,12 +76,43 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
           .map((pf) => File(pf.path!))
           .toList();
       
+      String? threadId;
+      String? inReplyTo;
+      List<String>? references;
+
+      if (widget.mode == ComposeEmailMode.reply || widget.mode == ComposeEmailMode.replyAll) {
+        final original = widget.originalMessage;
+        if (original != null) {
+          if (original.threadId.isNotEmpty) {
+            threadId = original.threadId;
+          }
+
+          final replyContext = await syncService.fetchReplyContext(widget.accountId, original.id);
+          final headerMessageId = replyContext?.messageIdHeader;
+          if (replyContext != null) {
+            final refs = List<String>.from(replyContext.references);
+            if (headerMessageId != null && headerMessageId.isNotEmpty) {
+              inReplyTo = headerMessageId;
+              if (!refs.contains(headerMessageId)) {
+                refs.add(headerMessageId);
+              }
+            }
+            if (refs.isNotEmpty) {
+              references = refs;
+            }
+          }
+        }
+      }
+
       final success = await syncService.sendEmail(
         widget.accountId,
         to: _toController.text.trim(),
         subject: _subjectController.text.trim(),
         body: _bodyController.text.trim(),
         attachments: attachmentFiles,
+        inReplyTo: inReplyTo,
+        references: references,
+        threadId: threadId,
       );
 
       if (!mounted) return;

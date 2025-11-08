@@ -745,6 +745,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         subject: subject,
         accountId: widget.accountId,
         originalMessage: _currentMessage,
+        mode: ComposeEmailMode.reply,
       ),
     );
   }
@@ -762,6 +763,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         subject: subject,
         accountId: widget.accountId,
         originalMessage: _currentMessage,
+        mode: ComposeEmailMode.replyAll,
       ),
     );
   }
@@ -777,6 +779,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         body: '\n\n--- Forwarded message ---\nFrom: ${_currentMessage.from}\nDate: ${_formatDate(_currentMessage.internalDate)}\nSubject: ${_currentMessage.subject}\n\n',
         accountId: widget.accountId,
         originalMessage: _currentMessage,
+        mode: ComposeEmailMode.forward,
       ),
     );
   }

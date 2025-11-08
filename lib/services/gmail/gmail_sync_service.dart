@@ -19,6 +19,16 @@ class _GmailApiException implements Exception {
   String toString() => message;
 }
 
+class ReplyContext {
+  final String? messageIdHeader;
+  final List<String> references;
+
+  const ReplyContext({
+    required this.messageIdHeader,
+    required this.references,
+  });
+}
+
 /// Service to simulate Gmail API sync
 /// In production, this would call the actual Gmail API
 class GmailSyncService {
@@ -941,6 +951,58 @@ class GmailSyncService {
     return '';
   }
 
+  Future<ReplyContext?> fetchReplyContext(String accountId, String messageId) async {
+    try {
+      final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+      final accessToken = account?.accessToken;
+      if (accessToken == null || accessToken.isEmpty) {
+        debugPrint('[Gmail] fetchReplyContext: No access token for account $accountId');
+        return null;
+      }
+
+      final uri = Uri.parse(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId'
+        '?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References',
+      );
+      final resp = await http.get(
+        uri,
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+      if (resp.statusCode != 200) {
+        debugPrint('[Gmail] fetchReplyContext: HTTP ${resp.statusCode} ${resp.body}');
+        return null;
+      }
+
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final payload = map['payload'] as Map<String, dynamic>?;
+      final headersJson = payload?['headers'] as List<dynamic>? ?? const [];
+      String? messageIdHeader;
+      List<String> references = [];
+
+      for (final header in headersJson) {
+        final h = MessageHeader.fromJson(header as Map<String, dynamic>);
+        final name = h.name.toLowerCase();
+        if (name == 'message-id') {
+          messageIdHeader = h.value.trim();
+        } else if (name == 'references') {
+          references = h.value
+              .split(RegExp(r'[\s]+'))
+              .map((entry) => entry.trim())
+              .where((entry) => entry.isNotEmpty)
+              .toList();
+        }
+      }
+
+      return ReplyContext(
+        messageIdHeader: messageIdHeader,
+        references: references,
+      );
+    } catch (e) {
+      debugPrint('[Gmail] fetchReplyContext: Error $e');
+      return null;
+    }
+  }
+
   /// Send an email via Gmail API
   /// [to] can be comma-separated for multiple recipients
   /// [cc] and [bcc] are optional and can be comma-separated
@@ -957,6 +1019,7 @@ class GmailSyncService {
     String? inReplyTo,
     List<String>? references,
     List<File>? attachments,
+    String? threadId,
   }) async {
     try {
       final account = await GoogleAuthService().ensureValidAccessToken(accountId);
@@ -989,6 +1052,9 @@ class GmailSyncService {
       }
       if (bcc != null && bcc.trim().isNotEmpty) {
         rawMessage.writeln('Bcc: $bcc');
+      }
+      if (replyTo != null && replyTo.trim().isNotEmpty) {
+        rawMessage.writeln('Reply-To: $replyTo');
       }
       rawMessage.writeln('Subject: $subject');
       
@@ -1062,6 +1128,13 @@ class GmailSyncService {
       final rawBase64Url = base64UrlEncode(utf8.encode(rawMessage.toString()))
           .replaceAll('=', '');
 
+      final payload = <String, dynamic>{
+        'raw': rawBase64Url,
+      };
+      if (threadId != null && threadId.isNotEmpty) {
+        payload['threadId'] = threadId;
+      }
+
       // Send via Gmail API
       final resp = await http.post(
         Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/send'),
@@ -1069,7 +1142,7 @@ class GmailSyncService {
           'Authorization': 'Bearer $accessToken',
           'Content-Type': 'application/json',
         },
-        body: jsonEncode({'raw': rawBase64Url}),
+        body: jsonEncode(payload),
       );
 
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
