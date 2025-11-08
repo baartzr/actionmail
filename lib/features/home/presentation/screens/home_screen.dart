@@ -2921,7 +2921,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     final theme = Theme.of(context);
     final textColor = const Color(0xFF333333);
-    final bannerColor = ActionMailTheme.alertColor.withOpacity(0.5);
+    final bannerColor = ActionMailTheme.alertColor.withValues(alpha: 0.5);
 
     return Container(
       width: double.infinity,
@@ -2945,7 +2945,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     (label) => Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: textColor.withOpacity(0.15),
+                        color: textColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(

@@ -1,6 +1,6 @@
 import 'dart:async';
-import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:actionmail/shared/widgets/app_window_dialog.dart';
 import 'package:actionmail/shared/widgets/personal_business_filter.dart';
@@ -12,14 +12,7 @@ import 'package:actionmail/services/actions/ml_action_extractor.dart';
 import 'package:actionmail/services/actions/action_extractor.dart';
 import 'package:actionmail/services/sync/firebase_sync_service.dart';
 import 'package:intl/intl.dart';
-import 'package:tuple/tuple.dart';
-import 'package:actionmail/features/home/presentation/widgets/email_tile.dart';
 import 'package:actionmail/features/home/presentation/widgets/action_edit_dialog.dart';
-import 'package:actionmail/features/home/domain/providers/email_syncing_provider.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/services/gmail/gmail_api_service.dart';
-import 'package:actionmail/services/ml/ml_action_extractor.dart';
-import 'package:actionmail/features/home/domain/providers/email_loading_local_provider.dart';
 
 class ActionsWindow extends ConsumerStatefulWidget {
   const ActionsWindow({super.key});
