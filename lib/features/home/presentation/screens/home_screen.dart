@@ -1832,7 +1832,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Builder(
             builder: (context) {
               final emailsValue = ref.read(emailListProvider);
-              int countToday = 0, countUpcoming = 0, countOverdue = 0;
+              int countToday = 0, countUpcoming = 0, countOverdue = 0, countPossible = 0;
               emailsValue.whenData((emails) {
                 final now = DateTime.now();
                 final today = DateTime(now.year, now.month, now.day);
@@ -1843,7 +1843,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   if (m.actionComplete) {
                     continue;
                   }
-                  if (!m.hasAction || m.actionDate == null) {
+                  if (!m.hasAction) {
+                    continue;
+                  }
+                  if (m.actionDate == null) {
+                    countPossible++;
                     continue;
                   }
                   final local = m.actionDate!.toLocal();
@@ -1864,6 +1868,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   _buildActionFilterTextButton(context, AppConstants.filterToday, countToday),
                   _buildActionFilterTextButton(context, AppConstants.filterUpcoming, countUpcoming),
                   _buildActionFilterTextButton(context, AppConstants.filterOverdue, countOverdue),
+                  _buildActionFilterTextButton(context, AppConstants.filterPossible, countPossible),
                 ],
               );
             },
@@ -2200,6 +2205,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         label = AppConstants.actionSummaryOverdue;
         tooltipText = 'Overdue actions';
         break;
+      case AppConstants.filterPossible:
+        label = AppConstants.filterPossible;
+        tooltipText = 'Actions without a date';
+        break;
       default:
         label = AppConstants.actionSummaryAll;
         tooltipText = label;
@@ -2396,21 +2405,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             if (!m.hasAction) return false;
             // Exclude completed actions
             if (m.actionComplete) return false;
-            // For date-based filtering, we need a date
-            if (m.actionDate == null) return false;
-            final now = DateTime.now();
-            final today = DateTime(now.year, now.month, now.day);
-            final local = m.actionDate!.toLocal();
-            final d = DateTime(local.year, local.month, local.day);
             switch (_selectedActionFilter) {
               case AppConstants.filterToday:
+                if (m.actionDate == null) return false;
+                final now = DateTime.now();
+                final today = DateTime(now.year, now.month, now.day);
+                final local = m.actionDate!.toLocal();
+                final d = DateTime(local.year, local.month, local.day);
                 if (d != today) return false;
                 break;
               case AppConstants.filterUpcoming:
+                if (m.actionDate == null) return false;
+                final now = DateTime.now();
+                final today = DateTime(now.year, now.month, now.day);
+                final local = m.actionDate!.toLocal();
+                final d = DateTime(local.year, local.month, local.day);
                 if (!d.isAfter(today)) return false;
                 break;
               case AppConstants.filterOverdue:
+                if (m.actionDate == null) return false;
+                final now = DateTime.now();
+                final today = DateTime(now.year, now.month, now.day);
+                final local = m.actionDate!.toLocal();
+                final d = DateTime(local.year, local.month, local.day);
                 if (!d.isBefore(today)) return false;
+                break;
+              case AppConstants.filterPossible:
+                if (m.actionDate != null) return false;
                 break;
             }
           }
@@ -2894,7 +2915,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     if (_selectedActionFilter != null) {
-      labels.add('Action: ${_selectedActionFilter!}');
+      final actionLabel = () {
+        switch (_selectedActionFilter) {
+          case AppConstants.filterToday:
+            return AppConstants.actionSummaryToday;
+          case AppConstants.filterUpcoming:
+            return 'Future';
+          case AppConstants.filterOverdue:
+            return AppConstants.actionSummaryOverdue;
+          case AppConstants.filterPossible:
+            return AppConstants.filterPossible;
+          default:
+            return AppConstants.actionSummaryAll;
+        }
+      }();
+      labels.add('Action: $actionLabel');
     }
 
     if (_selectedCategories.isNotEmpty) {

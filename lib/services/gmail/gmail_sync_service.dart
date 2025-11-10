@@ -33,6 +33,7 @@ class ReplyContext {
 /// In production, this would call the actual Gmail API
 class GmailSyncService {
   final MessageRepository _repo = MessageRepository();
+  static const String _possibleActionPrefix = 'Possible action: ';
   /// Load from local DB only
   Future<List<MessageIndex>> loadLocal(String accountId, {required String folderLabel}) async {
     return _repo.getByFolder(accountId, folderLabel);
@@ -198,6 +199,26 @@ class GmailSyncService {
     debugPrint('[Gmail] syncMessages completed, returned ${stored.length} messages, total time=${totalDuration.inMilliseconds}ms');
     return stored;
     // TODO: Apply action detection heuristics when implemented
+  }
+
+  String _formatPossibleActionText(String? insightText) {
+    final trimmed = insightText?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return 'Possible action detected';
+    }
+    var processed = trimmed;
+    final lower = processed.toLowerCase();
+    const possibleActionDatePrefix = 'possible action date';
+    if (lower.startsWith(possibleActionDatePrefix)) {
+      processed = processed.substring(possibleActionDatePrefix.length).trimLeft();
+      if (processed.isEmpty) {
+        processed = 'detected';
+      }
+    }
+    if (processed.toLowerCase().startsWith(_possibleActionPrefix.toLowerCase())) {
+      return processed;
+    }
+    return '$_possibleActionPrefix$processed';
   }
 
   /// Incremental sync using Gmail History API: fetch changes since last historyId
@@ -750,18 +771,33 @@ class GmailSyncService {
               
               if (deepResult != null && deepResult.confidence >= 0.6) {
                 // Use deep result if confidence is high enough
-                await _repo.updateAction(gm.id, deepResult.actionDate, deepResult.insightText, deepResult.confidence);
+                await _repo.updateAction(
+                  gm.id,
+                  null,
+                  _formatPossibleActionText(deepResult.insightText),
+                  deepResult.confidence,
+                );
                 debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> deep (${deepResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${deepResult.confidence})');
               } else if (quickResult.confidence >= 0.5) {
                 // Fall back to quick result if deep detection didn't improve confidence
-                await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+                await _repo.updateAction(
+                  gm.id,
+                  null,
+                  _formatPossibleActionText(quickResult.insightText),
+                  quickResult.confidence,
+                );
                 debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence})');
               } else {
                 debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> confidence too low (deep=${deepResult?.confidence ?? 0.0}, quick=${quickResult.confidence})');
               }
             } else if (quickResult.confidence >= 0.5) {
               // If body download fails, use quick result
-              await _repo.updateAction(gm.id, quickResult.actionDate, quickResult.insightText, quickResult.confidence);
+              await _repo.updateAction(
+                gm.id,
+                null,
+                _formatPossibleActionText(quickResult.insightText),
+                quickResult.confidence,
+              );
               debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence}) body failed');
             } else {
               debugPrint('[Phase2] ✗ NO ACTION: subject="$subject" -> body failed, confidence too low (${quickResult.confidence})');
