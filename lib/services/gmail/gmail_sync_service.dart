@@ -215,7 +215,8 @@ class GmailSyncService {
     }
     if (detectedDate != null) {
       final local = detectedDate.toLocal();
-      final monthIndex = (local.month - 1).clamp(0, _monthShortNames.length - 1) as int;
+      final int monthIndex =
+          (local.month - 1).clamp(0, _monthShortNames.length - 1);
       final month = _monthShortNames[monthIndex];
       final formatted = '${local.day} $month';
       return '$_possibleActionPrefix$formatted';
@@ -505,17 +506,16 @@ class GmailSyncService {
     var accessToken = account?.accessToken;
     // ensureValidAccessToken already refreshed if needed
     if (accessToken == null || accessToken.isEmpty) {
-      // Attempt interactive re-auth once to obtain fresh tokens
-      // ignore: avoid_print
-      print('[gmail] attempting reauth for account=$accountId');
-      account = await auth.reauthenticateAccount(accountId) ?? account;
-      accessToken = account?.accessToken;
-      if (accessToken == null || accessToken.isEmpty) {
-        throw Exception('No access token');
-      }
+      throw Exception('No access token');
     }
 
     await _applyLabelChangeWithToken(accountId, messageId, action, accessToken);
+  }
+
+  Future<void> restoreMessageToInbox(String accountId, String messageId) async {
+    // ignore: avoid_print
+    print('[gmail] restoreMessageToInbox account=$accountId message=$messageId');
+    await _applyLabelChange(accountId, messageId, 'restore:INBOX');
   }
 
   Map<String, dynamic> _buildModifyBody(String action) {

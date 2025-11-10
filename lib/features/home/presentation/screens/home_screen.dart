@@ -41,6 +41,42 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
+class _ProcessingDialog extends StatelessWidget {
+  final String message;
+  const _ProcessingDialog({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              height: 28,
+              width: 28,
+              child: CircularProgressIndicator(
+                strokeWidth: 3,
+                valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Flexible(
+              child: Text(
+                message,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   // Selected folder (default to Inbox)
   String _selectedFolder = AppConstants.folderInbox;
@@ -686,13 +722,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     
-    return Column(
+    final column = Column(
       children: [
         // Accounts section
         if (_accounts.isNotEmpty)
           Container(
             decoration: BoxDecoration(
-              color: cs.surfaceContainerHighest,
+              color: Colors.transparent,
               border: Border(
                 bottom: BorderSide(
                   color: cs.outline.withValues(alpha: 0.1),
@@ -730,11 +766,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           _pendingLocalUnreadAccounts.add(account.id);
                           setState(() {
                             _selectedAccountId = account.id;
+                            _isLocalFolder = false;
+                            _selectedFolder = AppConstants.folderInbox;
                           });
                           await _saveLastActiveAccount(account.id);
                           if (_selectedAccountId != null) {
                             // Load emails from local DB immediately (fast UI update)
-                            await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+                            await ref
+                                .read(emailListProvider.notifier)
+                                .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
                             
                             // Run sync in background (non-blocking)
                             unawaited(Future(() async {
@@ -756,6 +796,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               }
                             }));
                           }
+                        } else if (_isLocalFolder) {
+                          setState(() {
+                            _isLocalFolder = false;
+                            _selectedFolder = AppConstants.folderInbox;
+                          });
+                          if (_selectedAccountId != null) {
+                            await _loadFolderEmails(AppConstants.folderInbox, false);
+                          }
+                          await _saveLastActiveAccount(account.id);
                         }
                       },
                       child: Container(
@@ -828,6 +877,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
       },
       onEmailDropped: (folderId, message) async {
+        if (_isLocalFolder) {
+          if (folderId.toUpperCase() != 'INBOX') {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Local emails can only be restored to Inbox')),
+              );
+            }
+            return;
+          }
+          await _restoreLocalEmailToInbox(message);
+          return;
+        }
+
         if (_selectedAccountId == null) return;
         try {
           // Optimistic UI update first
@@ -922,40 +984,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       ],
     );
+    final backgroundColor = _isLocalFolder
+        ? theme.colorScheme.surface
+        : ActionMailTheme.alertColor.withValues(alpha: 0.2);
+
+    return Container(
+      color: backgroundColor,
+      child: column,
+    );
   }
   
   // Right panel for desktop - local folder tree
   Widget _buildRightPanel(BuildContext context) {
-    return LocalFolderTree(
-      selectedFolder: _isLocalFolder ? _selectedFolder : null,
-      onFolderSelected: (folderPath) async {
-        setState(() {
-          _selectedFolder = folderPath;
-          _isLocalFolder = true;
-        });
-        await _loadFolderEmails(folderPath, true);
-      },
-      onEmailDropped: (folderPath, message) async {
-        // Determine if this is a local-to-local move or Gmail-to-local save
-        // If we're currently viewing a local folder, the email is from a local folder
-        if (_isLocalFolder) {
-          // Local email -> Local folder: move within local storage
-          await _moveLocalEmailToFolder(folderPath, message);
-        } else {
-          // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
-          final src = (message.folderLabel).toUpperCase();
-          if (src == 'TRASH' || src == 'ARCHIVE') {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
-              );
+    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+    return Container(
+      color: _isLocalFolder ? highlightColor : Theme.of(context).colorScheme.surface,
+      child: LocalFolderTree(
+        selectedFolder: _isLocalFolder ? _selectedFolder : null,
+        onFolderSelected: (folderPath) async {
+          setState(() {
+            _selectedFolder = folderPath;
+            _isLocalFolder = true;
+          });
+          await _loadFolderEmails(folderPath, true);
+        },
+        onEmailDropped: (folderPath, message) async {
+          // Determine if this is a local-to-local move or Gmail-to-local save
+          // If we're currently viewing a local folder, the email is from a local folder
+          if (_isLocalFolder) {
+            // Local email -> Local folder: move within local storage
+            await _moveLocalEmailToFolder(folderPath, message);
+          } else {
+            // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
+            final src = (message.folderLabel).toUpperCase();
+            if (src == 'TRASH' || src == 'ARCHIVE') {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+                );
+              }
+              return;
             }
-            return;
+            // Proceed: save and archive
+            await _saveEmailToFolder(folderPath, message);
           }
-          // Proceed: save and archive
-          await _saveEmailToFolder(folderPath, message);
-        }
-      },
+        },
+      ),
     );
   }
   
@@ -1003,28 +1077,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// Indicator showing we're viewing a saved list
   Widget _buildSavedListIndicator() {
     final theme = Theme.of(context);
-    final cs = theme.colorScheme;
+    final textColor = const Color(0xFF333333);
+    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.5);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
-        color: cs.primaryContainer.withValues(alpha: 0.3),
-        border: Border(
-          bottom: BorderSide(
-            color: cs.outline.withValues(alpha: 0.1),
-            width: 1,
-          ),
-        ),
+        color: highlightColor,
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(Icons.folder_outlined, size: 18, color: cs.primary),
-          const SizedBox(width: 8),
-          Text(
-            'Saved List: $_selectedFolder',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: cs.primary,
-              fontWeight: FontWeight.w600,
+          Icon(
+            Icons.sd_storage_outlined,
+            size: 20,
+            color: textColor,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Viewing local storage',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: textColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'Saved list: $_selectedFolder',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: textColor,
+                    fontWeight: FontWeight.w500,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
             ),
+          ),
+          const SizedBox(width: 16),
+          TextButton(
+            onPressed: () {
+              if (_selectedAccountId == null) return;
+              setState(() {
+                _isLocalFolder = false;
+                _selectedFolder = AppConstants.folderInbox;
+              });
+              unawaited(_loadFolderEmails(AppConstants.folderInbox, false));
+            },
+            style: TextButton.styleFrom(
+              foregroundColor: textColor,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              minimumSize: const Size(0, 0),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              textStyle: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            child: const Text('Back to Gmail'),
           ),
         ],
       ),
@@ -1671,12 +1786,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           return;
         }
 
+      String accountEmail = message.accountEmail ??
+          _accounts.firstWhere(
+            (a) => a.id == _selectedAccountId,
+            orElse: () => const GoogleAccount(
+              id: '',
+              email: '',
+              displayName: '',
+              photoUrl: null,
+              accessToken: '',
+              refreshToken: null,
+              tokenExpiryMs: null,
+              idToken: '',
+            ),
+          ).email;
+      if (accountEmail.isEmpty) {
+        accountEmail = message.to.isNotEmpty ? message.to : message.from;
+      }
+        if (accountEmail.isEmpty) {
+          accountEmail = message.to.isNotEmpty ? message.to : message.from;
+        }
+
         // Save to local folder
         final saved = await _localFolderService.saveEmailToFolder(
           folderName: folderName,
           message: message,
           emailBodyHtml: emailBody,
           accountId: _selectedAccountId!,
+          accountEmail: accountEmail,
           accessToken: accessToken,
         );
 
@@ -1690,6 +1827,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             );
             final src = message.folderLabel.toUpperCase();
             _enqueueGmailUpdate('archive:$src', message.id);
+          }
+          if (mounted && _isLocalFolder && _selectedFolder == folderName) {
+            final refreshed = await _localFolderService.loadFolderEmails(folderName);
+            ref.read(emailListProvider.notifier).setEmails(refreshed);
           }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -1766,12 +1907,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         return;
       }
       
+      final accountEmail = message.accountEmail ??
+          _accounts.firstWhere(
+            (a) => a.id == _selectedAccountId,
+            orElse: () => const GoogleAccount(
+              id: '',
+              email: '',
+              displayName: '',
+              photoUrl: null,
+              accessToken: '',
+              refreshToken: null,
+              tokenExpiryMs: null,
+              idToken: '',
+            ),
+          ).email;
+
       // Save to target folder
       final saved = await _localFolderService.saveEmailToFolder(
         folderName: targetFolderPath,
         message: message,
         emailBodyHtml: emailBody,
         accountId: _selectedAccountId!,
+        accountEmail: accountEmail,
         accessToken: accessToken,
       );
       
@@ -1809,6 +1966,167 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         );
       }
     }
+  }
+
+  Future<void> _restoreLocalEmailToInbox(MessageIndex message) async {
+    var accountId = message.accountId;
+    final messageAccountEmail = message.accountEmail ?? '';
+    if (accountId.isEmpty && messageAccountEmail.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to restore: missing account information')),
+        );
+      }
+      return;
+    }
+
+    final sourceFolderPath = _selectedFolder;
+    if (sourceFolderPath.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to restore: source folder unavailable')),
+        );
+      }
+      return;
+    }
+
+    final storedAccountEmail = message.accountEmail ??
+        _accounts.firstWhere(
+          (a) => a.id == message.accountId,
+          orElse: () => const GoogleAccount(
+            id: '',
+            email: '',
+            displayName: '',
+            photoUrl: null,
+            accessToken: '',
+            refreshToken: null,
+            tokenExpiryMs: null,
+            idToken: '',
+          ),
+        ).email;
+
+    debugPrint('[Restore] requested accountId=$accountId local message account=${message.accountId} email=$storedAccountEmail');
+    debugPrint('[Restore] Signed-in accounts: ${_accounts.map((a) => '${a.id}:${a.email}').join(', ')}');
+
+    final auth = GoogleAuthService();
+    var signedInAccount = _accounts.firstWhere(
+      (a) => a.id == accountId,
+      orElse: () => const GoogleAccount(
+        id: '',
+        email: '',
+        displayName: '',
+        photoUrl: null,
+        accessToken: '',
+        refreshToken: null,
+        tokenExpiryMs: null,
+        idToken: '',
+      ),
+    );
+
+    if (signedInAccount.id.isEmpty && storedAccountEmail.isNotEmpty) {
+      signedInAccount = _accounts.firstWhere(
+        (a) => a.email.toLowerCase() == storedAccountEmail.toLowerCase(),
+        orElse: () => const GoogleAccount(
+          id: '',
+          email: '',
+          displayName: '',
+          photoUrl: null,
+          accessToken: '',
+          refreshToken: null,
+          tokenExpiryMs: null,
+          idToken: '',
+        ),
+      );
+      if (signedInAccount.id.isNotEmpty) {
+        debugPrint('[Restore] Resolved account via email match: ${signedInAccount.email} -> id ${signedInAccount.id}');
+        accountId = signedInAccount.id;
+      }
+    }
+
+    if (signedInAccount.id.isEmpty) {
+      debugPrint('[Restore] No matching signed-in account found (wanted id=$accountId email=$storedAccountEmail); aborting restore.');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Account not signed in. Add the account in Accounts before restoring.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final account = await auth.ensureValidAccessToken(accountId);
+    final accessToken = account?.accessToken;
+    debugPrint('[Restore] ensureValidAccessToken -> accountId=$accountId email=${account?.email ?? 'unknown'} hasAccount=${account != null} '
+        'accessToken=${accessToken != null && accessToken.isNotEmpty} '
+        'refreshToken=${(account?.refreshToken ?? '').isNotEmpty} '
+        'expiryMs=${account?.tokenExpiryMs}');
+
+    if (accessToken == null || accessToken.isEmpty) {
+      if (mounted) {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Google session expired. Re-authenticate via the Accounts menu before restoring.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        Future<void>(() async {
+          try {
+            debugPrint('[Restore] Calling Gmail restoreMessageToInbox for message=${message.id} account=$accountId email=${account?.email ?? 'unknown'}');
+            await GmailSyncService().restoreMessageToInbox(accountId, message.id);
+            debugPrint('[Restore] Gmail modify succeeded for message=${message.id} account=$accountId');
+            await MessageRepository().updateFolderNoPrev(message.id, 'INBOX');
+
+            await _localFolderService.removeEmailFromFolder(sourceFolderPath, message.id);
+            debugPrint('[Restore] Removed local copy for message=${message.id}');
+            if (mounted) {
+              ref.read(emailListProvider.notifier).removeMessage(message.id);
+            }
+
+            if (mounted) {
+              setState(() {
+                _selectedAccountId = accountId;
+                _selectedFolder = 'INBOX';
+                _isLocalFolder = false;
+              });
+            }
+
+            if (mounted) {
+              await _saveLastActiveAccount(accountId);
+              await ref.read(emailListProvider.notifier).loadFolder(accountId, folderLabel: 'INBOX');
+              messenger.showSnackBar(
+                const SnackBar(content: Text('Email restored to Inbox')),
+              );
+            }
+          } catch (e) {
+            debugPrint('[HomeScreen] Error restoring local email: $e');
+            if (mounted) {
+              final messageText = e.toString().contains('No access token')
+                  ? 'Cannot restore: account session expired. Re-authenticate via Accounts.'
+                  : 'Failed to restore email: $e';
+              messenger.showSnackBar(SnackBar(content: Text(messageText)));
+            }
+          } finally {
+            if (mounted) {
+              Navigator.of(context, rootNavigator: true).pop();
+            }
+          }
+        });
+
+        return const _ProcessingDialog(message: 'Restoring to Inbox...');
+      },
+    );
   }
 
   // Placeholder for background Gmail update scheduling
@@ -2483,6 +2801,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           return EmailTile(
                             message: message,
                             isLocalFolder: _isLocalFolder,
+                            onRestoreToInbox: _isLocalFolder ? () => _restoreLocalEmailToInbox(message) : null,
                 onTap: () {
                   if (_selectedAccountId != null) {
                     showDialog(
@@ -2528,9 +2847,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     } catch (e) {
                       // Log errors but don't crash the UI
                       debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
-                      // ignore: avoid_print
                       if (kReleaseMode) {
-                        print('[HomeScreen] ERROR in syncEmailMeta: $e');
+                        debugPrint('[HomeScreen] ERROR in syncEmailMeta (release): $e');
                       }
                     }
                   }

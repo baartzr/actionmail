@@ -6,7 +6,7 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Seagreen"
 #define MyAppURL "https://www.inboxiq.com/"
-#define MyAppExeName "actionmail.exe"
+#define MyAppExeName "inboxiq.exe"
 #define MyAppId "A1B2C3D4-E5F6-4321-9876-543210FEDCBA"
 
 [Setup]

@@ -69,7 +69,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           ),
                                                     const SizedBox(height: 20),
                           Text(
-                            'ActionMail',
+                            'InboxIQ',
                             style: theme.textTheme.headlineSmall?.copyWith(
                               fontWeight: FontWeight.bold,
                               color: theme.colorScheme.onSurface,
@@ -399,7 +399,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            'ActionMail',
+                            'InboxIQ',
                             style: theme.textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                               color: theme.colorScheme.onSurface,

@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.actionmail" "\0"
-            VALUE "FileDescription", "actionmail" "\0"
+            VALUE "FileDescription", "InboxIQ" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "actionmail" "\0"
+            VALUE "InternalName", "InboxIQ" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2025 com.actionmail. All rights reserved." "\0"
-            VALUE "OriginalFilename", "actionmail.exe" "\0"
-            VALUE "ProductName", "actionmail" "\0"
+            VALUE "OriginalFilename", "inboxiq.exe" "\0"
+            VALUE "ProductName", "InboxIQ" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

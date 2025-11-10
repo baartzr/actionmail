@@ -92,7 +92,71 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
       }
     });
 
-    return _buildFolderTree(context);
+    final content = _buildFolderTree(context);
+
+    if (!widget.isViewingLocalFolder) {
+      return content;
+    }
+
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    return Stack(
+      children: [
+        content,
+        Positioned.fill(
+          child: IgnorePointer(
+            ignoring: true,
+            child: Container(
+              decoration: BoxDecoration(
+                color: cs.surfaceTint.withValues(alpha: 0.08),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: cs.secondaryContainer.withValues(alpha: 0.9),
+                      border: Border(
+                        bottom: BorderSide(
+                          color: cs.onSecondaryContainer.withValues(alpha: 0.15),
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(
+                          Icons.folder_special_outlined,
+                          size: 18,
+                          color: cs.onSecondaryContainer,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Viewing local emails',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: cs.onSecondaryContainer,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Expanded(
+                    child: Container(
+                      color: cs.secondaryContainer.withValues(alpha: 0.35),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildFolderTree(BuildContext context) {
@@ -101,7 +165,7 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
 
     return Container(
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
+        color: Colors.transparent,
         border: Border(
           right: BorderSide(
             color: cs.outline.withValues(alpha: 0.1),
@@ -372,30 +436,25 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
       },
       onAcceptWithDetails: (details) {
         onDragEnd?.call();
-        // Check if this folder is allowed for the source email
-        // For local folder emails, reject all Gmail folders
-        // For Gmail emails, check allowed folders based on swipe actions
-        final sourceFolder = details.data.folderLabel.toUpperCase();
         final targetFolder = folderId.toUpperCase();
-        
-        // Local folder emails cannot be dragged to Gmail folders
-        // We'll determine this by checking if the folderLabel is a Gmail folder
+
+        if (widget.isViewingLocalFolder) {
+          return;
+        }
+
+        final sourceFolder = details.data.folderLabel.toUpperCase();
         final gmailFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
         final isGmailFolder = gmailFolders.contains(sourceFolder);
-        
+
         if (!isGmailFolder) {
-          // This is a local folder email - reject Gmail folder drops
           return;
         }
-        
-        // For Gmail emails, check allowed folders
+
         final allowedFolders = _getAllowedFoldersForSource(sourceFolder, details.data.prevFolderLabel);
         if (!allowedFolders.contains(targetFolder)) {
-          // This folder is not allowed for this source email
           return;
         }
-        
-        // Valid drop - handle it
+
         widget.onEmailDropped!(folderId, details.data);
       },
       builder: (context, candidateData, rejectedData) {
@@ -404,24 +463,14 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
         // Determine if this folder should be shown as allowed based on dragged message
         bool showAsAllowed = false;
         if (draggedMessage != null) {
-          // If we're viewing local folders, all emails are local and cannot be dragged to Gmail
-          if (widget.isViewingLocalFolder) {
-            showAsAllowed = false; // No Gmail folders allowed for local emails
-          } else {
-            // We're viewing Gmail folders, so check if this email can be dragged to this folder
-            final sourceFolder = draggedMessage.folderLabel.toUpperCase();
-            final targetFolder = folderId.toUpperCase();
-            
-            // Check if this is a Gmail email by verifying folderLabel is a Gmail folder
-            final gmailFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
-            final isGmailEmail = gmailFolders.contains(sourceFolder);
-            
-            if (isGmailEmail) {
-              // Gmail email: check if this folder IS allowed
-              final allowedFolders = _getAllowedFoldersForSource(sourceFolder, draggedMessage.prevFolderLabel);
-              showAsAllowed = allowedFolders.contains(targetFolder);
-            }
-            // Non-Gmail emails (shouldn't happen when viewing Gmail folders, but just in case)
+          final sourceFolder = draggedMessage.folderLabel.toUpperCase();
+          final targetFolder = folderId.toUpperCase();
+          final gmailFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
+          final isGmailEmail = gmailFolders.contains(sourceFolder);
+
+          if (!widget.isViewingLocalFolder && isGmailEmail) {
+            final allowedFolders = _getAllowedFoldersForSource(sourceFolder, draggedMessage.prevFolderLabel);
+            showAsAllowed = allowedFolders.contains(targetFolder);
           }
         }
         
@@ -454,9 +503,9 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
     
     // If we're viewing local folders, all emails are local and cannot be dragged to Gmail
     if (widget.isViewingLocalFolder) {
-      return false; // Reject all local folder emails
+      return false;
     }
-    
+
     final sourceFolder = data.folderLabel.toUpperCase();
     final targetFolder = folderId.toUpperCase();
     

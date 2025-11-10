@@ -42,38 +42,32 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     _currentAccountId = accountId;
     _folderLabel = folderLabel;
     _isViewingLocalFolder = false; // Reset flag when loading Gmail folder
-
-    // 1) Load Inbox from local DB (display immediately - will be empty if no historyID)
+    // 1) Load folder from local DB (display immediately - will be empty if no historyID)
     try {
-      if (folderLabel == 'INBOX') {
+      _ref.read(emailLoadingLocalProvider.notifier).state = true;
+      final t0 = DateTime.now();
+      final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
+      final dt = DateTime.now().difference(t0).inMilliseconds;
+      if (kDebugMode) {
         // ignore: avoid_print
-        print('[sync] loadEmails account=$accountId folder=$folderLabel (local first)');
-        _ref.read(emailLoadingLocalProvider.notifier).state = true;
-        final t0 = DateTime.now();
-        final local = await _syncService.loadLocal(accountId, folderLabel: _folderLabel);
-        final dt = DateTime.now().difference(t0).inMilliseconds;
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('[perf] loadLocal($_folderLabel) returned ${local.length} in ${dt}ms');
-        }
-        state = AsyncValue.data(local);
-        
+        print('[perf] loadLocal($_folderLabel) returned ${local.length} in ${dt}ms');
+      }
+      state = AsyncValue.data(local);
+
+      if (folderLabel == 'INBOX') {
         // Check if this is a new account (no history = no emails locally)
         final hasHistory = await _syncService.hasHistoryId(accountId);
-        
+
         if (hasHistory && local.isNotEmpty) {
           // Existing account with emails: start Firebase after local load (fast path)
           unawaited(_startFirebaseAfterLocalLoad(accountId));
         }
         // For new accounts (no history), Firebase will start after initial sync completes
-        
-        _ref.read(emailLoadingLocalProvider.notifier).state = false;
-      } else {
-        state = const AsyncValue.data([]);
       }
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
+    _ref.read(emailLoadingLocalProvider.notifier).state = false;
 
     // 2) Background sync: check historyID and perform appropriate sync
     // This handles ALL folders via incremental sync (or initial full sync if no history)

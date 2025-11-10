@@ -75,6 +75,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
 
+  bool get _isLocalEmail => widget.localFolderName != null;
+
   @override
   void initState() {
     super.initState();
@@ -784,6 +786,25 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     );
   }
 
+  Future<void> _showLocalReplyPrompt() async {
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Reply unavailable'),
+        content: const Text(
+          'This email is in a local folder. To reply, swipe it to your Inbox first.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _toggleConversationMode() {
     if (_isConversationMode) {
       setState(() {
@@ -1138,37 +1159,48 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                   : theme.appBarTheme.foregroundColor,
               onPressed: _toggleConversationMode,
             ),
-          PopupMenuButton<_ReplyMenuAction>(
-            tooltip: 'Reply options',
-            icon: const Icon(Icons.reply, size: 20, color: Colors.white),
-            onSelected: (value) {
-              switch (value) {
-                case _ReplyMenuAction.reply:
-                  _handleReply();
-                  break;
-                case _ReplyMenuAction.replyAll:
-                  _handleReplyAll();
-                  break;
-                case _ReplyMenuAction.forward:
-                  _handleForward();
-                  break;
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem<_ReplyMenuAction>(
-                value: _ReplyMenuAction.reply,
-                child: Text('Reply'),
+          if (_isLocalEmail)
+            IconButton(
+              tooltip: 'Reply disabled',
+              icon: Icon(
+                Icons.reply,
+                size: 20,
+                color: theme.disabledColor,
               ),
-              const PopupMenuItem<_ReplyMenuAction>(
-                value: _ReplyMenuAction.replyAll,
-                child: Text('Reply all'),
-              ),
-              const PopupMenuItem<_ReplyMenuAction>(
-                value: _ReplyMenuAction.forward,
-                child: Text('Forward'),
-              ),
-            ],
-        ),
+              onPressed: _showLocalReplyPrompt,
+            )
+          else
+            PopupMenuButton<_ReplyMenuAction>(
+              tooltip: 'Reply options',
+              icon: const Icon(Icons.reply, size: 20, color: Colors.white),
+              onSelected: (value) {
+                switch (value) {
+                  case _ReplyMenuAction.reply:
+                    _handleReply();
+                    break;
+                  case _ReplyMenuAction.replyAll:
+                    _handleReplyAll();
+                    break;
+                  case _ReplyMenuAction.forward:
+                    _handleForward();
+                    break;
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem<_ReplyMenuAction>(
+                  value: _ReplyMenuAction.reply,
+                  child: Text('Reply'),
+                ),
+                const PopupMenuItem<_ReplyMenuAction>(
+                  value: _ReplyMenuAction.replyAll,
+                  child: Text('Reply all'),
+                ),
+                const PopupMenuItem<_ReplyMenuAction>(
+                  value: _ReplyMenuAction.forward,
+                  child: Text('Forward'),
+                ),
+              ],
+            ),
         IconButton(
           tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
           icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),

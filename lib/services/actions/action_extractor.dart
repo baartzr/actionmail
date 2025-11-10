@@ -5,7 +5,7 @@ class ActionExtractor {
   static final RegExp _monthDay = RegExp(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2})\b', caseSensitive: false);
   static final RegExp _weekdayMonthDay = RegExp(r'\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*\s*,?\s*(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\b', caseSensitive: false);
   static final RegExp _isoDate = RegExp(r'\b(\d{4})-(\d{1,2})-(\d{1,2})\b');
-  static final RegExp _phrases = RegExp(r'\b(due|by|on|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment|party|event|birthday|gathering|celebration|wedding|dinner|lunch|breakfast|conference|call|webinar|seminar|join|live|attend|watch|show|stream|broadcast|session|workshop|training|class|lesson)\b', caseSensitive: false);
+  static final RegExp _phrases = RegExp(r'\b(due|by|arrives|delivery|deliver|flight|depart|departure|arrive|meeting|appointment|deadline|payment|invoice|order|shipment|party|event|birthday|gathering|celebration|wedding|dinner|lunch|breakfast|conference|call|webinar|seminar|join|live|attend|watch|show|stream|broadcast|session|workshop|training|class|lesson)\b', caseSensitive: false);
   static final RegExp _relativeDate = RegExp(r'\b(tomorrow|today|next\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|new\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b', caseSensitive: false);
 
   /// Quick heuristic check on subject/snippet only (lightweight, no body download)

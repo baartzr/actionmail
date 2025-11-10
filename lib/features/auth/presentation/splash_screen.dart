@@ -260,7 +260,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
     final rootNavigator = Navigator.of(context, rootNavigator: true);
     final result = await AppWindowDialog.show(
       context: context,
-      title: _forceAdd ? 'Add Account' : 'Welcome to ActionMail',
+      title: _forceAdd ? 'Add Account' : 'Welcome to InboxIQ',
       size: AppWindowSize.large,
       barrierDismissible: _forceAdd, // allow close only when explicitly adding
       bodyPadding: const EdgeInsets.all(32.0),
@@ -302,7 +302,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                 ),
                 const SizedBox(height: 32),
                 Text(
-                  'ActionMail',
+                  'InboxIQ',
                   style: theme.textTheme.headlineMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: theme.colorScheme.onSurface,
@@ -470,7 +470,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
               ),
               const SizedBox(height: 24),
               Text(
-                'ActionMail',
+                'InboxIQ',
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: theme.colorScheme.onSurface,

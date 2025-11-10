@@ -223,6 +223,7 @@ class LocalFolderService {
     required MessageIndex message,
     required String emailBodyHtml,
     required String accountId,
+    required String accountEmail,
     required String? accessToken,
   }) async {
     try {
@@ -236,7 +237,8 @@ class LocalFolderService {
       final metadata = {
         'id': message.id,
         'threadId': message.threadId,
-        'accountId': message.accountId,
+        'accountId': accountId,
+        'accountEmail': accountEmail,
         'internalDate': message.internalDate.toIso8601String(),
         'from': message.from,
         'to': message.to,
@@ -265,6 +267,7 @@ class LocalFolderService {
         jsonEncode(metadata),
         encoding: utf8,
       );
+      debugPrint('[LocalFolderService] Saved metadata for ${message.id}: ${jsonEncode(metadata)}');
       
       // 3. Download and save attachments if they exist
       if (message.hasAttachments && accessToken != null) {
@@ -455,6 +458,7 @@ class LocalFolderService {
                 id: metadata['id'] as String,
                 threadId: metadata['threadId'] as String,
                 accountId: metadata['accountId'] as String,
+                accountEmail: metadata['accountEmail'] as String?,
                 internalDate: DateTime.parse(metadata['internalDate'] as String),
                 from: metadata['from'] as String,
                 to: metadata['to'] as String,

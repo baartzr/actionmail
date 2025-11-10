@@ -95,9 +95,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
         _completionState[msg.id] = msg.actionComplete;
       }
       
-      if (actions.isNotEmpty) {
-        messagesByAccount[account.id] = actions;
-      }
+      messagesByAccount[account.id] = actions;
     }
     
     if (mounted) {
@@ -252,6 +250,33 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                 ],
               ),
               const SizedBox(height: 12),
+              if (totalActions == 0)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.check_circle_outline,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.secondary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'No pending actions for this account.',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Theme.of(context).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
           
               // Overdue section
               if (overdue.isNotEmpty) ...[

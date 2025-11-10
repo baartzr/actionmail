@@ -3,7 +3,7 @@ import 'dart:io';
 /// Application-wide constants
 class AppConstants {
   // App name
-  static const String appName = 'ActionMail';
+  static const String appName = 'InboxIQ';
 
   // Folder constants
   static const String folderInbox = 'INBOX';

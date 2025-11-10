@@ -6,6 +6,7 @@ class MessageIndex {
   final String id;
   final String threadId;
   final String accountId;
+  final String? accountEmail;
   final String? historyId;
   final DateTime internalDate;
   final String from;
@@ -34,6 +35,7 @@ class MessageIndex {
     required this.id,
     required this.threadId,
     required this.accountId,
+    this.accountEmail,
     this.historyId,
     required this.internalDate,
     required this.from,
@@ -74,6 +76,7 @@ class MessageIndex {
     String? id,
     String? threadId,
     String? accountId,
+    String? accountEmail,
     String? historyId,
     DateTime? internalDate,
     String? from,
@@ -102,6 +105,7 @@ class MessageIndex {
       id: id ?? this.id,
       threadId: threadId ?? this.threadId,
       accountId: accountId ?? this.accountId,
+      accountEmail: accountEmail ?? this.accountEmail,
       historyId: historyId ?? this.historyId,
       internalDate: internalDate ?? this.internalDate,
       from: from ?? this.from,

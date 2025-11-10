@@ -23,6 +23,7 @@ class EmailTile extends StatefulWidget {
   final VoidCallback? onMarkRead;
   final void Function(String folderName)? onSaveToFolder;
   final bool isLocalFolder; // Whether this email is from a local folder (not Gmail)
+  final VoidCallback? onRestoreToInbox;
 
   const EmailTile({
     super.key,
@@ -39,6 +40,7 @@ class EmailTile extends StatefulWidget {
     this.onMarkRead,
     this.onSaveToFolder,
     this.isLocalFolder = false,
+    this.onRestoreToInbox,
   });
 
   @override
@@ -68,6 +70,7 @@ class _EmailTileState extends State<EmailTile> {
   }
 
   bool _hasLeftActions(String folder) {
+    if (widget.isLocalFolder) return false;
     // Shown on right swipe (left side)
     if (folder == 'TRASH') return true; // Restore
     if (folder == 'ARCHIVE') return true; // Restore on right swipe as well
@@ -76,6 +79,7 @@ class _EmailTileState extends State<EmailTile> {
   }
 
   bool _hasRightActions(String folder) {
+    if (widget.isLocalFolder) return false;
     // Shown on left swipe (right side)
     if (folder == 'ARCHIVE') return true; // Trash
     if (folder == 'INBOX' || folder == 'SPAM') return true; // Trash/Archive
@@ -84,6 +88,7 @@ class _EmailTileState extends State<EmailTile> {
   }
 
   Widget _buildLeftActions(BuildContext context) {
+    if (widget.isLocalFolder) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final folder = widget.message.folderLabel;
@@ -132,6 +137,7 @@ class _EmailTileState extends State<EmailTile> {
   }
 
   Widget _buildRightActions(BuildContext context) {
+    if (widget.isLocalFolder) return const SizedBox.shrink();
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final folder = widget.message.folderLabel;
@@ -303,9 +309,28 @@ class _EmailTileState extends State<EmailTile> {
     final isOverdue = widget.message.actionDate != null &&
         widget.message.actionDate!.isBefore(today);
 
-    final parsed = _parseFrom(widget.message.from);
-    final senderName = parsed.item1;
-    final senderEmail = parsed.item2;
+    final isSentFolder = widget.message.folderLabel == AppConstants.folderSent;
+    final contactList = isSentFolder
+        ? _parseAddressList(widget.message.to)
+        : _parseAddressList(widget.message.from);
+    final primaryContact = contactList.isNotEmpty
+        ? contactList.first
+        : Tuple2('', isSentFolder ? widget.message.to : widget.message.from);
+    final iconEmail = primaryContact.item2.isNotEmpty
+        ? primaryContact.item2
+        : (isSentFolder ? widget.message.to : widget.message.from);
+    final titleText = isSentFolder
+        ? _formatRecipientTitle(contactList, widget.message.to)
+        : (primaryContact.item1.isNotEmpty
+            ? primaryContact.item1
+            : primaryContact.item2.isNotEmpty
+                ? primaryContact.item2
+                : widget.message.from);
+    final subtitleText = isSentFolder
+        ? _formatRecipientSubtitle(contactList, widget.message.to)
+        : (primaryContact.item2.isNotEmpty
+            ? primaryContact.item2
+            : widget.message.from);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -313,7 +338,7 @@ class _EmailTileState extends State<EmailTile> {
         final revealTarget = totalWidth * 0.40; // 40% reveal
         return GestureDetector(
           onHorizontalDragUpdate: (details) {
-            if (details.primaryDelta == null) return;
+            if (widget.isLocalFolder || details.primaryDelta == null) return;
             final folder = widget.message.folderLabel;
             if (details.primaryDelta! < -6) {
               // left swipe → show right actions if defined
@@ -425,7 +450,7 @@ class _EmailTileState extends State<EmailTile> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          _DomainIcon(email: senderEmail),
+                          _DomainIcon(email: iconEmail),
                           const SizedBox(width: 12),
                           Flexible(
                             fit: FlexFit.loose,
@@ -433,7 +458,7 @@ class _EmailTileState extends State<EmailTile> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  senderName.isNotEmpty ? senderName : senderEmail,
+                                  titleText,
                                   style: theme.textTheme.titleSmall?.copyWith(
                                     fontWeight: widget.message.isRead
                                         ? FontWeight.normal
@@ -443,7 +468,7 @@ class _EmailTileState extends State<EmailTile> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                                 Text(
-                                  senderEmail,
+                                  subtitleText,
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color: theme.colorScheme.onSurfaceVariant,
                                   ),
@@ -519,6 +544,20 @@ class _EmailTileState extends State<EmailTile> {
                         ),
                       ),
                       const Spacer(),
+                      if (widget.isLocalFolder && widget.onRestoreToInbox != null) ...[
+                        FilledButton.icon(
+                          onPressed: widget.onRestoreToInbox,
+                          icon: const Icon(Icons.move_to_inbox, size: 16),
+                          label: const Text('Restore to Inbox'),
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            textStyle: theme.textTheme.labelSmall,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
                       // Action line toggle button
                       IconButton(
                         iconSize: 20,
@@ -950,19 +989,66 @@ class _EmailTileState extends State<EmailTile> {
 
   // Removed modal-based confirmation in favor of inline action buttons
 
-  Tuple2<String, String> _parseFrom(String from) {
+  List<Tuple2<String, String>> _parseAddressList(String addresses) {
+    final results = <Tuple2<String, String>>[];
+    final parts = addresses.split(RegExp(r',(?![^<]*>)'));
+    for (final part in parts) {
+      final trimmed = part.trim();
+      if (trimmed.isEmpty) continue;
+      final parsed = _parseSingleAddress(trimmed);
+      if (parsed.item1.isEmpty && parsed.item2.isEmpty) continue;
+      results.add(parsed);
+    }
+    if (results.isEmpty) {
+      final parsed = _parseSingleAddress(addresses);
+      if (parsed.item1.isNotEmpty || parsed.item2.isNotEmpty) {
+        results.add(parsed);
+      }
+    }
+    return results;
+  }
+
+  Tuple2<String, String> _parseSingleAddress(String input) {
     final emailRegex = RegExp(r'<([^>]+)>');
-    final match = emailRegex.firstMatch(from);
+    final match = emailRegex.firstMatch(input);
     if (match != null) {
       final email = match.group(1)!.trim();
-      final name = from.replaceAll(match.group(0)!, '').trim();
+      final name = input.replaceAll(match.group(0)!, '').trim();
       return Tuple2(name.replaceAll('"', ''), email);
     }
-    // Fallbacks
-    if (from.contains('@')) {
-      return Tuple2('', from.trim());
+    final trimmed = input.trim();
+    if (trimmed.contains('@')) {
+      return Tuple2('', trimmed);
     }
-    return Tuple2(from.trim(), from.trim());
+    return Tuple2(trimmed, trimmed);
+  }
+
+  String _formatRecipientTitle(
+    List<Tuple2<String, String>> recipients,
+    String fallback,
+  ) {
+    final names = recipients
+        .map((r) => r.item1.isNotEmpty ? r.item1 : r.item2)
+        .where((value) => value.isNotEmpty)
+        .toList();
+    if (names.isEmpty) {
+      final trimmed = fallback.trim();
+      return trimmed.isNotEmpty ? 'To: $trimmed' : 'To: (No recipient)';
+    }
+    return 'To: ${names.join(', ')}';
+  }
+
+  String _formatRecipientSubtitle(
+    List<Tuple2<String, String>> recipients,
+    String fallback,
+  ) {
+    final emails =
+        recipients.map((r) => r.item2).where((value) => value.isNotEmpty).toList();
+    if (emails.isEmpty) {
+      final trimmed = fallback.trim();
+      return trimmed.isNotEmpty ? trimmed : '';
+    }
+    return emails.join(', ');
   }
 
   /// Decode HTML entities in text

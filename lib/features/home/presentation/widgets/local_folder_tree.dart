@@ -222,7 +222,7 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
     return Container(
       width: 240,
       decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest,
+        color: Colors.transparent,
         border: Border(
           left: BorderSide(
             color: cs.outline.withValues(alpha: 0.1),
