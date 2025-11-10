@@ -376,9 +376,7 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: isSelected
-                ? selectedFolderColor.withValues(alpha: 0.3)
-                : Colors.transparent,
+            color: Colors.transparent,
             border: isSelected
                 ? Border(
                     left: BorderSide(
@@ -474,12 +472,9 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
           }
         }
         
-        // Use teal for selected, green for allowed drag, or transparent
+        // Use green highlight for drag states; keep selection border-only
         Color? backgroundColor;
-        if (isSelected) {
-          // Selected folder uses dark teal
-          backgroundColor = const Color(0xFF00695C).withValues(alpha: 0.3);
-        } else if (isAccepted) {
+        if (isAccepted) {
           // Currently being dragged over - use slightly brighter green
           backgroundColor = const Color(0xFF66BB6A).withValues(alpha: 0.4);
         } else if (showAsAllowed) {

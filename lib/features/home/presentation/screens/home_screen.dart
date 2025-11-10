@@ -810,9 +810,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
-                          color: isSelected
-                              ? const Color(0xFF00695C).withValues(alpha: 0.3)
-                              : Colors.transparent,
+                          color: Colors.transparent,
                           border: isSelected
                               ? const Border(
                                   left: BorderSide(
@@ -984,12 +982,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       ],
     );
-    final backgroundColor = _isLocalFolder
-        ? theme.colorScheme.surface
-        : ActionMailTheme.alertColor.withValues(alpha: 0.2);
-
     return Container(
-      color: backgroundColor,
+      color: theme.colorScheme.surface,
       child: column,
     );
   }

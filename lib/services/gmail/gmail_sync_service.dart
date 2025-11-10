@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/data/models/message_index.dart';
@@ -26,6 +27,44 @@ class ReplyContext {
   const ReplyContext({
     required this.messageIdHeader,
     required this.references,
+  });
+}
+
+class GmailAttachmentData {
+  final String filename;
+  final String mimeType;
+  final Uint8List bytes;
+
+  const GmailAttachmentData({
+    required this.filename,
+    required this.mimeType,
+    required this.bytes,
+  });
+}
+
+class OriginalMessageContent {
+  final String? htmlBody;
+  final String? plainBody;
+  final List<GmailAttachmentData> attachments;
+
+  const OriginalMessageContent({
+    required this.htmlBody,
+    required this.plainBody,
+    this.attachments = const [],
+  });
+
+  bool get hasHtml => htmlBody != null && htmlBody!.trim().isNotEmpty;
+  bool get hasPlain => plainBody != null && plainBody!.trim().isNotEmpty;
+  bool get hasAttachments => attachments.isNotEmpty;
+}
+
+class _InlineImage {
+  final String mimeType;
+  final String base64Data;
+
+  const _InlineImage({
+    required this.mimeType,
+    required this.base64Data,
   });
 }
 
@@ -199,6 +238,151 @@ class GmailSyncService {
     debugPrint('[Gmail] syncMessages completed, returned ${stored.length} messages, total time=${totalDuration.inMilliseconds}ms');
     return stored;
     // TODO: Apply action detection heuristics when implemented
+  }
+
+  Future<OriginalMessageContent?> fetchOriginalMessageContent(String accountId, String messageId) async {
+    try {
+      final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+      if (account == null || account.accessToken.isEmpty) {
+        debugPrint('[Gmail] fetchOriginalMessageContent: No access token for account $accountId');
+        return null;
+      }
+
+      final resp = await http.get(
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId?format=full'),
+        headers: {'Authorization': 'Bearer ${account.accessToken}'},
+      );
+      if (resp.statusCode != 200) {
+        debugPrint('[Gmail] fetchOriginalMessageContent: HTTP ${resp.statusCode}');
+        return null;
+      }
+
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final gm = GmailMessage.fromJson(map);
+
+      String? htmlBody;
+      String? plainBody;
+      final inlineParts = <MapEntry<MessagePart, String>>[];
+      final attachmentParts = <MessagePart>[];
+
+      void collectFromPart(MessagePart? part) {
+        if (part == null) return;
+        final mimeType = part.mimeType?.toLowerCase() ?? '';
+        final bodyData = part.body?.data;
+
+        if (bodyData != null && bodyData.isNotEmpty) {
+          try {
+            final decoded = utf8.decode(
+              base64Url.decode(bodyData.replaceAll('-', '+').replaceAll('_', '/')),
+            );
+            if (mimeType.contains('text/html') && htmlBody == null) {
+              htmlBody = decoded;
+            } else if (mimeType.contains('text/plain') && plainBody == null) {
+              plainBody = decoded;
+            }
+          } catch (_) {
+            // ignore decoding errors and continue
+          }
+        }
+
+        final headers = <String, String>{};
+        for (final h in part.headers) {
+          headers[h.name.toLowerCase()] = h.value;
+        }
+
+        final hasAttachmentId = part.body?.attachmentId != null && part.body!.attachmentId!.isNotEmpty;
+        if (hasAttachmentId) {
+          final contentId = headers['content-id'];
+          final disposition = headers['content-disposition']?.toLowerCase() ?? '';
+          if (contentId != null && contentId.isNotEmpty && !disposition.contains('attachment')) {
+            inlineParts.add(MapEntry(part, contentId.trim()));
+          } else {
+            attachmentParts.add(part);
+          }
+        }
+
+        if (part.parts != null) {
+          for (final child in part.parts!) {
+            collectFromPart(child);
+          }
+        }
+      }
+
+      if (gm.payload?.parts != null) {
+        for (final part in gm.payload!.parts!) {
+          collectFromPart(part);
+        }
+      }
+
+      // If payload body contains data directly (no parts)
+      final payloadData = gm.payload?.body;
+      if (payloadData != null && payloadData.isNotEmpty) {
+        try {
+          final decoded = utf8.decode(
+            base64Url.decode(payloadData.replaceAll('-', '+').replaceAll('_', '/')),
+          );
+          final payloadMime = gm.payload?.mimeType?.toLowerCase() ?? '';
+          if (payloadMime.contains('text/html') && htmlBody == null) {
+            htmlBody = decoded;
+          } else if (payloadMime.contains('text/plain') && plainBody == null) {
+            plainBody = decoded;
+          }
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      final inlineImages = <String, _InlineImage>{};
+      for (final entry in inlineParts) {
+        final part = entry.key;
+        final cidRaw = entry.value;
+        final cid = _normalizeContentId(cidRaw);
+        final attachmentId = part.body?.attachmentId;
+        if (attachmentId == null) continue;
+        final data = await _downloadAttachmentBytes(account.accessToken, messageId, attachmentId);
+        if (data == null) continue;
+        final base64Data = base64Encode(data);
+        final mimeType = part.mimeType ?? 'application/octet-stream';
+        inlineImages[cid] = _InlineImage(mimeType: mimeType, base64Data: base64Data);
+      }
+
+      var processedHtml = htmlBody;
+      if (processedHtml == null && plainBody != null) {
+        processedHtml = '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(plainBody!)}'
+            '</pre>';
+      }
+      if (processedHtml != null && inlineImages.isNotEmpty) {
+        processedHtml = _embedInlineImages(processedHtml, inlineImages);
+      }
+
+      final attachments = <GmailAttachmentData>[];
+      for (final part in attachmentParts) {
+        final attachmentId = part.body?.attachmentId;
+        if (attachmentId == null) continue;
+        final data = await _downloadAttachmentBytes(account.accessToken, messageId, attachmentId);
+        if (data == null) continue;
+        var filename = part.filename ?? '';
+        if (filename.isEmpty) {
+          final headers = <String, String>{};
+          for (final h in part.headers) {
+            headers[h.name.toLowerCase()] = h.value;
+          }
+          filename = _extractFilenameFromHeaders(headers) ?? 'attachment';
+        }
+        final mimeType = part.mimeType ?? 'application/octet-stream';
+        attachments.add(GmailAttachmentData(filename: filename, mimeType: mimeType, bytes: data));
+      }
+
+      return OriginalMessageContent(
+        htmlBody: processedHtml,
+        plainBody: plainBody,
+        attachments: attachments,
+      );
+    } catch (e, stack) {
+      debugPrint('[Gmail] fetchOriginalMessageContent: Error $e');
+      debugPrint(stack.toString());
+      return null;
+    }
   }
 
   static const List<String> _monthShortNames = [
@@ -1041,6 +1225,61 @@ class GmailSyncService {
     }
   }
 
+  Future<Uint8List?> _downloadAttachmentBytes(String accessToken, String messageId, String attachmentId) async {
+    try {
+      final resp = await http.get(
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/attachments/$attachmentId'),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+      if (resp.statusCode != 200) {
+        debugPrint('[Gmail] _downloadAttachmentBytes: HTTP ${resp.statusCode}');
+        return null;
+      }
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final data = map['data'] as String?;
+      if (data == null) return null;
+      final normalized = data.replaceAll('-', '+').replaceAll('_', '/');
+      return base64Decode(normalized);
+    } catch (e) {
+      debugPrint('[Gmail] _downloadAttachmentBytes: Error $e');
+      return null;
+    }
+  }
+
+  String _normalizeContentId(String cid) {
+    var normalized = cid.trim();
+    if (normalized.startsWith('<') && normalized.endsWith('>')) {
+      normalized = normalized.substring(1, normalized.length - 1);
+    }
+    return normalized;
+  }
+
+  String _embedInlineImages(String html, Map<String, _InlineImage> inlineImages) {
+    var processed = html;
+    inlineImages.forEach((cid, image) {
+      final pattern = RegExp('cid:${RegExp.escape(cid)}', caseSensitive: false);
+      processed = processed.replaceAll(
+        pattern,
+        'data:${image.mimeType};base64,${image.base64Data}',
+      );
+    });
+    return processed;
+  }
+
+  String? _extractFilenameFromHeaders(Map<String, String> headers) {
+    final disposition = headers['content-disposition'] ?? '';
+    final contentType = headers['content-type'] ?? '';
+    final filenameMatch = RegExp(r'''filename\*?=("?)([^";\r\n]+)\1''', caseSensitive: false).firstMatch(disposition);
+    if (filenameMatch != null) {
+      return filenameMatch.group(2)?.trim();
+    }
+    final nameMatch = RegExp(r'''name\*?=("?)([^";\r\n]+)\1''', caseSensitive: false).firstMatch(contentType);
+    if (nameMatch != null) {
+      return nameMatch.group(2)?.trim();
+    }
+    return null;
+  }
+
   /// Send an email via Gmail API
   /// [to] can be comma-separated for multiple recipients
   /// [cc] and [bcc] are optional and can be comma-separated
@@ -1051,12 +1290,14 @@ class GmailSyncService {
     required String to,
     required String subject,
     required String body,
+    String? htmlBody,
     String? cc,
     String? bcc,
     String? replyTo,
     String? inReplyTo,
     List<String>? references,
     List<File>? attachments,
+    List<GmailAttachmentData>? forwardedAttachments,
     String? threadId,
   }) async {
     try {
@@ -1071,18 +1312,27 @@ class GmailSyncService {
         return false;
       }
 
-      // Get the sender's email address (the account's email)
       final senderEmail = account.email;
-
-      // Build the raw email message
       final rawMessage = StringBuffer();
-      
-      final hasAttachments = attachments != null && attachments.isNotEmpty;
-      
-      // Generate a boundary for multipart messages if we have attachments
-      final boundary = hasAttachments ? '----=_Part_${DateTime.now().millisecondsSinceEpoch}_${DateTime.now().microsecondsSinceEpoch}' : null;
-      
-      // Headers
+
+      final expandedAttachments = <GmailAttachmentData>[];
+      if (attachments != null && attachments.isNotEmpty) {
+        for (final file in attachments) {
+          if (!await file.exists()) continue;
+          final bytes = await file.readAsBytes();
+          final filename = file.path.split(Platform.pathSeparator).last;
+          final mimeType = _determineMimeType(filename);
+          expandedAttachments.add(
+            GmailAttachmentData(filename: filename, mimeType: mimeType, bytes: bytes),
+          );
+        }
+      }
+      if (forwardedAttachments != null && forwardedAttachments.isNotEmpty) {
+        expandedAttachments.addAll(forwardedAttachments);
+      }
+      final hasAttachments = expandedAttachments.isNotEmpty;
+      final hasHtml = htmlBody != null && htmlBody.trim().isNotEmpty;
+
       rawMessage.writeln('From: $senderEmail');
       rawMessage.writeln('To: $to');
       if (cc != null && cc.trim().isNotEmpty) {
@@ -1095,74 +1345,22 @@ class GmailSyncService {
         rawMessage.writeln('Reply-To: $replyTo');
       }
       rawMessage.writeln('Subject: $subject');
-      
-      // Reply headers
+
       if (inReplyTo != null) {
         rawMessage.writeln('In-Reply-To: $inReplyTo');
       }
       if (references != null && references.isNotEmpty) {
         rawMessage.writeln('References: ${references.join(' ')}');
       }
-      
-      // MIME type headers
-      if (hasAttachments) {
-        rawMessage.writeln('MIME-Version: 1.0');
-        rawMessage.writeln('Content-Type: multipart/mixed; boundary="$boundary"');
-        rawMessage.writeln('');
-        rawMessage.writeln('This is a multi-part message in MIME format.');
-        rawMessage.writeln('');
-        rawMessage.writeln('--$boundary');
-      }
-      
-      // Message body
-      rawMessage.writeln('Content-Type: text/plain; charset=UTF-8');
-      rawMessage.writeln('Content-Transfer-Encoding: 7bit');
-      rawMessage.writeln('');
-      rawMessage.writeln(body);
-      
-      // Add attachments if any
-      if (hasAttachments) {
-        for (final file in attachments) {
-          if (!await file.exists()) continue;
-          
-          final fileBytes = await file.readAsBytes();
-          final fileName = file.path.split(Platform.pathSeparator).last;
-          final fileExtension = fileName.split('.').last.toLowerCase();
-          
-          // Determine MIME type based on extension
-          String mimeType = 'application/octet-stream';
-          if (fileExtension == 'pdf') {
-            mimeType = 'application/pdf';
-          } else if (fileExtension == 'jpg' || fileExtension == 'jpeg') {
-            mimeType = 'image/jpeg';
-          } else if (fileExtension == 'png') {
-            mimeType = 'image/png';
-          } else if (fileExtension == 'gif') {
-            mimeType = 'image/gif';
-          } else if (fileExtension == 'txt') {
-            mimeType = 'text/plain';
-          } else if (fileExtension == 'html' || fileExtension == 'htm') {
-            mimeType = 'text/html';
-          } else if (fileExtension == 'doc' || fileExtension == 'docx') {
-            mimeType = 'application/msword';
-          } else if (fileExtension == 'xls' || fileExtension == 'xlsx') {
-            mimeType = 'application/vnd.ms-excel';
-          }
-          
-          rawMessage.writeln('');
-          rawMessage.writeln('--$boundary');
-          rawMessage.writeln('Content-Type: $mimeType; name="$fileName"');
-          rawMessage.writeln('Content-Disposition: attachment; filename="$fileName"');
-          rawMessage.writeln('Content-Transfer-Encoding: base64');
-          rawMessage.writeln('');
-          rawMessage.writeln(base64Encode(fileBytes));
-        }
-        
-        rawMessage.writeln('');
-        rawMessage.writeln('--$boundary--');
-      }
 
-      // Encode to base64url (URL-safe base64, padding removed)
+      final mimeBody = _buildMimeBody(
+        plainBody: body,
+        htmlBody: htmlBody,
+        attachments: expandedAttachments,
+        hasHtml: hasHtml,
+      );
+      rawMessage.write(mimeBody);
+
       final rawBase64Url = base64UrlEncode(utf8.encode(rawMessage.toString()))
           .replaceAll('=', '');
 
@@ -1173,7 +1371,6 @@ class GmailSyncService {
         payload['threadId'] = threadId;
       }
 
-      // Send via Gmail API
       final resp = await http.post(
         Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/send'),
         headers: {
@@ -1194,6 +1391,141 @@ class GmailSyncService {
       debugPrint('[Gmail] sendEmail: Error: $e');
       return false;
     }
+  }
+
+  String _determineMimeType(String filename) {
+    final extension = filename.contains('.') ? filename.split('.').last.toLowerCase() : '';
+    switch (extension) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'txt':
+        return 'text/plain';
+      case 'html':
+      case 'htm':
+        return 'text/html';
+      case 'doc':
+      case 'docx':
+        return 'application/msword';
+      case 'xls':
+      case 'xlsx':
+        return 'application/vnd.ms-excel';
+      case 'csv':
+        return 'text/csv';
+      default:
+        return 'application/octet-stream';
+    }
+  }
+
+  String _buildMimeBody({
+    required String plainBody,
+    String? htmlBody,
+    required List<GmailAttachmentData> attachments,
+    required bool hasHtml,
+  }) {
+    final hasAttachments = attachments.isNotEmpty;
+    final trimmedHtml = hasHtml ? (htmlBody ?? '').trim() : null;
+
+    if (!hasAttachments && (!hasHtml || trimmedHtml == null || trimmedHtml.isEmpty)) {
+      final buffer = StringBuffer();
+      buffer.writeln('Content-Type: text/plain; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(plainBody);
+      return buffer.toString();
+    }
+
+    if (!hasAttachments && trimmedHtml != null && trimmedHtml.isNotEmpty) {
+      final boundaryAlt = _generateBoundary();
+      final buffer = StringBuffer();
+      buffer.writeln('MIME-Version: 1.0');
+      buffer.writeln('Content-Type: multipart/alternative; boundary="$boundaryAlt"');
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt');
+      buffer.writeln('Content-Type: text/plain; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(plainBody);
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt');
+      buffer.writeln('Content-Type: text/html; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(trimmedHtml);
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt--');
+      return buffer.toString();
+    }
+
+    final buffer = StringBuffer();
+    final boundaryMixed = _generateBoundary();
+    buffer.writeln('MIME-Version: 1.0');
+    buffer.writeln('Content-Type: multipart/mixed; boundary="$boundaryMixed"');
+    buffer.writeln('');
+    buffer.writeln('This is a multi-part message in MIME format.');
+    buffer.writeln('');
+
+    if (trimmedHtml != null && trimmedHtml.isNotEmpty) {
+      final boundaryAlt = _generateBoundary();
+      buffer.writeln('--$boundaryMixed');
+      buffer.writeln('Content-Type: multipart/alternative; boundary="$boundaryAlt"');
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt');
+      buffer.writeln('Content-Type: text/plain; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(plainBody);
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt');
+      buffer.writeln('Content-Type: text/html; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(trimmedHtml);
+      buffer.writeln('');
+      buffer.writeln('--$boundaryAlt--');
+      buffer.writeln('');
+    } else {
+      buffer.writeln('--$boundaryMixed');
+      buffer.writeln('Content-Type: text/plain; charset=UTF-8');
+      buffer.writeln('Content-Transfer-Encoding: 7bit');
+      buffer.writeln('');
+      buffer.writeln(plainBody);
+      buffer.writeln('');
+    }
+
+    for (final attachment in attachments) {
+      final base64Data = base64Encode(attachment.bytes);
+      buffer.writeln('--$boundaryMixed');
+      buffer.writeln('Content-Type: ${attachment.mimeType}; name="${attachment.filename}"');
+      buffer.writeln('Content-Disposition: attachment; filename="${attachment.filename}"');
+      buffer.writeln('Content-Transfer-Encoding: base64');
+      buffer.writeln('');
+      buffer.writeln(_chunkBase64(base64Data));
+      buffer.writeln('');
+    }
+
+    buffer.writeln('--$boundaryMixed--');
+    return buffer.toString();
+  }
+
+  String _generateBoundary() {
+    final now = DateTime.now();
+    return '----=_Part_${now.millisecondsSinceEpoch}_${now.microsecondsSinceEpoch}';
+  }
+
+  String _chunkBase64(String data, {int chunkSize = 76}) {
+    final buffer = StringBuffer();
+    for (var i = 0; i < data.length; i += chunkSize) {
+      final end = (i + chunkSize) < data.length ? i + chunkSize : data.length;
+      buffer.writeln(data.substring(i, end));
+    }
+    return buffer.toString();
   }
 
   /// Send an auto-unsubscribe mail when List-Unsubscribe provides a mailto: link

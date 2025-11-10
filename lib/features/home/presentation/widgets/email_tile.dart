@@ -55,7 +55,9 @@ class _EmailTileState extends State<EmailTile> {
   DateTime? _actionDate;
   String? _actionText;
   bool _actionComplete = false;
-  bool _showActionLine = true; // Visibility of action line
+  bool _showActionLine = false; // Visibility of action line
+
+  bool get _hasActionMessage => _actionText != null && _actionText!.trim().isNotEmpty;
 
   @override
   void initState() {
@@ -65,8 +67,8 @@ class _EmailTileState extends State<EmailTile> {
     _actionDate = widget.message.actionDate;
     _actionText = widget.message.actionInsightText;
     _actionComplete = widget.message.actionComplete;
-    // Default: show action if message has an action
-    _showActionLine = widget.message.hasAction;
+    // Default: expand only when an action message exists
+    _showActionLine = _hasActionMessage;
   }
 
   bool _hasLeftActions(String folder) {
@@ -290,13 +292,19 @@ class _EmailTileState extends State<EmailTile> {
     if (oldWidget.message.localTagPersonal != widget.message.localTagPersonal) {
       _localState = widget.message.localTagPersonal;
     }
+    if (oldWidget.message.id != widget.message.id) {
+      _actionDate = widget.message.actionDate;
+      _actionText = widget.message.actionInsightText;
+      _actionComplete = widget.message.actionComplete;
+      _showActionLine = _hasActionMessage;
+    } else
     if (oldWidget.message.actionDate != widget.message.actionDate ||
         oldWidget.message.actionInsightText != widget.message.actionInsightText ||
         oldWidget.message.actionComplete != widget.message.actionComplete) {
       _actionDate = widget.message.actionDate;
       _actionText = widget.message.actionInsightText;
       _actionComplete = widget.message.actionComplete;
-      _showActionLine = true;
+      _showActionLine = _hasActionMessage;
     }
   }
 
@@ -545,11 +553,14 @@ class _EmailTileState extends State<EmailTile> {
                       ),
                       const Spacer(),
                       if (widget.isLocalFolder && widget.onRestoreToInbox != null) ...[
-                        FilledButton.icon(
+                        TextButton.icon(
                           onPressed: widget.onRestoreToInbox,
-                          icon: const Icon(Icons.move_to_inbox, size: 16),
-                          label: const Text('Restore to Inbox'),
-                          style: FilledButton.styleFrom(
+                          icon: Icon(Icons.move_to_inbox, size: 16, color: theme.colorScheme.primary),
+                          label: Text(
+                            'Restore to Inbox',
+                            style: TextStyle(color: theme.colorScheme.primary),
+                          ),
+                          style: TextButton.styleFrom(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             minimumSize: Size.zero,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,

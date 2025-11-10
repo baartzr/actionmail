@@ -55,9 +55,7 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
       if (created) {
         if (!context.mounted) return;
         await _loadFolders();
-        // Select the newly created folder
         final fullPath = parentPath != null ? '$parentPath/$newFolderName' : newFolderName;
-        widget.onFolderSelected(fullPath);
         messenger.showSnackBar(
           SnackBar(content: Text('Folder "$fullPath" created')),
         );

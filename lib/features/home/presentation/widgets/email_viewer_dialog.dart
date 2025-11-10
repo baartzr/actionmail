@@ -13,6 +13,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -60,6 +61,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   late MessageIndex _currentMessage;
   String? _accountEmail;
   String? _htmlContent;
+  String? _plainTextBody;
   bool _isLoading = true;
   String? _error;
   bool _isFullscreen = false;
@@ -74,6 +76,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   List<AttachmentInfo> _attachments = [];
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
+  static final DateFormat _replyDateFormat = DateFormat('EEE, MMM d, yyyy h:mm a');
+  ComposeDraftState? _pendingComposeDraft;
+  ComposeEmailMode? _pendingComposeMode;
 
   bool get _isLocalEmail => widget.localFolderName != null;
 
@@ -101,6 +106,15 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
   Future<void> _loadEmailBody() async {
     try {
+      if (mounted) {
+        setState(() {
+          _isLoading = true;
+          _plainTextBody = null;
+        });
+      } else {
+        _plainTextBody = null;
+      }
+
       // If viewing from local folder, load from saved file
       if (widget.localFolderName != null) {
         final folderService = LocalFolderService();
@@ -115,11 +129,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           debugPrint('[EmailViewer] loadAttachments returned ${localAttachments.length} attachments');
           
           final attachments = _mapLocalAttachments(localAttachments);
+          final plainText = _htmlToPlainText(body);
           
           debugPrint('[EmailViewer] Created ${attachments.length} AttachmentInfo objects');
           
           setState(() {
             _htmlContent = body;
+            _plainTextBody = plainText;
             _attachments = attachments;
             _isLoading = false;
             _conversationAttachments[_currentMessage.id] = attachments;
@@ -217,6 +233,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final bodyHtml = htmlBody != null 
           ? bodyContent 
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
+      final plainTextContent = plainBody ?? _htmlToPlainText(bodyContent);
 
       // Create a complete HTML document with proper styling
       final fullHtml = '''
@@ -290,6 +307,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       if (!mounted) return;
       setState(() {
         _htmlContent = fullHtml;
+        _plainTextBody = plainTextContent;
         _attachments = attachments;
         _isLoading = false;
         _conversationAttachments[_currentMessage.id] = attachments;
@@ -326,6 +344,43 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         .replaceAll("'", '&#039;');
   }
 
+  String _htmlToPlainText(String text) {
+    var result = text.replaceAll('\r\n', '\n');
+    result = result.replaceAll(
+      RegExp(r'<(script|style|head|meta|link)[^>]*?>.*?<\s*/\s*\1\s*>',
+          caseSensitive: false, dotAll: true, multiLine: true),
+      '\n',
+    );
+    result = result.replaceAll(
+      RegExp(r'<(script|style|head|meta|link)[^>]*?>',
+          caseSensitive: false, dotAll: true, multiLine: true),
+      '\n',
+    );
+    result = result.replaceAll(
+      RegExp(r'<!--.*?-->', caseSensitive: false, dotAll: true, multiLine: true),
+      '\n',
+    );
+    result = result.replaceAll(
+      RegExp(r'<!\[CDATA\[.*?\]\]>', caseSensitive: false, dotAll: true, multiLine: true),
+      '\n',
+    );
+    result = result.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
+    result = result.replaceAll(RegExp(r'</p>', caseSensitive: false), '\n\n');
+    result = result.replaceAll(RegExp(r'<div[^>]*>', caseSensitive: false), '\n');
+    result = result.replaceAll(RegExp(r'</div>', caseSensitive: false), '\n');
+    result = result.replaceAll(RegExp(r'<[^>]+>'), '');
+    result = result.replaceAll('&nbsp;', ' ');
+    result = result.replaceAll('&amp;', '&');
+    result = result.replaceAll('&lt;', '<');
+    result = result.replaceAll('&gt;', '>');
+    result = result.replaceAll('&quot;', '"');
+    result = result.replaceAll('&#39;', "'");
+    result = result.replaceAll('&#x27;', "'");
+    result = result.replaceAll('&apos;', "'");
+    result = result.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+    return result.trimRight();
+  }
+
   String _formatDate(DateTime date) {
     return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} '
            '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
@@ -350,6 +405,78 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     }
     final email = _extractEmail(from);
     return email.isNotEmpty ? email : from;
+  }
+
+  Future<void> _openCompose({
+    required ComposeEmailMode mode,
+    String? to,
+    String? subject,
+    ComposeDraftState? draft,
+  }) async {
+    final result = await showDialog<ComposeDialogResult>(
+      context: context,
+      builder: (ctx) => ComposeEmailDialog(
+        to: draft?.to ?? to,
+        subject: draft?.subject ?? subject,
+        accountId: widget.accountId,
+        originalMessage: _currentMessage,
+        mode: mode,
+        initialDraft: draft,
+      ),
+    );
+
+    if (!mounted || result == null) return;
+
+    switch (result.type) {
+      case ComposeDialogResultType.viewOriginal:
+        if (result.draft != null) {
+          setState(() {
+            _pendingComposeDraft = result.draft;
+            _pendingComposeMode = mode;
+          });
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                mode == ComposeEmailMode.forward
+                    ? 'Forward draft saved. Tap the edit icon to continue.'
+                    : 'Reply draft saved. Tap the edit icon to continue.',
+              ),
+            ),
+          );
+        }
+        break;
+      case ComposeDialogResultType.sent:
+        setState(() {
+          _pendingComposeDraft = null;
+          _pendingComposeMode = null;
+        });
+        break;
+      case ComposeDialogResultType.cancelled:
+        break;
+    }
+  }
+
+  Future<void> _resumePendingCompose() async {
+    final draft = _pendingComposeDraft;
+    final mode = _pendingComposeMode;
+    if (draft == null || mode == null) return;
+    await _openCompose(mode: mode, draft: draft);
+  }
+
+  String _formatReplyTimestamp(DateTime date) {
+    return _replyDateFormat.format(date.toLocal());
+  }
+
+  String _originalPlainBody() {
+    final body = _plainTextBody;
+    if (body != null && body.trim().isNotEmpty) {
+      return body.replaceAll('\r\n', '\n').trimRight();
+    }
+    final snippet = _currentMessage.snippet;
+    if (snippet != null && snippet.trim().isNotEmpty) {
+      return snippet.replaceAll('\r\n', '\n').trimRight();
+    }
+    return '(No content available)';
   }
 
   Widget _buildAttachmentChip(AttachmentInfo attachment) {
@@ -740,15 +867,14 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
         : 'Re: ${_currentMessage.subject}';
-    showDialog(
-      context: context,
-      builder: (ctx) => ComposeEmailDialog(
-        to: to,
-        subject: subject,
-        accountId: widget.accountId,
-        originalMessage: _currentMessage,
-        mode: ComposeEmailMode.reply,
-      ),
+    setState(() {
+      _pendingComposeDraft = null;
+      _pendingComposeMode = null;
+    });
+    _openCompose(
+      mode: ComposeEmailMode.reply,
+      to: to,
+      subject: subject,
     );
   }
 
@@ -758,15 +884,14 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
         : 'Re: ${_currentMessage.subject}';
-    showDialog(
-      context: context,
-      builder: (ctx) => ComposeEmailDialog(
-        to: to,
-        subject: subject,
-        accountId: widget.accountId,
-        originalMessage: _currentMessage,
-        mode: ComposeEmailMode.replyAll,
-      ),
+    setState(() {
+      _pendingComposeDraft = null;
+      _pendingComposeMode = null;
+    });
+    _openCompose(
+      mode: ComposeEmailMode.replyAll,
+      to: to,
+      subject: subject,
     );
   }
 
@@ -774,34 +899,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final subject = _currentMessage.subject.startsWith('Fwd:') 
         ? _currentMessage.subject 
         : 'Fwd: ${_currentMessage.subject}';
-    showDialog(
-      context: context,
-      builder: (ctx) => ComposeEmailDialog(
-        subject: subject,
-        body: '\n\n--- Forwarded message ---\nFrom: ${_currentMessage.from}\nDate: ${_formatDate(_currentMessage.internalDate)}\nSubject: ${_currentMessage.subject}\n\n',
-        accountId: widget.accountId,
-        originalMessage: _currentMessage,
-        mode: ComposeEmailMode.forward,
-      ),
-    );
-  }
-
-  Future<void> _showLocalReplyPrompt() async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Reply unavailable'),
-        content: const Text(
-          'This email is in a local folder. To reply, swipe it to your Inbox first.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
+    setState(() {
+      _pendingComposeDraft = null;
+      _pendingComposeMode = null;
+    });
+    _openCompose(
+      mode: ComposeEmailMode.forward,
+      subject: subject,
     );
   }
 
@@ -1159,48 +1263,46 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                   : theme.appBarTheme.foregroundColor,
               onPressed: _toggleConversationMode,
             ),
-          if (_isLocalEmail)
+          if (_pendingComposeDraft != null && _pendingComposeMode != null)
             IconButton(
-              tooltip: 'Reply disabled',
-              icon: Icon(
-                Icons.reply,
-                size: 20,
-                color: theme.disabledColor,
-              ),
-              onPressed: _showLocalReplyPrompt,
-            )
-          else
-            PopupMenuButton<_ReplyMenuAction>(
-              tooltip: 'Reply options',
-              icon: const Icon(Icons.reply, size: 20, color: Colors.white),
-              onSelected: (value) {
-                switch (value) {
-                  case _ReplyMenuAction.reply:
-                    _handleReply();
-                    break;
-                  case _ReplyMenuAction.replyAll:
-                    _handleReplyAll();
-                    break;
-                  case _ReplyMenuAction.forward:
-                    _handleForward();
-                    break;
-                }
-              },
-              itemBuilder: (context) => [
-                const PopupMenuItem<_ReplyMenuAction>(
-                  value: _ReplyMenuAction.reply,
-                  child: Text('Reply'),
-                ),
-                const PopupMenuItem<_ReplyMenuAction>(
-                  value: _ReplyMenuAction.replyAll,
-                  child: Text('Reply all'),
-                ),
-                const PopupMenuItem<_ReplyMenuAction>(
-                  value: _ReplyMenuAction.forward,
-                  child: Text('Forward'),
-                ),
-              ],
+              tooltip: _pendingComposeMode == ComposeEmailMode.forward
+                  ? 'Return to forward draft'
+                  : 'Return to reply draft',
+              icon: const Icon(Icons.edit_note, size: 20),
+              color: theme.appBarTheme.foregroundColor,
+              onPressed: _resumePendingCompose,
             ),
+          PopupMenuButton<_ReplyMenuAction>(
+            tooltip: 'Reply options',
+            icon: const Icon(Icons.reply, size: 20, color: Colors.white),
+            onSelected: (value) {
+              switch (value) {
+                case _ReplyMenuAction.reply:
+                  _handleReply();
+                  break;
+                case _ReplyMenuAction.replyAll:
+                  _handleReplyAll();
+                  break;
+                case _ReplyMenuAction.forward:
+                  _handleForward();
+                  break;
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.reply,
+                child: Text('Reply'),
+              ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.replyAll,
+                child: Text('Reply all'),
+              ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.forward,
+                child: Text('Forward'),
+              ),
+            ],
+        ),
         IconButton(
           tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
           icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),
