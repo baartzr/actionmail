@@ -189,7 +189,7 @@ class ActionExtractor {
     return confidence.clamp(0.0, 1.0);
   }
 
-  static String _buildInsight(String verb, DateTime date, String monthStr, String text) {
+  static String? _buildInsight(String verb, DateTime date, String monthStr, String text) {
     final day = date.day;
     final lowerText = text.toLowerCase();
     
@@ -245,7 +245,7 @@ class ActionExtractor {
       case 'arrive':
         return 'Flight on $day $monthStr.';
       default:
-        return 'Possible action date: $day $monthStr.';
+        return null;
     }
   }
 
@@ -353,7 +353,7 @@ class ActionExtractor {
 class ActionResult {
   final DateTime actionDate;
   final double confidence;
-  final String insightText;
+  final String? insightText;
 
   ActionResult({
     required this.actionDate,

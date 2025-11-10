@@ -201,24 +201,26 @@ class GmailSyncService {
     // TODO: Apply action detection heuristics when implemented
   }
 
-  String _formatPossibleActionText(String? insightText) {
+  static const List<String> _monthShortNames = [
+    'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec',
+  ];
+
+  String _formatPossibleActionText(String? insightText, DateTime? detectedDate) {
     final trimmed = insightText?.trim();
-    if (trimmed == null || trimmed.isEmpty) {
-      return 'Possible action detected';
-    }
-    var processed = trimmed;
-    final lower = processed.toLowerCase();
-    const possibleActionDatePrefix = 'possible action date';
-    if (lower.startsWith(possibleActionDatePrefix)) {
-      processed = processed.substring(possibleActionDatePrefix.length).trimLeft();
-      if (processed.isEmpty) {
-        processed = 'detected';
+    if (trimmed != null && trimmed.isNotEmpty) {
+      if (trimmed.toLowerCase().startsWith(_possibleActionPrefix.toLowerCase())) {
+        return trimmed;
       }
+      return '$_possibleActionPrefix$trimmed';
     }
-    if (processed.toLowerCase().startsWith(_possibleActionPrefix.toLowerCase())) {
-      return processed;
+    if (detectedDate != null) {
+      final local = detectedDate.toLocal();
+      final monthIndex = (local.month - 1).clamp(0, _monthShortNames.length - 1) as int;
+      final month = _monthShortNames[monthIndex];
+      final formatted = '${local.day} $month';
+      return '$_possibleActionPrefix$formatted';
     }
-    return '$_possibleActionPrefix$processed';
+    return '${_possibleActionPrefix}detected';
   }
 
   /// Incremental sync using Gmail History API: fetch changes since last historyId
@@ -774,7 +776,7 @@ class GmailSyncService {
                 await _repo.updateAction(
                   gm.id,
                   null,
-                  _formatPossibleActionText(deepResult.insightText),
+                  _formatPossibleActionText(deepResult.insightText, deepResult.actionDate),
                   deepResult.confidence,
                 );
                 debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> deep (${deepResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${deepResult.confidence})');
@@ -783,7 +785,7 @@ class GmailSyncService {
                 await _repo.updateAction(
                   gm.id,
                   null,
-                  _formatPossibleActionText(quickResult.insightText),
+                  _formatPossibleActionText(quickResult.insightText, quickResult.actionDate),
                   quickResult.confidence,
                 );
                 debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence})');
@@ -795,7 +797,7 @@ class GmailSyncService {
               await _repo.updateAction(
                 gm.id,
                 null,
-                _formatPossibleActionText(quickResult.insightText),
+                _formatPossibleActionText(quickResult.insightText, quickResult.actionDate),
                 quickResult.confidence,
               );
               debugPrint('[Phase2] ✓ ACTION: subject="$subject" -> quick (${quickResult.actionDate.toLocal().toString().split(' ')[0]}, conf=${quickResult.confidence}) body failed');
