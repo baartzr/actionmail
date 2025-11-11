@@ -433,19 +433,33 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     setFolder(messageId, newFolderLabel);
   }
 
-  void setAction(String messageId, DateTime? actionDate, String? actionText, {bool? actionComplete}) {
+  void setAction(String messageId, DateTime? actionDate, String? actionText, {bool? actionComplete, bool preserveExisting = false}) {
     final current = state;
     if (current is AsyncData<List<MessageIndex>>) {
       final list = current.value;
       final idx = list.indexWhere((m) => m.id == messageId);
       if (idx != -1) {
         final updated = List<MessageIndex>.from(list);
-        // Determine if action exists (has date or text)
-        final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
-        updated[idx] = updated[idx].copyWith(
-          actionDate: actionDate,
-          actionInsightText: actionText,
-          actionComplete: actionComplete,
+        final currentMessage = updated[idx];
+
+        final newActionDate = preserveExisting && actionDate == null
+            ? currentMessage.actionDate
+            : actionDate;
+
+        final newActionText = preserveExisting && actionText == null
+            ? currentMessage.actionInsightText
+            : actionText;
+
+        final newActionComplete = preserveExisting && actionComplete == null
+            ? currentMessage.actionComplete
+            : (actionComplete ?? currentMessage.actionComplete);
+
+        final hasAction = newActionDate != null || (newActionText != null && newActionText.isNotEmpty);
+
+        updated[idx] = currentMessage.copyWith(
+          actionDate: newActionDate,
+          actionInsightText: newActionText,
+          actionComplete: newActionComplete,
           hasAction: hasAction,
         );
         state = AsyncValue.data(updated);

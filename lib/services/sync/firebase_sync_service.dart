@@ -666,12 +666,16 @@ class FirebaseSyncService {
       }
       
       if (needsUpdate && onUpdateApplied != null) {
+        final finalTag = updatedLocalTag ?? localTag;
+        final finalActionDate = updatedActionDate ?? localActionDate;
+        final finalActionText = updatedActionText ?? localActionText;
+        final finalActionComplete = updatedActionComplete ?? localActionComplete;
         onUpdateApplied!(
           messageId,
-          updatedLocalTag,
-          updatedActionDate,
-          updatedActionText,
-          updatedActionComplete ?? (localMessage?.actionComplete ?? false),
+          finalTag,
+          finalActionDate,
+          finalActionText,
+          finalActionComplete,
         );
       }
     } catch (e) {

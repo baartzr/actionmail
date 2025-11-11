@@ -58,6 +58,16 @@ class _InlineImagePart {
   });
 }
 
+class _InlineImageLoadResult {
+  final Map<String, _InlineImageData> images;
+  final Set<String> consumedAttachmentIds;
+
+  const _InlineImageLoadResult({
+    required this.images,
+    required this.consumedAttachmentIds,
+  });
+}
+
 enum _ReplyMenuAction { reply, replyAll, forward }
 
 /// Dialog for viewing email content in a webview
@@ -263,7 +273,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       debugPrint('[EmailViewer] Body extracted, starting attachment extraction...');
       
       // Extract real attachments from payload
-      final attachments = _extractAttachmentsFromPayload(payload);
+      var attachments = _extractAttachmentsFromPayload(payload);
 
       // Prefer HTML over plain text
       final bodyContent = htmlBody ?? plainBody ?? _currentMessage.snippet ?? 'No content available';
@@ -272,9 +282,14 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
 
       if (htmlBody != null && payload != null) {
-        final inlineImages = await _loadInlineImages(payload, _currentMessage.id, accessToken);
-        if (inlineImages.isNotEmpty) {
-          bodyHtml = _embedInlineImages(bodyHtml, inlineImages);
+        final inlineResult = await _loadInlineImages(payload, _currentMessage.id, accessToken);
+        if (inlineResult.images.isNotEmpty) {
+          bodyHtml = _embedInlineImages(bodyHtml, inlineResult.images);
+        }
+        if (inlineResult.consumedAttachmentIds.isNotEmpty) {
+          attachments = attachments
+              .where((attachment) => !inlineResult.consumedAttachmentIds.contains(attachment.attachmentId))
+              .toList();
         }
       }
 
@@ -642,11 +657,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     return attachments;
   }
 
-  Future<Map<String, _InlineImageData>> _loadInlineImages(
-    Map<String, dynamic> payload,
-    String messageId,
-    String accessToken,
-  ) async {
+  List<_InlineImagePart> _collectInlineImageParts(Map<String, dynamic> payload) {
     final inlineParts = <_InlineImagePart>[];
 
     void collect(dynamic part) {
@@ -680,14 +691,14 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final isInlineImage = mimeType.startsWith('image/') && (cid.isNotEmpty || disposition.toLowerCase().contains('inline'));
 
       if (isInlineImage && cid.isNotEmpty && hasInlinePayload) {
-      inlineParts.add(
-        _InlineImagePart(
-          cid: cid,
-          mimeType: mimeType.isNotEmpty ? mimeType : rawMimeType.toLowerCase(),
-          attachmentId: attachmentId,
-          inlineData: inlineData,
-        ),
-      );
+        inlineParts.add(
+          _InlineImagePart(
+            cid: cid,
+            mimeType: mimeType.isNotEmpty ? mimeType : rawMimeType.toLowerCase(),
+            attachmentId: attachmentId,
+            inlineData: inlineData,
+          ),
+        );
       }
 
       final parts = part['parts'] as List<dynamic>?;
@@ -699,13 +710,23 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     }
 
     collect(payload);
+    return inlineParts;
+  }
+
+  Future<_InlineImageLoadResult> _loadInlineImages(
+    Map<String, dynamic> payload,
+    String messageId,
+    String accessToken,
+  ) async {
+    final inlineParts = _collectInlineImageParts(payload);
 
     if (inlineParts.isEmpty) {
       debugPrint('[EmailViewer] No inline image parts detected for message $messageId');
-      return {};
+      return const _InlineImageLoadResult(images: {}, consumedAttachmentIds: {});
     }
 
     final inlineImages = <String, _InlineImageData>{};
+    final consumedAttachmentIds = <String>{};
     debugPrint('[EmailViewer] Found ${inlineParts.length} potential inline image parts for message $messageId');
 
     for (final part in inlineParts) {
@@ -738,10 +759,17 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         mimeType: embedMimeType,
         base64Data: base64Encode(bytes),
       );
+      final attachmentId = part.attachmentId;
+      if (attachmentId != null && attachmentId.isNotEmpty) {
+        consumedAttachmentIds.add(attachmentId);
+      }
       debugPrint('[EmailViewer] Inline image cid=$cid prepared (${part.mimeType}, bytes=${bytes.length})');
     }
 
-    return inlineImages;
+    return _InlineImageLoadResult(
+      images: inlineImages,
+      consumedAttachmentIds: consumedAttachmentIds,
+    );
   }
 
   String _normalizeContentId(String cid) {
@@ -890,6 +918,20 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         final map = jsonDecode(resp.body) as Map<String, dynamic>;
         final payload = map['payload'] as Map<String, dynamic>?;
         attachments = _extractAttachmentsFromPayload(payload);
+        if (payload != null) {
+          final inlineParts = _collectInlineImageParts(payload);
+          if (inlineParts.isNotEmpty) {
+            final inlineIds = inlineParts
+                .map((part) => part.attachmentId)
+                .whereType<String>()
+                .toSet();
+            if (inlineIds.isNotEmpty) {
+              attachments = attachments
+                  .where((attachment) => !inlineIds.contains(attachment.attachmentId))
+                  .toList();
+            }
+          }
+        }
       }
 
       if (!mounted) return;

@@ -193,6 +193,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             actionDate,
             actionText,
             actionComplete: actionComplete,
+            preserveExisting: true,
           );
         };
         
@@ -295,12 +296,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText, actionComplete) {
             // Update provider state to reflect Firebase changes in UI
             ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-            ref.read(emailListProvider.notifier).setAction(
-              messageId,
-              actionDate,
-              actionText,
-              actionComplete: actionComplete,
-            );
+          ref.read(emailListProvider.notifier).setAction(
+            messageId,
+            actionDate,
+            actionText,
+            actionComplete: actionComplete,
+            preserveExisting: true,
+          );
           };
           
           // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
