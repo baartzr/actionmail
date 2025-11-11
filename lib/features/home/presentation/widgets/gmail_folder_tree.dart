@@ -12,6 +12,7 @@ class GmailFolderTree extends ConsumerStatefulWidget {
   final void Function(String folderId, MessageIndex message)? onEmailDropped;
   final bool isViewingLocalFolder; // Whether we're currently viewing local folder emails
   final String? accountId; // Account ID for fetching unread counts
+  final Color? selectedBackgroundColor;
 
   const GmailFolderTree({
     super.key,
@@ -20,6 +21,7 @@ class GmailFolderTree extends ConsumerStatefulWidget {
     this.onEmailDropped,
     this.isViewingLocalFolder = false,
     this.accountId,
+    this.selectedBackgroundColor,
   });
 
   @override
@@ -344,13 +346,18 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final isSelected = widget.selectedFolder == folderId;
-    // Use the same dark teal as the appbar for selected folder
-    const selectedFolderColor = Color(0xFF00695C); // darkTeal from theme
-    // Nice contrasting green for allowed drag folders (color set directly in builder)
+    const defaultSelectedColor = Color(0xFF00695C); // darkTeal from theme
+    final highlightBackground = widget.selectedBackgroundColor;
+    final selectedBorderColor = highlightBackground != null
+        ? highlightBackground.withValues(alpha: 1)
+        : defaultSelectedColor;
+    final selectedForegroundColor = highlightBackground != null
+        ? cs.onSurface
+        : defaultSelectedColor;
     
     // Get folder-specific icon color
     Color getFolderIconColor() {
-      if (isSelected) return selectedFolderColor;
+      if (isSelected) return selectedForegroundColor;
       
       // Default colors for each folder type when not selected
       switch (folderId.toUpperCase()) {
@@ -376,11 +383,11 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.transparent,
+            color: isSelected && highlightBackground != null ? highlightBackground : Colors.transparent,
             border: isSelected
                 ? Border(
                     left: BorderSide(
-                      color: selectedFolderColor,
+                      color: selectedBorderColor,
                       width: 3,
                     ),
                   )
@@ -398,7 +405,7 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
                 child: Text(
                   label,
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: isSelected ? selectedFolderColor : cs.onSurface,
+                    color: isSelected ? selectedForegroundColor : cs.onSurface,
                     fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                   ),
                   overflow: TextOverflow.ellipsis,
@@ -408,7 +415,7 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
                 Text(
                   '($unreadCount)',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: isSelected ? selectedFolderColor : cs.onSurfaceVariant,
+                    color: isSelected ? selectedForegroundColor : cs.onSurfaceVariant,
                     fontWeight: FontWeight.normal,
                     fontSize: 12,
                   ),

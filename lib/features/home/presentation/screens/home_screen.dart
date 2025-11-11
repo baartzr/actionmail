@@ -421,7 +421,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     return Scaffold(
       appBar: PreferredSize(
-        preferredSize: Size.fromHeight((kToolbarHeight * 1.5) + MediaQuery.of(context).padding.top),
+        preferredSize: Size.fromHeight((kToolbarHeight * 1.4) + MediaQuery.of(context).padding.top),
         child: Container(
           decoration: BoxDecoration(
             color: Theme.of(context).appBarTheme.backgroundColor ?? Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -445,6 +445,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       child: Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 24.0),
                         child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             GestureDetector(
@@ -729,6 +730,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildLeftPanel(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+    final highlightBorderColor = ActionMailTheme.alertColor.withValues(alpha: 1);
+    const accountSelectedBorderColor = Color(0xFF00695C);
     
     final column = Column(
       children: [
@@ -766,6 +770,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
                 ..._accounts.map((account) {
                   final isSelected = account.id == _selectedAccountId;
+                  final isAccountActive = isSelected && !_isLocalFolder;
                   return Material(
                     color: Colors.transparent,
                     child: InkWell(
@@ -818,30 +823,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       child: Container(
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
-                          color: Colors.transparent,
-                          border: isSelected
-                              ? const Border(
+                          color: isAccountActive ? highlightColor : Colors.transparent,
+                          border: isAccountActive
+                              ? Border(
                                   left: BorderSide(
-                                    color: Color(0xFF00695C),
+                                    color: highlightBorderColor,
                                     width: 3,
                                   ),
                                 )
-                              : null,
+                              : isSelected
+                                  ? const Border(
+                                      left: BorderSide(
+                                        color: accountSelectedBorderColor,
+                                        width: 3,
+                                      ),
+                                    )
+                                  : null,
                         ),
                         child: Row(
                           children: [
                             Icon(
                               isSelected ? Icons.account_circle : Icons.account_circle_outlined,
                               size: 18,
-                              color: isSelected ? const Color(0xFF00695C) : cs.onSurfaceVariant,
+                              color: isAccountActive
+                                  ? cs.onSurface
+                                  : (isSelected ? accountSelectedBorderColor : cs.onSurfaceVariant),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
                                 account.email,
                                 style: theme.textTheme.bodySmall?.copyWith(
-                                  color: isSelected ? const Color(0xFF00695C) : cs.onSurface,
-                                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                  color: isAccountActive || !isSelected ? cs.onSurface : accountSelectedBorderColor,
+                                  fontWeight: isAccountActive ? FontWeight.w600 : FontWeight.normal,
                                 ),
                                 overflow: TextOverflow.ellipsis,
                               ),
@@ -852,7 +866,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                 child: Text(
                                   '(${_accountUnreadCounts[account.id]})',
                                   style: theme.textTheme.bodySmall?.copyWith(
-                                    color: isSelected ? const Color(0xFF00695C) : cs.onSurfaceVariant,
+                                    color: isAccountActive
+                                        ? cs.onSurface
+                                        : (isSelected ? accountSelectedBorderColor : cs.onSurfaceVariant),
                                     fontWeight: FontWeight.normal,
                                     fontSize: 12,
                                   ),
@@ -873,6 +889,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       selectedFolder: _selectedFolder,
       isViewingLocalFolder: _isLocalFolder,
       accountId: _selectedAccountId,
+      selectedBackgroundColor: highlightColor,
       onFolderSelected: (folderId) async {
         setState(() {
           _selectedFolder = folderId;
@@ -2307,8 +2324,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     
     // Color for icons and text - white for better visibility on teal background
-    const Color iconColor = Colors.white;
-    const Color textColor = Colors.white;
+    final Color iconColor = Theme.of(context).appBarTheme.foregroundColor
+        ?? Theme.of(context).colorScheme.onPrimary; // fallback if not set
+
+    final Color textColor = Theme.of(context).appBarTheme.foregroundColor
+        ?? Theme.of(context).colorScheme.onPrimary;
     
     return Material(
       color: Colors.transparent,
@@ -2330,7 +2350,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: textColor,
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  fontSize: 11,
+                  fontSize: 12,
                 ),
               ),
             ],
@@ -3228,11 +3248,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final labels = <String>[];
 
     if (_selectedLocalState != null) {
-      labels.add('Local: ${_selectedLocalState!}');
-    }
-
-    if (_stateFilter != null) {
-      labels.add(_stateFilter!);
+      labels.add('${_selectedLocalState!} Emails');
     }
 
     if (_selectedActionFilter != null) {
@@ -3251,6 +3267,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
       }();
       labels.add('Action: $actionLabel');
+    }
+
+    if (_stateFilter != null) {
+      labels.add(_stateFilter!);
     }
 
     if (_selectedCategories.isNotEmpty) {
