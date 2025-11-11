@@ -173,12 +173,20 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           final localAttachments = await folderService.loadAttachments(widget.localFolderName!, _currentMessage.id);
           debugPrint('[EmailViewer] loadAttachments returned ${localAttachments.length} attachments');
           
-          final attachments = _mapLocalAttachments(localAttachments);
+          final inlineResult = await _buildInlineImagesFromLocal(body, localAttachments);
+          final filteredLocalAttachments = localAttachments
+              .where((raw) {
+                final attachmentId = raw['attachmentId'] as String?;
+                if (attachmentId == null) return false;
+                return !inlineResult.consumedAttachmentIds.contains(attachmentId);
+              })
+              .toList();
+          final attachments = _mapLocalAttachments(filteredLocalAttachments);
           
           debugPrint('[EmailViewer] Created ${attachments.length} AttachmentInfo objects');
           
           setState(() {
-            _htmlContent = body;
+            _htmlContent = inlineResult.images.isNotEmpty ? _embedInlineImages(body, inlineResult.images) : body;
             _attachments = attachments;
             _isLoading = false;
             _conversationAttachments[_currentMessage.id] = attachments;
@@ -548,6 +556,86 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         })
         .whereType<AttachmentInfo>()
         .toList();
+  }
+
+  Future<_InlineImageLoadResult> _buildInlineImagesFromLocal(String html, List<Map<String, dynamic>> localAttachments) async {
+    final inlineImages = <String, _InlineImageData>{};
+    final consumedAttachmentIds = <String>{};
+
+    final cidsInHtml = RegExp("cid:([^\"'\\s>]+)", caseSensitive: false)
+        .allMatches(html)
+        .map((match) => _normalizeContentId(match.group(1) ?? ''))
+        .where((cid) => cid.isNotEmpty)
+        .toSet();
+
+    Future<void> embedFromRaw(Map<String, dynamic> raw, String cid) async {
+      final attachmentId = raw['attachmentId'] as String? ?? '';
+      if (attachmentId.isEmpty) return;
+
+      final localPath = raw['localPath'] as String? ?? '';
+      if (localPath.isEmpty) return;
+
+      try {
+        final file = File(localPath);
+        if (!await file.exists()) return;
+
+        final bytes = await file.readAsBytes();
+        if (bytes.isEmpty) return;
+
+        final mimeType = (raw['mimeType'] as String? ?? 'application/octet-stream').toLowerCase();
+        inlineImages[cid] = _InlineImageData(
+          mimeType: mimeType,
+          base64Data: base64Encode(bytes),
+        );
+        consumedAttachmentIds.add(attachmentId);
+      } catch (e) {
+        debugPrint('[EmailViewer] Failed to load inline image from $localPath: $e');
+      }
+    }
+
+    // Pass 1: use explicit inline markers
+    for (final raw in localAttachments) {
+      final isInline = raw['isInline'] as bool? ?? false;
+      if (!isInline) continue;
+
+      final contentId = _normalizeContentId(raw['contentId'] as String? ?? '');
+      if (contentId.isEmpty) continue;
+
+      await embedFromRaw(raw, contentId);
+    }
+
+    // Pass 2: use contentId match even if not marked inline
+    if (inlineImages.length < cidsInHtml.length) {
+      for (final raw in localAttachments) {
+        final attachmentId = raw['attachmentId'] as String? ?? '';
+        if (attachmentId.isEmpty || consumedAttachmentIds.contains(attachmentId)) continue;
+
+        final contentId = _normalizeContentId(raw['contentId'] as String? ?? '');
+        if (contentId.isEmpty || inlineImages.containsKey(contentId) || !cidsInHtml.contains(contentId)) continue;
+
+        await embedFromRaw(raw, contentId);
+      }
+    }
+
+    // Pass 3: heuristics based on order for remaining CIDs
+    if (inlineImages.length < cidsInHtml.length) {
+      final remainingCids = cidsInHtml.where((cid) => !inlineImages.containsKey(cid)).toList();
+      final candidateAttachments = localAttachments.where((raw) {
+        final attachmentId = raw['attachmentId'] as String? ?? '';
+        if (attachmentId.isEmpty || consumedAttachmentIds.contains(attachmentId)) return false;
+        final mimeType = (raw['mimeType'] as String? ?? '').toLowerCase();
+        return mimeType.startsWith('image/');
+      }).toList();
+
+      for (var i = 0; i < remainingCids.length && i < candidateAttachments.length; i++) {
+        await embedFromRaw(candidateAttachments[i], remainingCids[i]);
+      }
+    }
+
+    return _InlineImageLoadResult(
+      images: inlineImages,
+      consumedAttachmentIds: consumedAttachmentIds,
+    );
   }
 
   List<AttachmentInfo> _extractAttachmentsFromPayload(Map<String, dynamic>? payload) {

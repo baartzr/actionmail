@@ -319,20 +319,42 @@ class LocalFolderService {
       final attachments = <Map<String, dynamic>>[];
       void findAttachments(dynamic part) {
         if (part is! Map<String, dynamic>) return;
-        
+
         final body = part['body'] as Map<String, dynamic>?;
         final attachmentId = body?['attachmentId'] as String?;
-        
+        final mimeType = (part['mimeType'] as String? ?? 'application/octet-stream').toLowerCase();
+        final headers = (part['headers'] as List<dynamic>?) ?? const [];
+
+        final headerMap = <String, String>{};
+        for (final h in headers) {
+          if (h is Map<String, dynamic>) {
+            final name = (h['name'] as String? ?? '').toLowerCase();
+            final value = h['value'] as String? ?? '';
+            if (name.isNotEmpty) {
+              headerMap[name] = value;
+            }
+          }
+        }
+
+        final disposition = headerMap['content-disposition'] ?? '';
+        final contentId = headerMap['content-id'] ?? '';
+        final dispLower = disposition.toLowerCase();
+        final isInline = dispLower.contains('inline') && !dispLower.contains('attachment');
+        final isImageInline = mimeType.startsWith('image/') && !dispLower.contains('attachment') && contentId.isNotEmpty;
+
         if (attachmentId != null) {
           final filename = part['filename'] as String? ?? 'attachment';
           attachments.add({
             'attachmentId': attachmentId,
             'filename': filename,
-            'mimeType': part['mimeType'] as String? ?? 'application/octet-stream',
+            'mimeType': mimeType,
             'size': body?['size'] as int? ?? 0,
+            'contentId': contentId,
+            'contentDisposition': disposition,
+            'isInline': isInline || isImageInline,
           });
         }
-        
+
         // Check nested parts
         final parts = part['parts'] as List<dynamic>?;
         if (parts != null) {
@@ -410,6 +432,9 @@ class LocalFolderService {
                 'filename': filename, // Original filename
                 'mimeType': att['mimeType'] as String,
                 'size': att['size'] as int,
+                'contentId': att['contentId'],
+                'contentDisposition': att['contentDisposition'],
+                'isInline': att['isInline'] as bool? ?? false,
               });
               
               debugPrint('[LocalFolderService] Saved attachment: $filename');
@@ -635,6 +660,8 @@ class LocalFolderService {
                 'mimeType': attMap['mimeType'] as String,
                 'size': fileStat.size,
                 'localPath': attFile.path,
+                'contentId': attMap['contentId'],
+                'isInline': attMap['isInline'] as bool? ?? false,
               });
               debugPrint('[LocalFolderService]   Added attachment: $filename (${fileStat.size} bytes)');
             } else {
@@ -699,6 +726,8 @@ class LocalFolderService {
               'mimeType': mimeType,
               'size': size,
               'localPath': entity.path,
+            'contentId': null,
+            'isInline': false,
             });
           } else {
             // If no underscore, assume entire filename is attachmentId (new format without metadata)
