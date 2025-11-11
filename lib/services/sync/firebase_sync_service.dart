@@ -48,7 +48,7 @@ class FirebaseSyncService {
   // Sender preferences are no longer synced, so no tracking needed
   
   // Callback to notify UI when updates are applied from Firebase
-  void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText)? onUpdateApplied;
+  void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText, bool? actionComplete)? onUpdateApplied;
 
   /// Initialize Firebase (call this early in app lifecycle)
   /// Returns false if Firebase is not configured
@@ -666,7 +666,13 @@ class FirebaseSyncService {
       }
       
       if (needsUpdate && onUpdateApplied != null) {
-        onUpdateApplied!(messageId, updatedLocalTag, updatedActionDate, updatedActionText);
+        onUpdateApplied!(
+          messageId,
+          updatedLocalTag,
+          updatedActionDate,
+          updatedActionText,
+          updatedActionComplete ?? (localMessage?.actionComplete ?? false),
+        );
       }
     } catch (e) {
       _logFirebaseSync('Error applying email meta update for $messageId: $e');

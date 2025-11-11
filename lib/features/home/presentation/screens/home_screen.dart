@@ -185,12 +185,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (syncEnabled && _selectedAccountId != null && list.isNotEmpty) {
       // Set callback to update provider state when Firebase updates are applied
       try {
-        _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
+        _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText, actionComplete) {
           // Update provider state to reflect Firebase changes in UI
           ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-          if (actionDate != null || actionText != null) {
-            ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
-          }
+          ref.read(emailListProvider.notifier).setAction(
+            messageId,
+            actionDate,
+            actionText,
+            actionComplete: actionComplete,
+          );
         };
         
         // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
@@ -289,12 +292,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         final syncEnabled = await _firebaseSync.isSyncEnabled();
         if (syncEnabled) {
           // Set callback to update provider state when Firebase updates are applied
-          _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText) {
+          _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText, actionComplete) {
             // Update provider state to reflect Firebase changes in UI
             ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-            if (actionDate != null || actionText != null) {
-              ref.read(emailListProvider.notifier).setAction(messageId, actionDate, actionText);
-            }
+            ref.read(emailListProvider.notifier).setAction(
+              messageId,
+              actionDate,
+              actionText,
+              actionComplete: actionComplete,
+            );
           };
           
           // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
