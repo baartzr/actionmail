@@ -89,7 +89,7 @@ buildTypes {
 #### Application ID
 - [ ] Verify unique application ID in `android/app/build.gradle.kts`:
   ```kotlin
-  applicationId "com.actionmail.actionmail"  // Should be unique
+  applicationId "com.seagreen.domail"  // Should be unique
   ```
 
 #### Permissions Review

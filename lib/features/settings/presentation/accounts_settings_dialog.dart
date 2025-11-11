@@ -1,13 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
-import 'package:actionmail/services/sync/firebase_sync_service.dart';
-import 'package:actionmail/data/repositories/action_feedback_repository.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/data/repositories/action_feedback_repository.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
+import 'package:domail/constants/app_brand.dart';
 // import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
@@ -69,7 +70,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           ),
                                                     const SizedBox(height: 20),
                           Text(
-                            'InboxIQ',
+                            AppBrand.productName,
                             style: theme.textTheme.headlineSmall?.copyWith(
                               fontWeight: FontWeight.bold,
                               color: theme.colorScheme.onSurface,
@@ -399,7 +400,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                           ),
                           const SizedBox(height: 12),
                           Text(
-                            'InboxIQ',
+                            AppBrand.productName,
                             style: theme.textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.bold,
                               color: theme.colorScheme.onSurface,

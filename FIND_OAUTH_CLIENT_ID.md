@@ -3,7 +3,7 @@
 ## Step 1: Navigate to OAuth 2.0 Client IDs (NOT API Keys)
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select project: **InboxIQ Gmail (inboxiq--api)**
+2. Select project: **doMail Gmail (domail--api)**
 3. Navigate to: **APIs & Services → Credentials**
 4. **Look for "OAuth 2.0 Client IDs" section** (NOT "API Keys")
 
@@ -32,7 +32,7 @@ http://localhost:8400/oauth2redirect
 
 1. Go to **APIs & Services → OAuth consent screen**
 2. Verify:
-   - **App name**: Shows "InboxIQ" (matches your error message)
+   - **App name**: Shows "doMail" (matches your error message)
    - **User support email**: Must be set
    - **Scopes**: Should include Gmail scopes
    - **Publishing status**: 

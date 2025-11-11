@@ -1,8 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/features/auth/presentation/splash_screen.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/features/auth/presentation/splash_screen.dart';
 
 /// Dialog for selecting an account
 class AccountSelectorDialog extends StatefulWidget {

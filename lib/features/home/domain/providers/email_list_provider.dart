@@ -1,13 +1,13 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/data/models/gmail_message.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/data/models/gmail_message.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:actionmail/firebase_options.dart';
-import 'package:actionmail/services/sync/firebase_sync_service.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
+import 'package:domail/firebase_options.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
 
 /// Provider for Gmail sync service
 final gmailSyncServiceProvider = Provider<GmailSyncService>((ref) {

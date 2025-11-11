@@ -1,15 +1,15 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/app/actionmail_app.dart';
+import 'package:domail/app/actionmail_app.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:actionmail/firebase_options.dart';
-import 'package:actionmail/services/sync/firebase_sync_service.dart';
-import 'package:actionmail/services/actions/ml_action_extractor.dart';
-import 'package:actionmail/data/db/app_database.dart';
+import 'package:domail/firebase_options.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/actions/ml_action_extractor.dart';
+import 'package:domail/data/db/app_database.dart';
 import 'package:flutter/foundation.dart';
-import 'package:actionmail/services/sync/firebase_init.dart';
+import 'package:domail/services/sync/firebase_init.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();

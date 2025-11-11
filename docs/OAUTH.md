@@ -156,7 +156,7 @@ Defined in `lib/constants/app_constants.dart`:
 
 ### MainActivity App Link Handling
 
-`android/app/src/main/kotlin/com/actionmail/actionmail/MainActivity.kt`:
+`android/app/src/main/kotlin/com/seagreen/domail/MainActivity.kt`:
 
 - Implements `MethodChannel` with method `getInitialAppLink` to retrieve App Link from intent
 - Implements `MethodChannel` with method `clearAppLink` to clear intent data after processing
@@ -236,7 +236,7 @@ We use `prompt=consent` and `access_type=offline` to obtain a refresh token.
 - `lib/features/auth/presentation/splash_screen.dart` — App Link detection and completion
 - `lib/constants/app_constants.dart` — redirect URIs and scopes
 - `android/app/src/main/AndroidManifest.xml` — App Links intent-filter
-- `android/app/src/main/kotlin/com/actionmail/actionmail/MainActivity.kt` — App Link handling
+- `android/app/src/main/kotlin/com/seagreen/domail/MainActivity.kt` — App Link handling
 - `lib/config/oauth_config.dart` — client id/secret (gitignored)
 - `public/.well-known/assetlinks.json` — Android App Links verification (Firebase Hosting)
 

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/shared/widgets/app_segmented_bar.dart';
+import 'package:domail/shared/widgets/app_segmented_bar.dart';
 
 /// Reusable Personal/Business filter widget for window dialogs
 /// Uses the same style as Attachments window

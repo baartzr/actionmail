@@ -1,4 +1,4 @@
-package com.actionmail.actionmail
+package com.seagreen.domail
 
 import android.app.ActivityManager
 import android.content.Context
@@ -12,8 +12,8 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.EventChannel
 
 class MainActivity : FlutterActivity() {
-    private val CHANNEL = "com.actionmail.actionmail/bringToFront"
-    private val APP_LINK_CHANNEL = "com.actionmail.actionmail/appLink"
+    private val CHANNEL = "com.seagreen.domail/bringToFront"
+    private val APP_LINK_CHANNEL = "com.seagreen.domail/appLink"
     private var appLinkEventSink: EventChannel.EventSink? = null
     private var pendingAppLink: String? = null
 

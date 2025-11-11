@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "com.actionmail.actionmail"
+    namespace = "com.seagreen.domail"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 

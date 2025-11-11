@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
-import 'package:actionmail/data/models/message_index.dart';
+import 'package:domail/data/models/message_index.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 

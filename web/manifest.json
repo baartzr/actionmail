@@ -1,6 +1,6 @@
 {
-    "name": "actionmail",
-    "short_name": "actionmail",
+    "name": "domail",
+    "short_name": "domail",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

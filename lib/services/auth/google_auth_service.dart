@@ -6,8 +6,8 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
-import 'package:actionmail/constants/app_constants.dart';
-import 'package:actionmail/config/oauth_config.dart';
+import 'package:domail/constants/app_constants.dart';
+import 'package:domail/config/oauth_config.dart';
 import 'package:http/http.dart' as http;
 import 'dart:math';
 import 'package:crypto/crypto.dart' as crypto;
@@ -244,7 +244,7 @@ class GoogleAuthService {
           print('[auth][android] client_id: ${OAuthConfig.clientId}');
           
           // Check for initial App Link (in case app was restarted)
-          final methodChannel = MethodChannel('com.actionmail.actionmail/bringToFront');
+          final methodChannel = MethodChannel('com.seagreen.domail/bringToFront');
           String? callbackUrl;
           
           try {

@@ -1,4 +1,4 @@
-import 'package:actionmail/constants/app_constants.dart';
+import 'package:domail/constants/app_constants.dart';
 
 /// Lightweight message index for ActionMail
 /// Stores only essential data for list display and filtering

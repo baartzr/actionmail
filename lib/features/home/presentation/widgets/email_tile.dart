@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'dart:io';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/constants/app_constants.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/constants/app_constants.dart';
 import 'package:intl/intl.dart';
-import 'package:actionmail/shared/widgets/app_switch_button.dart';
-import 'package:actionmail/features/home/presentation/widgets/action_edit_dialog.dart';
-import 'package:actionmail/services/domain_icon_service.dart';
+import 'package:domail/shared/widgets/app_switch_button.dart';
+import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
+import 'package:domail/services/domain_icon_service.dart';
 
 /// Email tile widget with action insight line
 class EmailTile extends StatefulWidget {

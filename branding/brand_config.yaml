@@ -1,0 +1,4 @@
+product_name: doMail
+product_name_lower: domail
+installer_base_filename: doMail-Setup
+windows_executable_name: domail

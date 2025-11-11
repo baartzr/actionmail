@@ -1,5 +1,5 @@
-import 'package:actionmail/services/actions/action_extractor.dart';
-import 'package:actionmail/data/repositories/action_feedback_repository.dart';
+import 'package:domail/services/actions/action_extractor.dart';
+import 'package:domail/data/repositories/action_feedback_repository.dart';
 import 'package:flutter/foundation.dart';
 
 /// ML-enhanced action extractor using hybrid rule-based + ML approach

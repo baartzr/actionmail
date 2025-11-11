@@ -1,36 +1,36 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/shared/widgets/app_toggle_chip.dart';
-import 'package:actionmail/shared/widgets/app_dropdown.dart';
+import 'package:domail/shared/widgets/app_toggle_chip.dart';
+import 'package:domail/shared/widgets/app_dropdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/constants/app_constants.dart';
-import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/features/home/presentation/widgets/email_tile.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/features/settings/presentation/accounts_settings_dialog.dart';
-import 'package:actionmail/features/home/presentation/windows/actions_summary_window.dart';
-import 'package:actionmail/features/home/presentation/windows/attachments_window.dart';
-import 'package:actionmail/features/home/presentation/windows/subscriptions_window.dart';
-import 'package:actionmail/features/home/presentation/windows/shopping_window.dart';
-// import 'package:actionmail/features/home/presentation/windows/actions_window.dart'; // unused
+import 'package:domail/constants/app_constants.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/features/home/presentation/widgets/email_tile.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/features/settings/presentation/accounts_settings_dialog.dart';
+import 'package:domail/features/home/presentation/windows/actions_summary_window.dart';
+import 'package:domail/features/home/presentation/windows/attachments_window.dart';
+import 'package:domail/features/home/presentation/windows/subscriptions_window.dart';
+import 'package:domail/features/home/presentation/windows/shopping_window.dart';
+// import 'package:domail/features/home/presentation/windows/actions_window.dart'; // unused
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:actionmail/features/home/presentation/widgets/account_selector_dialog.dart';
-import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
-import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/account_selector_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/email_viewer_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
-import 'package:actionmail/services/sync/firebase_sync_service.dart';
-import 'package:actionmail/services/actions/ml_action_extractor.dart';
-import 'package:actionmail/services/actions/action_extractor.dart';
-import 'package:actionmail/features/home/presentation/widgets/gmail_folder_tree.dart';
-import 'package:actionmail/features/home/presentation/widgets/local_folder_tree.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/actions/ml_action_extractor.dart';
+import 'package:domail/services/actions/action_extractor.dart';
+import 'package:domail/features/home/presentation/widgets/gmail_folder_tree.dart';
+import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
+import 'package:domail/services/local_folders/local_folder_service.dart';
 // duplicate import removed: gmail_sync_service.dart
-import 'package:actionmail/data/models/message_index.dart';
+import 'package:domail/data/models/message_index.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:actionmail/app/theme/actionmail_theme.dart';
+import 'package:domail/app/theme/actionmail_theme.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -992,9 +992,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildRightPanel(BuildContext context) {
     final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
     return Container(
-      color: _isLocalFolder ? highlightColor : Theme.of(context).colorScheme.surface,
+      color: Theme.of(context).colorScheme.surface,
       child: LocalFolderTree(
         selectedFolder: _isLocalFolder ? _selectedFolder : null,
+        selectedBackgroundColor: highlightColor,
         onFolderSelected: (folderPath) async {
           setState(() {
             _selectedFolder = folderPath;

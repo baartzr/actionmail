@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/constants/app_constants.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
+import 'package:domail/constants/app_constants.dart';
+import 'package:domail/services/local_folders/local_folder_service.dart';
 
 /// Folder navigation tree for desktop
 /// Shows Gmail folders and local backup folders

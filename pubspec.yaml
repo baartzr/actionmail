@@ -1,4 +1,4 @@
-name: actionmail
+name: domail
 description: Action-centric Gmail client with intelligent action management and filtering.
 publish_to: 'none'
 version: 1.0.0+2
@@ -64,6 +64,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  yaml: ^3.1.1
 
 flutter:
   uses-material-design: true

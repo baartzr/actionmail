@@ -7,15 +7,15 @@
 Your `android/app/build.gradle.kts` has the wrong application ID from a previous project.
 
 **Current:** `com.seagreen.inboxiq1`  
-**Should be:** `com.actionmail.actionmail` (matches your namespace)
+**Should be:** `com.seagreen.domail` (matches your namespace)
 
 **Fix:**
 ```kotlin
 // In android/app/build.gradle.kts, line 25:
-applicationId = "com.actionmail.actionmail"  // Change from inboxiq1
+applicationId = "com.seagreen.domail"  // Change from inboxiq1
 
 // Also update line 33:
-manifestPlaceholders["appAuthRedirectScheme"] = "com.actionmail.actionmail"
+manifestPlaceholders["appAuthRedirectScheme"] = "com.seagreen.domail"
 ```
 
 **Also update AndroidManifest.xml:**
@@ -189,7 +189,7 @@ jarsigner -verify -verbose -certs build/app/outputs/flutter-apk/app-release.apk
 
 ## 📋 Pre-Publish Checklist
 
-- [ ] Application ID updated to `com.actionmail.actionmail`
+- [ ] Application ID updated to `com.seagreen.domail`
 - [ ] Release signing configured
 - [ ] Keystore password saved securely
 - [ ] Privacy policy created and hosted

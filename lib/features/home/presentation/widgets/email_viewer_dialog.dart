@@ -2,13 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:actionmail/app/theme/actionmail_theme.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/features/home/presentation/widgets/compose_email_dialog.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/app/theme/actionmail_theme.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/services/local_folders/local_folder_service.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -30,6 +31,30 @@ class AttachmentInfo {
     required this.mimeType,
     required this.attachmentId,
     this.size,
+  });
+}
+
+class _InlineImageData {
+  final String mimeType;
+  final String base64Data;
+
+  const _InlineImageData({
+    required this.mimeType,
+    required this.base64Data,
+  });
+}
+
+class _InlineImagePart {
+  final String cid;
+  final String mimeType;
+  final String? attachmentId;
+  final String? inlineData;
+
+  const _InlineImagePart({
+    required this.cid,
+    required this.mimeType,
+    this.attachmentId,
+    this.inlineData,
   });
 }
 
@@ -74,6 +99,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   List<AttachmentInfo> _attachments = [];
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
+  final Set<String> _tempFilePaths = {};
   ComposeDraftState? _pendingComposeDraft;
   ComposeEmailMode? _pendingComposeMode;
 
@@ -89,6 +115,22 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         widget.onMarkRead!();
       });
     }
+  }
+
+  @override
+  void dispose() {
+    for (final path in _tempFilePaths) {
+      try {
+        final file = File(path);
+        if (file.existsSync()) {
+          file.deleteSync();
+        }
+      } catch (_) {
+        // ignore cleanup errors
+      }
+    }
+    _tempFilePaths.clear();
+    super.dispose();
   }
 
   Future<void> _loadAccountEmail() async {
@@ -131,6 +173,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             _isLoading = false;
             _conversationAttachments[_currentMessage.id] = attachments;
           });
+          final controller = _webViewController;
+          if (controller != null) {
+            unawaited(_loadHtmlIntoWebView(controller));
+          }
           debugPrint('[EmailViewer] Loaded from local folder - found ${attachments.length} attachments, setState called');
           return;
         } else {
@@ -221,9 +267,16 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
       // Prefer HTML over plain text
       final bodyContent = htmlBody ?? plainBody ?? _currentMessage.snippet ?? 'No content available';
-      final bodyHtml = htmlBody != null 
-          ? bodyContent 
+      var bodyHtml = htmlBody != null
+          ? bodyContent
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
+
+      if (htmlBody != null && payload != null) {
+        final inlineImages = await _loadInlineImages(payload, _currentMessage.id, accessToken);
+        if (inlineImages.isNotEmpty) {
+          bodyHtml = _embedInlineImages(bodyHtml, inlineImages);
+        }
+      }
 
       // Create a complete HTML document with proper styling
       final fullHtml = '''
@@ -301,6 +354,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         _isLoading = false;
         _conversationAttachments[_currentMessage.id] = attachments;
       });
+      final controller = _webViewController;
+      if (controller != null) {
+        unawaited(_loadHtmlIntoWebView(controller));
+      }
       
       // Debug: Print attachment count
       debugPrint('[EmailViewer] Attachment extraction complete for message ${_currentMessage.id}');
@@ -484,7 +541,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     void walk(dynamic part) {
       if (part is! Map<String, dynamic>) return;
 
-      final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+      final rawMimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+      final mimeType = rawMimeType.split(';').first.trim();
       var filename = part['filename'] as String?;
       final body = part['body'] as Map<String, dynamic>?;
       final attachmentId = body?['attachmentId'] as String?;
@@ -582,6 +640,212 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
     walk(payload ?? {});
     return attachments;
+  }
+
+  Future<Map<String, _InlineImageData>> _loadInlineImages(
+    Map<String, dynamic> payload,
+    String messageId,
+    String accessToken,
+  ) async {
+    final inlineParts = <_InlineImagePart>[];
+
+    void collect(dynamic part) {
+      if (part is! Map<String, dynamic>) {
+        return;
+      }
+
+      final rawMimeType = (part['mimeType'] as String? ?? '');
+      final mimeType = rawMimeType.toLowerCase().split(';').first.trim();
+      final body = part['body'] as Map<String, dynamic>?;
+      final attachmentId = body?['attachmentId'] as String?;
+      final inlineData = body?['data'] as String?;
+      final headers = (part['headers'] as List<dynamic>?) ?? const [];
+
+      String cid = '';
+      String disposition = '';
+
+      for (final header in headers) {
+        if (header is Map<String, dynamic>) {
+          final name = (header['name'] as String? ?? '').toLowerCase();
+          final value = header['value'] as String? ?? '';
+          if (name == 'content-id') {
+            cid = value;
+          } else if (name == 'content-disposition') {
+            disposition = value;
+          }
+        }
+      }
+
+      final hasInlinePayload = (attachmentId != null && attachmentId.isNotEmpty) || (inlineData != null && inlineData.isNotEmpty);
+      final isInlineImage = mimeType.startsWith('image/') && (cid.isNotEmpty || disposition.toLowerCase().contains('inline'));
+
+      if (isInlineImage && cid.isNotEmpty && hasInlinePayload) {
+      inlineParts.add(
+        _InlineImagePart(
+          cid: cid,
+          mimeType: mimeType.isNotEmpty ? mimeType : rawMimeType.toLowerCase(),
+          attachmentId: attachmentId,
+          inlineData: inlineData,
+        ),
+      );
+      }
+
+      final parts = part['parts'] as List<dynamic>?;
+      if (parts != null) {
+        for (final child in parts) {
+          collect(child);
+        }
+      }
+    }
+
+    collect(payload);
+
+    if (inlineParts.isEmpty) {
+      debugPrint('[EmailViewer] No inline image parts detected for message $messageId');
+      return {};
+    }
+
+    final inlineImages = <String, _InlineImageData>{};
+    debugPrint('[EmailViewer] Found ${inlineParts.length} potential inline image parts for message $messageId');
+
+    for (final part in inlineParts) {
+      final cid = _normalizeContentId(part.cid);
+      if (cid.isEmpty) {
+        continue;
+      }
+
+      List<int>? bytes;
+      if (part.inlineData != null && part.inlineData!.isNotEmpty) {
+        try {
+          final normalized = part.inlineData!.replaceAll('-', '+').replaceAll('_', '/');
+          bytes = base64Decode(normalized);
+        } catch (e) {
+          debugPrint('[EmailViewer] Failed to decode inline image data for cid=$cid: $e');
+        }
+      }
+
+      if ((bytes == null || bytes.isEmpty) && part.attachmentId != null && part.attachmentId!.isNotEmpty) {
+        bytes = await _downloadAttachmentBytes(messageId, part.attachmentId!, accessToken);
+      }
+
+      if (bytes == null || bytes.isEmpty) {
+        debugPrint('[EmailViewer] Inline image cid=$cid missing data');
+        continue;
+      }
+
+      final embedMimeType = part.mimeType.isNotEmpty ? part.mimeType : 'application/octet-stream';
+      inlineImages[cid] = _InlineImageData(
+        mimeType: embedMimeType,
+        base64Data: base64Encode(bytes),
+      );
+      debugPrint('[EmailViewer] Inline image cid=$cid prepared (${part.mimeType}, bytes=${bytes.length})');
+    }
+
+    return inlineImages;
+  }
+
+  String _normalizeContentId(String cid) {
+    var normalized = cid.trim();
+    if (normalized.startsWith('<') && normalized.endsWith('>')) {
+      normalized = normalized.substring(1, normalized.length - 1);
+    }
+    return normalized;
+  }
+
+  String _embedInlineImages(String html, Map<String, _InlineImageData> inlineImages) {
+    var processed = html;
+    inlineImages.forEach((cid, image) {
+      final pattern = RegExp('cid:${RegExp.escape(cid)}', caseSensitive: false);
+      processed = processed.replaceAll(
+        pattern,
+        'data:${image.mimeType};base64,${image.base64Data}',
+      );
+    });
+    return processed;
+  }
+
+  Future<void> _loadHtmlIntoWebView(InAppWebViewController controller) async {
+    final html = _htmlContent;
+    if (html == null) {
+      return;
+    }
+
+    if (!kIsWeb && Platform.isWindows) {
+      final htmlBytes = utf8.encode(html);
+      const navigateToStringLimit = 1900000; // slightly below 2 MB WebView2 limit
+      if (htmlBytes.length > navigateToStringLimit) {
+        final filePath = await _createTempHtmlFile(htmlBytes);
+        if (filePath != null) {
+          await controller.loadUrl(
+            urlRequest: URLRequest(url: WebUri.uri(Uri.file(filePath))),
+          );
+          return;
+        }
+      }
+    }
+
+    await controller.loadData(
+      data: html,
+      mimeType: 'text/html',
+      encoding: 'utf8',
+    );
+  }
+
+  Future<String?> _createTempHtmlFile(List<int> htmlBytes) async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final htmlDir = Directory(path.join(tempDir.path, 'domail_email_html'));
+      if (!await htmlDir.exists()) {
+        await htmlDir.create(recursive: true);
+      }
+
+      final fileName = 'email_${_currentMessage.id}_${DateTime.now().millisecondsSinceEpoch}.html';
+      final filePath = path.join(htmlDir.path, fileName);
+      final file = File(filePath);
+      await file.writeAsBytes(htmlBytes, flush: true);
+      _tempFilePaths.add(filePath);
+      debugPrint('[EmailViewer] Large HTML written to temp file for Windows WebView: $filePath (bytes=${htmlBytes.length})');
+      return filePath;
+    } catch (e, stackTrace) {
+      debugPrint('[EmailViewer] Failed to write temp HTML file: $e');
+      debugPrint(stackTrace.toString());
+      return null;
+    }
+  }
+
+
+  Future<List<int>?> _downloadAttachmentBytes(
+    String messageId,
+    String attachmentId,
+    String accessToken,
+  ) async {
+    try {
+      final resp = await http.get(
+        Uri.parse(
+          'https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/attachments/$attachmentId',
+        ),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+
+      if (resp.statusCode != 200) {
+        debugPrint(
+          '[EmailViewer] _downloadAttachmentBytes failed for $messageId/$attachmentId (status ${resp.statusCode})',
+        );
+        return null;
+      }
+
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final data = map['data'] as String?;
+      if (data == null) {
+        return null;
+      }
+
+      final normalized = data.replaceAll('-', '+').replaceAll('_', '/');
+      return base64Decode(normalized);
+    } catch (e) {
+      debugPrint('[EmailViewer] _downloadAttachmentBytes error: $e');
+      return null;
+    }
   }
 
   Future<void> _loadAttachmentsForConversationMessage(MessageIndex message) async {
@@ -856,6 +1120,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
     setState(() {
       _isConversationMode = true;
+      _threadMessages = [_currentMessage];
       _isThreadLoading = true;
       _threadError = null;
       _showNavigationExtras = false;
@@ -1171,11 +1436,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                       _currentUrl = null;
                     });
                   }
-                  await _webViewController!.loadData(
-                    data: _htmlContent!,
-                    mimeType: 'text/html',
-                    encoding: 'utf8',
-                  );
+                  await _loadHtmlIntoWebView(_webViewController!);
                   await _updateNavigationState();
                 }
               },
@@ -1308,7 +1569,11 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                 ),
                               Expanded(
                                 child: InAppWebView(
-                                  initialData: InAppWebViewInitialData(data: _htmlContent!, mimeType: 'text/html', encoding: 'utf8'),
+                                  initialData: InAppWebViewInitialData(
+                                    data: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>',
+                                    mimeType: 'text/html',
+                                    encoding: 'utf8',
+                                  ),
                                   // ignore: deprecated_member_use
                                   initialOptions: InAppWebViewGroupOptions(
                                     // ignore: deprecated_member_use
@@ -1329,10 +1594,11 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                   ),
                                   onWebViewCreated: (controller) {
                                     _webViewController = controller;
-                                          _isViewingOriginal = true;
-                                          _currentUrl = null;
-                                          _updateNavigationState();
-                                        },
+                                    unawaited(_loadHtmlIntoWebView(controller));
+                                    _isViewingOriginal = true;
+                                    _currentUrl = null;
+                                    _updateNavigationState();
+                                  },
                                         onLoadStart: (controller, url) {
                                           final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
                                           if (mounted) {
@@ -1401,4 +1667,5 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     );
   }
 }
+
 

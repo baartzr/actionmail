@@ -18,7 +18,7 @@ class AppDatabase {
 
   Future<Database> _open() async {
     final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'actionmail.db');
+    final path = p.join(dbPath, 'domail.db');
     return openDatabase(
       path,
       version: 14,
@@ -264,7 +264,7 @@ class AppDatabase {
       _db = null;
     }
     final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'actionmail.db');
+    final path = p.join(dbPath, 'domail.db');
     final dbFile = File(path);
     if (await dbFile.exists()) {
       await dbFile.delete();

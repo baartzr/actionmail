@@ -1,6 +1,6 @@
  android/app/build.gradle.kts                       |   4 [32m+[m[31m-[m
  android/app/src/main/AndroidManifest.xml           |  14 [32m+[m[31m-[m
- .../com/actionmail/actionmail/MainActivity.kt      |  29 [32m+[m[31m-[m
+ .../com/seagreen/domail/MainActivity.kt      |  29 [32m+[m[31m-[m
  android/app/src/main/res/values/strings.xml        |   4 [32m+[m
  installer/README.md                                |  78 [32m+++[m
  installer/inboxiq_setup.iss                        |  97 [32m+++[m

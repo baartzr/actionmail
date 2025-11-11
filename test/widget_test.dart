@@ -8,8 +8,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:actionmail/app/actionmail_app.dart';
-import 'package:actionmail/constants/app_constants.dart';
+import 'package:domail/app/actionmail_app.dart';
+import 'package:domail/constants/app_constants.dart';
 
 void main() {
   testWidgets('ActionMail app smoke test', (WidgetTester tester) async {

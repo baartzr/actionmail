@@ -3,7 +3,7 @@
 #   powershell -ExecutionPolicy Bypass -File .\zip-project.ps1 -OutFile inboxiq.zip
 
 param(
-  [string]$OutFile = "domail.zip"
+  [string]$OutFile = "inboxiq.zip"
 )
 
 $ErrorActionPreference = 'Stop'

@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 import 'dart:io';
+import 'package:domail/constants/app_brand.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -54,7 +55,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
     print('[splash] _checkAppLinkAndCompleteSignIn() called');
     
     try {
-      final methodChannel = MethodChannel('com.actionmail.actionmail/bringToFront');
+      final methodChannel = MethodChannel('com.seagreen.domail/bringToFront');
       // ignore: avoid_print
       print('[splash] calling getInitialAppLink...');
       final appLink = await methodChannel.invokeMethod<String>('getInitialAppLink');
@@ -181,7 +182,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
     await prefs.setString('lastActiveAccountId', accountId);
   }
 
-  static const MethodChannel _channel = MethodChannel('com.actionmail.actionmail/bringToFront');
+  static const MethodChannel _channel = MethodChannel('com.seagreen.domail/bringToFront');
 
   Future<void> _bringAppToFront() async {
     // Works on desktop platforms using window_manager
@@ -260,7 +261,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
     final rootNavigator = Navigator.of(context, rootNavigator: true);
     final result = await AppWindowDialog.show(
       context: context,
-      title: _forceAdd ? 'Add Account' : 'Welcome to InboxIQ',
+      title: _forceAdd ? 'Add Account' : 'Welcome to ${AppBrand.productName}',
       size: AppWindowSize.large,
       barrierDismissible: _forceAdd, // allow close only when explicitly adding
       bodyPadding: const EdgeInsets.all(32.0),
@@ -302,7 +303,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                 ),
                 const SizedBox(height: 32),
                 Text(
-                  'InboxIQ',
+                  AppBrand.productName,
                   style: theme.textTheme.headlineMedium?.copyWith(
                     fontWeight: FontWeight.bold,
                     color: theme.colorScheme.onSurface,
@@ -470,7 +471,7 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
               ),
               const SizedBox(height: 24),
               Text(
-                'InboxIQ',
+                AppBrand.productName,
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                   color: theme.colorScheme.onSurface,

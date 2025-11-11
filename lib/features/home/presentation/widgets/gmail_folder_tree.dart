@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/constants/app_constants.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
+import 'package:domail/constants/app_constants.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 
 /// Gmail folder navigation tree for desktop left panel
 class GmailFolderTree extends ConsumerStatefulWidget {

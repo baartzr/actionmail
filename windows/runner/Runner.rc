@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.actionmail" "\0"
-            VALUE "FileDescription", "InboxIQ" "\0"
+            VALUE "CompanyName", "com.seagreen.domail" "\0"
+            VALUE "FileDescription", "doMail" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "InboxIQ" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2025 com.actionmail. All rights reserved." "\0"
-            VALUE "OriginalFilename", "inboxiq.exe" "\0"
-            VALUE "ProductName", "InboxIQ" "\0"
+            VALUE "InternalName", "doMail" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2025 com.seagreen.domail. All rights reserved." "\0"
+            VALUE "OriginalFilename", "domail.exe" "\0"
+            VALUE "ProductName", "doMail" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

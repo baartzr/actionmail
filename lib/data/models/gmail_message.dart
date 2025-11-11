@@ -1,5 +1,5 @@
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/constants/app_constants.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/constants/app_constants.dart';
 
 /// Gmail API Message structure
 /// This matches the actual Gmail API response format

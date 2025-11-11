@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:actionmail/data/models/message_index.dart';
+import 'package:domail/data/models/message_index.dart';
 import 'package:intl/intl.dart';
 
 enum ComposeEmailMode {

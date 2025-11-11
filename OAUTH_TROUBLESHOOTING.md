@@ -1,6 +1,6 @@
 # OAuth Sign-In Troubleshooting
 
-## Error: "Access blocked: InboxIQ's request is invalid"
+## Error: "Access blocked: doMail's request is invalid"
 
 This error indicates a mismatch between your app's OAuth configuration and Google Cloud Console settings.
 
@@ -9,7 +9,7 @@ This error indicates a mismatch between your app's OAuth configuration and Googl
 ### Step 1: Check OAuth Client ID Configuration
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Select project: **InboxIQ Gmail (inboxiq--api)**
+2. Select project: **doMail Gmail (domail--api)**
 3. Navigate to **APIs & Services → Credentials**
 4. Find your OAuth 2.0 Client ID: `861261774181-sflh559mhcdjjens6fucg5313keg7ajd.apps.googleusercontent.com`
 5. Click to edit it
@@ -39,7 +39,7 @@ com.seagreen.inboxiq1:/oauth2redirect
 
 1. Go to **APIs & Services → OAuth consent screen**
 2. Verify:
-   - **App name**: Should match what you see in the error (currently shows "InboxIQ")
+   - **App name**: Should match what you see in the error (currently shows "doMail")
    - **User support email**: Must be set
    - **Developer contact information**: Must be set
    - **App domain** (if required)
@@ -96,7 +96,7 @@ Based on your code:
 2. Add SHA-1 to OAuth client → Android → SHA-1 certificate fingerprints
 
 ### iOS
-- Verify bundle ID matches: `com.actionmail.actionmail` or `com.seagreen.inboxiq1`
+- Verify bundle ID matches: `com.seagreen.domail` or `com.seagreen.inboxiq1`
 
 ## Common Issues
 

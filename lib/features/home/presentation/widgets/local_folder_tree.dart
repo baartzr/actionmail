@@ -1,19 +1,21 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
-import 'package:actionmail/features/home/presentation/widgets/create_folder_dialog.dart';
-import 'package:actionmail/data/models/message_index.dart';
+import 'package:domail/services/local_folders/local_folder_service.dart';
+import 'package:domail/features/home/presentation/widgets/create_folder_dialog.dart';
+import 'package:domail/data/models/message_index.dart';
 
 /// Local folder navigation tree with nested subfolder support
 class LocalFolderTree extends StatefulWidget {
   final String? selectedFolder;
   final ValueChanged<String> onFolderSelected;
   final void Function(String folderPath, MessageIndex message)? onEmailDropped;
+  final Color? selectedBackgroundColor;
 
   const LocalFolderTree({
     super.key,
     required this.selectedFolder,
     required this.onFolderSelected,
     this.onEmailDropped,
+    this.selectedBackgroundColor,
   });
 
   @override
@@ -334,8 +336,11 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
   }) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    // Use the same dark teal as the Gmail selected folder
-    const selectedFolderColor = Color(0xFF00695C); // darkTeal from theme
+    final selectedBackground = widget.selectedBackgroundColor ??
+        cs.secondaryContainer.withValues(alpha: 0.45);
+    final selectedBorder = widget.selectedBackgroundColor != null
+        ? widget.selectedBackgroundColor!.withValues(alpha: 1)
+        : cs.secondary;
 
     Widget folderContent = Material(
       color: Colors.transparent,
@@ -357,13 +362,11 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
           ),
           constraints: const BoxConstraints(minHeight: 20),
           decoration: BoxDecoration(
-            color: isSelected
-                ? selectedFolderColor.withValues(alpha: 0.5)
-                : Colors.transparent,
+            color: isSelected ? selectedBackground : Colors.transparent,
             border: isSelected
                 ? Border(
                     left: BorderSide(
-                      color: selectedFolderColor,
+                      color: selectedBorder,
                       width: 3,
                     ),
                   )
@@ -390,7 +393,7 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
               Icon(
                 hasChildren ? Icons.folder : Icons.folder_outlined,
                 size: 20,
-                color: isSelected ? selectedFolderColor : cs.onSurfaceVariant,
+                color: isSelected ? cs.onSurface : cs.onSurfaceVariant,
               ),
               const SizedBox(width: 8),
               Expanded(
@@ -399,7 +402,7 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
                   child: Text(
                     folderName, // This is already extracted as just the folder name, not the path
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: isSelected ? selectedFolderColor : cs.onSurface,
+                      color: cs.onSurface,
                       fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                     ),
                     overflow: TextOverflow.ellipsis,

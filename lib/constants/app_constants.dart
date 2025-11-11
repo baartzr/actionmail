@@ -1,9 +1,10 @@
 import 'dart:io';
+import 'package:domail/constants/app_brand.dart';
 
 /// Application-wide constants
 class AppConstants {
   // App name
-  static const String appName = 'InboxIQ';
+  static const String appName = AppBrand.productName;
 
   // Folder constants
   static const String folderInbox = 'INBOX';

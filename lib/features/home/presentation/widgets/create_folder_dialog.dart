@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/shared/widgets/app_window_dialog.dart';
 
 class CreateFolderDialog extends StatefulWidget {
   final String? parentPath;

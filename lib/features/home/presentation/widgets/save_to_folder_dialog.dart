@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:actionmail/services/local_folders/local_folder_service.dart';
-import 'package:actionmail/features/home/presentation/widgets/create_folder_dialog.dart';
+import 'package:domail/services/local_folders/local_folder_service.dart';
+import 'package:domail/features/home/presentation/widgets/create_folder_dialog.dart';
 
 /// Dialog for selecting a local folder to save an email
 class SaveToFolderDialog extends StatefulWidget {

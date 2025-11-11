@@ -47,7 +47,7 @@ Look for feedback collection messages:
 You can check the feedback table directly, or export the data:
 
 **Using Flutter DevTools or Database Browser:**
-- Open your SQLite database: `actionmail.db`
+- Open your SQLite database: `domail.db`
 - Query: `SELECT * FROM action_feedback ORDER BY timestamp DESC LIMIT 10;`
 
 **Future**: Export functionality will be added to export feedback for training.

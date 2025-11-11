@@ -1,5 +1,5 @@
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/constants/app_constants.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/constants/app_constants.dart';
 
 /// Sample Gmail email data for testing
 /// Contains only Gmail label IDs - flags are derived from labels

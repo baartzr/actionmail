@@ -1,4 +1,4 @@
-import 'package:actionmail/data/models/gmail_message.dart';
+import 'package:domail/data/models/gmail_message.dart';
 
 /// Sample Gmail API email data for testing
 /// Matches actual Gmail API response format with labelIds only

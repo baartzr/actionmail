@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'package:actionmail/data/db/app_database.dart';
-import 'package:actionmail/data/models/message_index.dart';
+import 'package:domail/data/db/app_database.dart';
+import 'package:domail/data/models/message_index.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 

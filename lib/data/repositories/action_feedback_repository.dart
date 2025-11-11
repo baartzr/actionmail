@@ -1,6 +1,6 @@
-import 'package:actionmail/data/db/app_database.dart';
-import 'package:actionmail/services/actions/ml_action_extractor.dart';
-import 'package:actionmail/services/actions/action_extractor.dart';
+import 'package:domail/data/db/app_database.dart';
+import 'package:domail/services/actions/ml_action_extractor.dart';
+import 'package:domail/services/actions/action_extractor.dart';
 import 'package:sqflite/sqflite.dart';
 
 /// Repository for storing and retrieving action extraction feedback

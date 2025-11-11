@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:actionmail/shared/widgets/app_window_dialog.dart';
-import 'package:actionmail/shared/widgets/personal_business_filter.dart';
-import 'package:actionmail/features/home/domain/providers/email_list_provider.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/services/gmail/gmail_sync_service.dart';
-import 'package:actionmail/features/home/presentation/widgets/email_viewer_dialog.dart';
-// import 'package:actionmail/services/auth/google_auth_service.dart'; // unused
+import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/shared/widgets/personal_business_filter.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
+import 'package:domail/features/home/presentation/widgets/email_viewer_dialog.dart';
+// import 'package:domail/services/auth/google_auth_service.dart'; // unused
 import 'package:intl/intl.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;

@@ -1,12 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:actionmail/constants/app_constants.dart';
-import 'package:actionmail/data/models/gmail_message.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/services/actions/action_extractor.dart';
-import 'package:actionmail/services/auth/google_auth_service.dart';
+import 'package:domail/constants/app_constants.dart';
+import 'package:domail/data/models/gmail_message.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/services/actions/action_extractor.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 

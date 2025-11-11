@@ -6,9 +6,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
-import 'package:actionmail/data/repositories/message_repository.dart';
-import 'package:actionmail/data/models/message_index.dart';
-import 'package:actionmail/services/sync/firebase_init.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/data/models/message_index.dart';
+import 'package:domail/services/sync/firebase_init.dart';
 
 // Helper to log in both debug and release modes
 void _logFirebaseSync(String message) {
