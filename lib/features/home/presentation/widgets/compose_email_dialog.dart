@@ -6,7 +6,6 @@ import 'package:actionmail/services/gmail/gmail_sync_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:actionmail/data/models/message_index.dart';
 import 'package:intl/intl.dart';
-import 'package:intl/intl.dart';
 
 enum ComposeEmailMode {
   newEmail,

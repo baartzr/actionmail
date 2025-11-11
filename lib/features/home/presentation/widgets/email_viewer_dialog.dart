@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:http/http.dart' as http;
-import 'package:intl/intl.dart';
 import 'package:open_file/open_file.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
@@ -61,7 +60,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   late MessageIndex _currentMessage;
   String? _accountEmail;
   String? _htmlContent;
-  String? _plainTextBody;
   bool _isLoading = true;
   String? _error;
   bool _isFullscreen = false;
@@ -76,11 +74,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   List<AttachmentInfo> _attachments = [];
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
-  static final DateFormat _replyDateFormat = DateFormat('EEE, MMM d, yyyy h:mm a');
   ComposeDraftState? _pendingComposeDraft;
   ComposeEmailMode? _pendingComposeMode;
-
-  bool get _isLocalEmail => widget.localFolderName != null;
 
   @override
   void initState() {
@@ -109,10 +104,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       if (mounted) {
         setState(() {
           _isLoading = true;
-          _plainTextBody = null;
         });
       } else {
-        _plainTextBody = null;
       }
 
       // If viewing from local folder, load from saved file
@@ -129,13 +122,11 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           debugPrint('[EmailViewer] loadAttachments returned ${localAttachments.length} attachments');
           
           final attachments = _mapLocalAttachments(localAttachments);
-          final plainText = _htmlToPlainText(body);
           
           debugPrint('[EmailViewer] Created ${attachments.length} AttachmentInfo objects');
           
           setState(() {
             _htmlContent = body;
-            _plainTextBody = plainText;
             _attachments = attachments;
             _isLoading = false;
             _conversationAttachments[_currentMessage.id] = attachments;
@@ -233,7 +224,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final bodyHtml = htmlBody != null 
           ? bodyContent 
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
-      final plainTextContent = plainBody ?? _htmlToPlainText(bodyContent);
 
       // Create a complete HTML document with proper styling
       final fullHtml = '''
@@ -307,7 +297,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       if (!mounted) return;
       setState(() {
         _htmlContent = fullHtml;
-        _plainTextBody = plainTextContent;
         _attachments = attachments;
         _isLoading = false;
         _conversationAttachments[_currentMessage.id] = attachments;
@@ -342,43 +331,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         .replaceAll('>', '&gt;')
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#039;');
-  }
-
-  String _htmlToPlainText(String text) {
-    var result = text.replaceAll('\r\n', '\n');
-    result = result.replaceAll(
-      RegExp(r'<(script|style|head|meta|link)[^>]*?>.*?<\s*/\s*\1\s*>',
-          caseSensitive: false, dotAll: true, multiLine: true),
-      '\n',
-    );
-    result = result.replaceAll(
-      RegExp(r'<(script|style|head|meta|link)[^>]*?>',
-          caseSensitive: false, dotAll: true, multiLine: true),
-      '\n',
-    );
-    result = result.replaceAll(
-      RegExp(r'<!--.*?-->', caseSensitive: false, dotAll: true, multiLine: true),
-      '\n',
-    );
-    result = result.replaceAll(
-      RegExp(r'<!\[CDATA\[.*?\]\]>', caseSensitive: false, dotAll: true, multiLine: true),
-      '\n',
-    );
-    result = result.replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n');
-    result = result.replaceAll(RegExp(r'</p>', caseSensitive: false), '\n\n');
-    result = result.replaceAll(RegExp(r'<div[^>]*>', caseSensitive: false), '\n');
-    result = result.replaceAll(RegExp(r'</div>', caseSensitive: false), '\n');
-    result = result.replaceAll(RegExp(r'<[^>]+>'), '');
-    result = result.replaceAll('&nbsp;', ' ');
-    result = result.replaceAll('&amp;', '&');
-    result = result.replaceAll('&lt;', '<');
-    result = result.replaceAll('&gt;', '>');
-    result = result.replaceAll('&quot;', '"');
-    result = result.replaceAll('&#39;', "'");
-    result = result.replaceAll('&#x27;', "'");
-    result = result.replaceAll('&apos;', "'");
-    result = result.replaceAll(RegExp(r'\n{3,}'), '\n\n');
-    return result.trimRight();
   }
 
   String _formatDate(DateTime date) {
@@ -461,22 +413,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final mode = _pendingComposeMode;
     if (draft == null || mode == null) return;
     await _openCompose(mode: mode, draft: draft);
-  }
-
-  String _formatReplyTimestamp(DateTime date) {
-    return _replyDateFormat.format(date.toLocal());
-  }
-
-  String _originalPlainBody() {
-    final body = _plainTextBody;
-    if (body != null && body.trim().isNotEmpty) {
-      return body.replaceAll('\r\n', '\n').trimRight();
-    }
-    final snippet = _currentMessage.snippet;
-    if (snippet != null && snippet.trim().isNotEmpty) {
-      return snippet.replaceAll('\r\n', '\n').trimRight();
-    }
-    return '(No content available)';
   }
 
   Widget _buildAttachmentChip(AttachmentInfo attachment) {

@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:actionmail/constants/app_constants.dart';
 import 'package:actionmail/data/models/gmail_message.dart';
 import 'package:actionmail/data/models/message_index.dart';
@@ -1330,7 +1329,6 @@ class GmailSyncService {
       if (forwardedAttachments != null && forwardedAttachments.isNotEmpty) {
         expandedAttachments.addAll(forwardedAttachments);
       }
-      final hasAttachments = expandedAttachments.isNotEmpty;
       final hasHtml = htmlBody != null && htmlBody.trim().isNotEmpty;
 
       rawMessage.writeln('From: $senderEmail');
