@@ -562,7 +562,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final inlineImages = <String, _InlineImageData>{};
     final consumedAttachmentIds = <String>{};
 
-    final cidsInHtml = RegExp("cid:([^\"'\\s>]+)", caseSensitive: false)
+    const cidPattern = r'cid:([^"''\s>]+)';
+    final cidRegex = RegExp(cidPattern, caseSensitive: false);
+    final cidsInHtml = cidRegex
         .allMatches(html)
         .map((match) => _normalizeContentId(match.group(1) ?? ''))
         .where((cid) => cid.isNotEmpty)
@@ -888,8 +890,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
     if (!kIsWeb && Platform.isWindows) {
       final htmlBytes = utf8.encode(html);
-      const navigateToStringLimit = 1900000; // slightly below 2 MB WebView2 limit
-      if (htmlBytes.length > navigateToStringLimit) {
+      const navigateToStringLimit = 1500000; // keep well under WebView2 NavigateToString limit
+      final containsDataUri = html.contains('data:');
+      if (htmlBytes.length > navigateToStringLimit || containsDataUri) {
         final filePath = await _createTempHtmlFile(htmlBytes);
         if (filePath != null) {
           await controller.loadUrl(
