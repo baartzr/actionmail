@@ -540,6 +540,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
           ? null
           : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
       final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+      final bool? markedComplete = result.actionComplete;
  
       // Capture original detected action for feedback
       final originalAction = message.hasAction
@@ -551,7 +552,9 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
           : null;
        
       // Preserve actionComplete when editing (don't reset it)
-      final currentComplete = hasActionNow ? message.actionComplete : false;
+      final currentComplete = hasActionNow
+          ? (markedComplete ?? message.actionComplete)
+          : false;
  
       // Persist to database
       await MessageRepository().updateAction(message.id, actionDate, actionText, null, currentComplete);

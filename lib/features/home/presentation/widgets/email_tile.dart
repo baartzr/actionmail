@@ -936,12 +936,15 @@ class _EmailTileState extends State<EmailTile> {
         ? null
         : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
     final hasActionNow = !removed && (newDate != null || (newText != null && newText.isNotEmpty));
-
+    final bool? markedComplete = result.actionComplete;
+ 
     setState(() {
       _actionDate = newDate;
       _actionText = newText;
       if (!hasActionNow) {
         _actionComplete = false;
+      } else if (markedComplete != null) {
+        _actionComplete = markedComplete;
       }
       _showActionLine = true;
     });

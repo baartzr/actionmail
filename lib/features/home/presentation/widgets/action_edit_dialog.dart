@@ -5,8 +5,9 @@ class ActionEditResult {
   final DateTime? actionDate;
   final String? actionText;
   final bool removed;
+  final bool? actionComplete;
 
-  const ActionEditResult({this.actionDate, this.actionText, this.removed = false});
+  const ActionEditResult({this.actionDate, this.actionText, this.removed = false, this.actionComplete});
 
   factory ActionEditResult.removed() => const ActionEditResult(removed: true);
 
@@ -129,6 +130,18 @@ class _ActionEditDialogState extends State<ActionEditDialog> {
       ActionEditResult(
         actionDate: _selectedDate,
         actionText: trimmed.isEmpty ? null : trimmed,
+        actionComplete: null,
+      ),
+    );
+  }
+
+  void _handleComplete() {
+    final trimmed = _textController.text.trim();
+    Navigator.of(context).pop(
+      ActionEditResult(
+        actionDate: _selectedDate,
+        actionText: trimmed.isEmpty ? null : trimmed,
+        actionComplete: true,
       ),
     );
   }
@@ -139,7 +152,22 @@ class _ActionEditDialogState extends State<ActionEditDialog> {
     final dateLabel = _selectedDate != null ? DateFormat('dd-MMM, y').format(_selectedDate!) : 'Pick date';
 
     return AlertDialog(
-      title: Text(widget.title),
+      titlePadding: const EdgeInsets.fromLTRB(24, 24, 8, 0),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              widget.title,
+              style: theme.textTheme.titleLarge,
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Close',
+            onPressed: () => Navigator.of(context).pop(),
+          ),
+        ],
+      ),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
         child: Column(
@@ -173,9 +201,10 @@ class _ActionEditDialogState extends State<ActionEditDialog> {
               style: TextStyle(color: theme.colorScheme.error),
             ),
           ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(null),
-          child: const Text('Cancel'),
+        FilledButton.icon(
+          onPressed: _handleComplete,
+          icon: const Icon(Icons.check_circle_outline),
+          label: const Text('Complete'),
         ),
         FilledButton(
           onPressed: _handleSave,
