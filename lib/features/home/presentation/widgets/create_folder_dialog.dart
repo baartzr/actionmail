@@ -31,6 +31,7 @@ class _CreateFolderDialogState extends State<CreateFolderDialog> {
           ? 'Create Subfolder in ${widget.parentPath}'
           : 'Create New Folder',
       size: AppWindowSize.small,
+      resizable: false,
       child: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(

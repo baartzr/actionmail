@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
 import 'package:domail/shared/widgets/app_window_dialog.dart';
 import 'package:domail/shared/widgets/personal_business_filter.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
@@ -309,6 +310,16 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
         debugPrint('[Attachments] Saved file to: ${file.path}');
         debugPrint('[Attachments] File exists: ${await file.exists()}');
         debugPrint('[Attachments] File size: ${await file.length()}');
+
+        final extension = path.extension(file.path).toLowerCase();
+        if (!mounted) return;
+        if (extension == '.pdf') {
+          await PdfViewerWindow.open(
+            context,
+            filePath: file.path,
+          );
+          return;
+        }
 
         // Open the file using platform-specific method
         if (Platform.isAndroid || Platform.isIOS) {

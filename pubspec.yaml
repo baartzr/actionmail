@@ -56,6 +56,10 @@ dependencies:
   # Open files on mobile platforms
   open_file: ^3.3.2
   
+  # PDF editor integration
+  pdf_editor_core:
+    path: ../pdf_editor/packages/pdf_editor_core
+
   # Firebase for cross-device sync
   firebase_core: ^3.6.0
   cloud_firestore: ^5.4.4

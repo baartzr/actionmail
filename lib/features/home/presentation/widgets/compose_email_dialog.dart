@@ -6,6 +6,10 @@ import 'package:domail/services/gmail/gmail_sync_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:intl/intl.dart';
+import 'package:open_file/open_file.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
 
 enum ComposeEmailMode {
   newEmail,
@@ -95,6 +99,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   final _bodyController = TextEditingController();
   bool _isSending = false;
   final List<PlatformFile> _attachments = [];
+  final List<String> _tempAttachmentPaths = [];
   bool _isOriginalLoading = false;
   String? _originalPreviewHtml;
   String? _originalPlainText;
@@ -129,6 +134,17 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     _toController.dispose();
     _subjectController.dispose();
     _bodyController.dispose();
+    for (final tempPath in _tempAttachmentPaths) {
+      try {
+        final file = File(tempPath);
+        if (file.existsSync()) {
+          file.deleteSync();
+        }
+      } catch (_) {
+        // ignore cleanup errors
+      }
+    }
+    _tempAttachmentPaths.clear();
     super.dispose();
   }
 
@@ -146,11 +162,14 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     try {
       final syncService = GmailSyncService();
       
-      // Convert PlatformFile to File for attachments
-      final attachmentFiles = _attachments
-          .where((pf) => pf.path != null)
-          .map((pf) => File(pf.path!))
-          .toList();
+      // Materialize attachments (handles both file paths and in-memory bytes)
+      final attachmentFiles = <File>[];
+      for (final platformFile in _attachments) {
+        final file = await _ensureAttachmentFile(platformFile);
+        if (file != null) {
+          attachmentFiles.add(file);
+        }
+      }
       
       String? threadId;
       String? inReplyTo;
@@ -266,6 +285,74 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     setState(() {
       _attachments.removeAt(index);
     });
+  }
+
+  Future<void> _openAttachmentPreview(PlatformFile attachment) async {
+    try {
+      final file = await _ensureAttachmentFile(attachment);
+      if (file == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cannot locate attachment "${attachment.name}".')),
+        );
+        return;
+      }
+
+      final extension = path.extension(file.path).toLowerCase();
+      if (extension == '.pdf') {
+        if (!mounted) return;
+        await PdfViewerWindow.open(
+          context,
+          filePath: file.path,
+        );
+      } else {
+        final result = await OpenFile.open(file.path);
+        if (!mounted) return;
+        if (result.type != ResultType.done) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Cannot open file: ${result.message}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error opening attachment: $e')),
+      );
+    }
+  }
+
+  Future<File?> _ensureAttachmentFile(PlatformFile attachment) async {
+    if (attachment.path != null && attachment.path!.isNotEmpty) {
+      return File(attachment.path!);
+    }
+    final bytes = attachment.bytes;
+    if (bytes == null || bytes.isEmpty) {
+      return null;
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    final attachmentsDir = Directory(path.join(tempDir.path, 'compose_attachments'));
+    if (!await attachmentsDir.exists()) {
+      await attachmentsDir.create(recursive: true);
+    }
+    final sanitizedName = _sanitizeFilename(
+      attachment.name.isNotEmpty ? attachment.name : 'attachment',
+    );
+    final tempFile = File(
+      path.join(
+        attachmentsDir.path,
+        '${DateTime.now().millisecondsSinceEpoch}_$sanitizedName',
+      ),
+    );
+    await tempFile.writeAsBytes(bytes, flush: true);
+    _tempAttachmentPaths.add(tempFile.path);
+    return tempFile;
+  }
+
+  String _sanitizeFilename(String name) {
+    final sanitized = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    return sanitized.isEmpty ? 'attachment' : sanitized;
   }
 
   bool get _isReplyLike =>
@@ -514,38 +601,32 @@ $body
         runSpacing: 8,
         children: List.generate(_attachments.length, (index) {
           final attachment = _attachments[index];
-          return Chip(
-            label: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.attach_file,
-                  size: 16,
+          return InputChip(
+            avatar: Icon(
+              Icons.attach_file,
+              size: 16,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            label: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 180),
+              child: Text(
+                attachment.name,
+                style: TextStyle(
+                  fontSize: 12,
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    attachment.name,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: () => _removeAttachment(index),
-                  child: Icon(
-                    Icons.close,
-                    size: 16,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            onPressed: () => _openAttachmentPreview(attachment),
+            onDeleted: () => _removeAttachment(index),
+            deleteIcon: Icon(
+              Icons.close,
+              size: 16,
+              color: theme.colorScheme.onSurfaceVariant,
             ),
             backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           );
         }),
       ),

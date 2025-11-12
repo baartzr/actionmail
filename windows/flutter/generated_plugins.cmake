@@ -7,7 +7,9 @@ list(APPEND FLUTTER_PLUGIN_LIST
   desktop_webview_window
   firebase_core
   flutter_inappwebview_windows
+  pdfx
   screen_retriever
+  syncfusion_pdfviewer_windows
   url_launcher_windows
   window_manager
   window_to_front

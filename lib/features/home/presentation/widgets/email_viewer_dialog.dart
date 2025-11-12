@@ -6,10 +6,13 @@ import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 import 'package:domail/services/local_folders/local_folder_service.dart';
 import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -97,7 +100,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   String? _htmlContent;
   bool _isLoading = true;
   String? _error;
-  bool _isFullscreen = false;
   bool _canGoBack = false;
   bool _showNavigationExtras = false;
   bool _isViewingOriginal = true;
@@ -110,6 +112,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
   final Set<String> _tempFilePaths = {};
+  final Map<String, String> _attachmentFileCache = {};
   ComposeDraftState? _pendingComposeDraft;
   ComposeEmailMode? _pendingComposeMode;
 
@@ -500,39 +503,51 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     
     return Padding(
       padding: const EdgeInsets.only(right: 8),
-      child: Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: () => _downloadAttachment(attachment),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: theme.colorScheme.outline.withValues(alpha: 0.2),
-                width: 1,
-              ),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-          Icons.insert_drive_file,
-          size: 18,
-          color: theme.colorScheme.primary,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapDown: (details) => _showAttachmentContextMenu(
+          details.globalPosition,
+          attachment,
         ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-          attachment.filename,
-          style: theme.textTheme.bodySmall,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-        ),
+        onLongPress: () async {
+          if (Platform.isAndroid || Platform.isIOS) {
+            await _showAttachmentActionSheet(attachment);
+          }
+        },
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => _openAttachment(attachment),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: theme.colorScheme.outline.withValues(alpha: 0.2),
+                  width: 1,
                 ),
-              ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.insert_drive_file,
+                    size: 18,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      attachment.filename,
+                      style: theme.textTheme.bodySmall,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -562,7 +577,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final inlineImages = <String, _InlineImageData>{};
     final consumedAttachmentIds = <String>{};
 
-    const cidPattern = r'cid:([^"''\s>]+)';
+    const cidPattern = r'''cid:([^"'\s>]+)''';
     final cidRegex = RegExp(cidPattern, caseSensitive: false);
     final cidsInHtml = cidRegex
         .allMatches(html)
@@ -1048,151 +1063,322 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
   Widget _buildConversationAttachmentChip(MessageIndex message, AttachmentInfo attachment, Color textColor) {
     final theme = Theme.of(context);
-    return Material(
-      type: MaterialType.transparency,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _downloadAttachment(attachment, sourceMessage: message),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: Colors.transparent,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: textColor.withValues(alpha: 0.2),
-          width: 1,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onSecondaryTapDown: (details) => _showAttachmentContextMenu(
+        details.globalPosition,
+        attachment,
+        sourceMessage: message,
+      ),
+      onLongPress: () async {
+        if (Platform.isAndroid || Platform.isIOS) {
+          await _showAttachmentActionSheet(
+            attachment,
+            sourceMessage: message,
+          );
+        }
+      },
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _openAttachment(attachment, sourceMessage: message),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: textColor.withValues(alpha: 0.2),
+                width: 1,
+              ),
             ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.attach_file,
-                size: 18,
-                color: textColor,
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  attachment.filename,
-                  style: theme.textTheme.bodySmall?.copyWith(color: textColor),
-                  overflow: TextOverflow.ellipsis,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.attach_file,
+                  size: 18,
+                  color: textColor,
                 ),
-              ),
-            ],
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    attachment.filename,
+                    style: theme.textTheme.bodySmall?.copyWith(color: textColor),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Future<void> _downloadAttachment(AttachmentInfo attachment, {MessageIndex? sourceMessage}) async {
+  Future<void> _openAttachment(AttachmentInfo attachment, {MessageIndex? sourceMessage}) async {
     final message = sourceMessage ?? _currentMessage;
     try {
-      // If viewing from local folder, open the file directly
-      if (widget.localFolderName != null) {
-        final folderService = LocalFolderService();
-        final localPath = await folderService.getAttachmentPath(
-          widget.localFolderName!,
-          message.id,
-          attachment.attachmentId,
-        );
-        
-        if (localPath != null) {
-          // Open the file directly from local folder
-          final result = await OpenFile.open(localPath);
-          if (!mounted) return;
-          
-          if (result.type != ResultType.done) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Opened: ${attachment.filename}')),
-            );
-          }
-          return;
-        } else {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Attachment file not found: ${attachment.filename}')),
-          );
-          return;
-        }
-      }
-      
-      // Otherwise download from Gmail API
-      final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
-      final accessToken = account?.accessToken;
-      if (accessToken == null || accessToken.isEmpty) {
+      final file = await _ensureAttachmentFile(attachment, message);
+      if (file == null) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No access token available')),
+          SnackBar(content: Text('Unable to open ${attachment.filename}')),
         );
         return;
       }
 
-      // Show loading indicator
+      final extension = path.extension(file.path).toLowerCase();
+      if (extension == '.pdf') {
+        if (!mounted) return;
+        await PdfViewerWindow.open(
+          context,
+          filePath: file.path,
+        );
+        return;
+      }
+
+      final result = await OpenFile.open(file.path);
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Downloading ${attachment.filename}...')),
-      );
-
-      // Download attachment from Gmail API
-      final resp = await http.get(
-        Uri.parse(
-          'https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}/attachments/${attachment.attachmentId}',
-        ),
-        headers: {'Authorization': 'Bearer $accessToken'},
-      );
-
-      if (resp.statusCode != 200) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to download attachment: ${resp.statusCode}')),
-        );
-        return;
-      }
-
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      final fileData = data['data'] as String?;
-      if (fileData == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No attachment data received')),
-        );
-        return;
-      }
-
-      // Decode base64url
-      final bytes = base64Url.decode(fileData.replaceAll('-', '+').replaceAll('_', '/'));
-
-      // Save to downloads directory
-      final directory = await getDownloadsDirectory();
-      if (directory == null) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not access downloads directory')),
-        );
-        return;
-      }
-
-      final filePath = path.join(directory.path, attachment.filename);
-      final file = File(filePath);
-      await file.writeAsBytes(bytes);
-
-      // Open the file
-      final result = await OpenFile.open(filePath);
-      if (!mounted) return;
-
       if (result.type != ResultType.done) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Downloaded: ${attachment.filename}')),
+          SnackBar(content: Text('Cannot open file: ${result.message}')),
         );
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error downloading attachment: $e')),
+        SnackBar(content: Text('Error opening attachment: $e')),
       );
     }
+  }
+
+  Future<void> _applyScrollEnhancements(InAppWebViewController controller) async {
+    const script = '''
+(function() {
+  if (window.__domailScrollPatchApplied) {
+    return;
+  }
+  window.__domailScrollPatchApplied = true;
+  const SCROLL_SCALE = 0.35;
+  const SECONDARY_SCROLL_SCALE = 0.2;
+  const HORIZONTAL_SCALE = 0.35;
+  const MIN_DELTA_THRESHOLD = 0.05;
+
+  function normalize(value) {
+    return Math.abs(value) < MIN_DELTA_THRESHOLD ? 0 : value;
+  }
+
+  window.addEventListener('wheel', function(event) {
+    if (event.ctrlKey) {
+      return;
+    }
+    const absY = Math.abs(event.deltaY);
+    const absX = Math.abs(event.deltaX);
+    if (absY === 0 && absX === 0) {
+      return;
+    }
+    event.preventDefault();
+    const primaryVertical = absY >= absX;
+    const targetY = primaryVertical
+      ? normalize(event.deltaY * SCROLL_SCALE)
+      : normalize(event.deltaY * SECONDARY_SCROLL_SCALE);
+    const targetX = normalize(event.deltaX * HORIZONTAL_SCALE);
+    if (targetX !== 0 || targetY !== 0) {
+      window.scrollBy({
+        top: targetY,
+        left: targetX,
+        behavior: "auto"
+      });
+    }
+  }, { passive: false });
+})();
+''';
+    await controller.evaluateJavascript(source: script);
+  }
+
+  Future<File?> _ensureAttachmentFile(AttachmentInfo attachment, MessageIndex message) async {
+    final cacheKey = '${message.id}:${attachment.attachmentId}';
+    final cachedPath = _attachmentFileCache[cacheKey];
+    if (cachedPath != null) {
+      final cachedFile = File(cachedPath);
+      if (await cachedFile.exists()) {
+        return cachedFile;
+      }
+      _attachmentFileCache.remove(cacheKey);
+    }
+
+    if (widget.localFolderName != null) {
+      final folderService = LocalFolderService();
+      final localPath = await folderService.getAttachmentPath(
+        widget.localFolderName!,
+        message.id,
+        attachment.attachmentId,
+      );
+      if (localPath != null) {
+        final localFile = File(localPath);
+        if (await localFile.exists()) {
+          _attachmentFileCache[cacheKey] = localFile.path;
+          return localFile;
+        }
+      }
+      return null;
+    }
+
+    final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
+    final accessToken = account?.accessToken;
+    if (accessToken == null || accessToken.isEmpty) {
+      if (!mounted) return null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No access token available')),
+      );
+      return null;
+    }
+
+    final bytes = await _downloadAttachmentBytes(
+      message.id,
+      attachment.attachmentId,
+      accessToken,
+    );
+    if (bytes == null) {
+      if (!mounted) return null;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Unable to download ${attachment.filename}')),
+      );
+      return null;
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    final downloadDir = Directory(path.join(tempDir.path, 'domail_attachments', message.id));
+    if (!await downloadDir.exists()) {
+      await downloadDir.create(recursive: true);
+    }
+
+    final sanitizedName = _sanitizeFilename(attachment.filename);
+    final filePath = path.join(downloadDir.path, sanitizedName);
+    final file = File(filePath);
+    await file.writeAsBytes(bytes, flush: true);
+    _attachmentFileCache[cacheKey] = file.path;
+    _tempFilePaths.add(file.path);
+    return file;
+  }
+
+  Future<void> _saveAttachment(AttachmentInfo attachment, {MessageIndex? sourceMessage}) async {
+    final message = sourceMessage ?? _currentMessage;
+    try {
+      final file = await _ensureAttachmentFile(attachment, message);
+      if (file == null) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Unable to save ${attachment.filename}')),
+        );
+        return;
+      }
+
+      String? targetPath;
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        targetPath = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save attachment',
+          fileName: attachment.filename,
+        );
+      }
+      if (targetPath == null || targetPath.isEmpty) {
+        final downloads = await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
+        targetPath = path.join(downloads.path, attachment.filename);
+      }
+
+      final targetFile = File(targetPath);
+      await targetFile.parent.create(recursive: true);
+      await file.copy(targetPath);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved to ${path.basename(targetPath)}')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error saving attachment: $e')),
+      );
+    }
+  }
+
+  Future<void> _showAttachmentContextMenu(
+    Offset globalPosition,
+    AttachmentInfo attachment, {
+    MessageIndex? sourceMessage,
+  }) async {
+    final overlayState = Overlay.of(context);
+    final overlayRenderBox = overlayState.context.findRenderObject() as RenderBox?;
+    final size = overlayRenderBox?.size ?? MediaQuery.of(context).size;
+    final selected = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        globalPosition.dx,
+        globalPosition.dy,
+        size.width - globalPosition.dx,
+        size.height - globalPosition.dy,
+      ),
+      items: const [
+        PopupMenuItem<String>(
+          value: 'open',
+          child: ListTile(
+            leading: Icon(Icons.open_in_new),
+            title: Text('Open'),
+          ),
+        ),
+        PopupMenuItem<String>(
+          value: 'save',
+          child: ListTile(
+            leading: Icon(Icons.download),
+            title: Text('Save as…'),
+          ),
+        ),
+      ],
+    );
+
+    if (selected == 'open') {
+      await _openAttachment(attachment, sourceMessage: sourceMessage);
+    } else if (selected == 'save') {
+      await _saveAttachment(attachment, sourceMessage: sourceMessage);
+    }
+  }
+
+  Future<void> _showAttachmentActionSheet(
+    AttachmentInfo attachment, {
+    MessageIndex? sourceMessage,
+  }) async {
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('Open'),
+              onTap: () => Navigator.of(ctx).pop('open'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.download),
+              title: const Text('Save as…'),
+              onTap: () => Navigator.of(ctx).pop('save'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result == 'open') {
+      await _openAttachment(attachment, sourceMessage: sourceMessage);
+    } else if (result == 'save') {
+      await _saveAttachment(attachment, sourceMessage: sourceMessage);
+    }
+  }
+
+  String _sanitizeFilename(String value) {
+    final sanitized = value.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    return sanitized.isEmpty ? 'attachment' : sanitized;
   }
 
   void _handleReply() {
@@ -1488,12 +1674,6 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     await _loadEmailBody();
   }
 
-  void _toggleFullscreen() {
-    setState(() {
-      _isFullscreen = !_isFullscreen;
-    });
-  }
-
   Future<void> _openCurrentInBrowser() async {
     final url = _currentUrl;
     if (url == null) {
@@ -1541,11 +1721,12 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         LogicalKeySet(LogicalKeyboardKey.escape): DoNothingIntent(),
       },
       child: AppWindowDialog(
-      title: 'Email',
-      fullscreen: _isFullscreen,
-      headerActions: [
+        title: 'Email',
+        fullscreen: false,
+        windowId: 'emailWindow',
+        headerActions: [
           if (!_isConversationMode && _showNavigationExtras && _canGoBack)
-        IconButton(
+            IconButton(
               tooltip: 'Back',
               icon: const Icon(Icons.arrow_back, size: 20),
           color: theme.appBarTheme.foregroundColor,
@@ -1557,7 +1738,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               },
             ),
           if (!_isConversationMode && _showNavigationExtras)
-        IconButton(
+            IconButton(
               tooltip: 'Original Email',
               icon: const Icon(Icons.home, size: 20),
           color: theme.appBarTheme.foregroundColor,
@@ -1575,7 +1756,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               },
             ),
           if (!_isConversationMode && _showNavigationExtras && _currentUrl != null)
-        IconButton(
+            IconButton(
               tooltip: 'Open in Browser',
               icon: const Icon(Icons.open_in_new, size: 20),
           color: theme.appBarTheme.foregroundColor,
@@ -1633,11 +1814,28 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               ),
             ],
         ),
-        IconButton(
-          tooltip: _isFullscreen ? 'Exit Full Screen' : 'Full Screen',
-          icon: Icon(_isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _toggleFullscreen,
+        Builder(
+          builder: (ctx) {
+            final controller = AppWindowScope.maybeOf(ctx);
+            if (controller == null) {
+              return const SizedBox.shrink();
+            }
+            return AnimatedBuilder(
+              animation: controller,
+              builder: (context, _) {
+                final isFullscreen = controller.isFullscreen;
+                return IconButton(
+                  tooltip: isFullscreen ? 'Exit Full Screen' : 'Full Screen',
+                  icon: Icon(
+                    isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                    size: 20,
+                  ),
+                  color: theme.appBarTheme.foregroundColor,
+                  onPressed: controller.toggleFullscreen,
+                );
+              },
+            );
+          },
         ),
       ],
       child: _isLoading
@@ -1702,6 +1900,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                 ),
                               Expanded(
                                 child: InAppWebView(
+                                  gestureRecognizers: {
+                                    Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+                                  },
                                   initialData: InAppWebViewInitialData(
                                     data: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>',
                                     mimeType: 'text/html',
@@ -1752,6 +1953,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                             });
                                           }
                                           await _updateNavigationState();
+                                          await _applyScrollEnhancements(controller);
                                         },
                                         onReceivedError: (controller, request, error) {
                                           _updateNavigationState();
