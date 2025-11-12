@@ -22,6 +22,9 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+const int _maxInlineImageCount = 0; // 0 means no limit
+const int _maxInlineImageTotalBytes = 0; // 0 means no limit
+
 /// Information about an attachment
 class AttachmentInfo {
   final String filename;
@@ -47,17 +50,31 @@ class _InlineImageData {
   });
 }
 
+class _CachedInlineImage {
+  final String mimeType;
+  final String base64Data;
+  final DateTime expiresAt;
+
+  const _CachedInlineImage({
+    required this.mimeType,
+    required this.base64Data,
+    required this.expiresAt,
+  });
+}
+
 class _InlineImagePart {
   final String cid;
   final String mimeType;
   final String? attachmentId;
   final String? inlineData;
+  final int sourceIndex;
 
   const _InlineImagePart({
     required this.cid,
     required this.mimeType,
     this.attachmentId,
     this.inlineData,
+    required this.sourceIndex,
   });
 }
 
@@ -93,6 +110,9 @@ class EmailViewerDialog extends StatefulWidget {
 }
 
 class _EmailViewerDialogState extends State<EmailViewerDialog> {
+  static final Map<String, _CachedInlineImage> _inlineImageCache = {};
+  static const Duration _inlineImageCacheDuration = Duration(minutes: 30);
+
   // ignore: unused_field
   InAppWebViewController? _webViewController;
   late MessageIndex _currentMessage;
@@ -109,6 +129,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   Uri? _currentUrl;
   List<MessageIndex> _threadMessages = [];
   List<AttachmentInfo> _attachments = [];
+  bool _allowInlineImages = false;
+  bool _hasInlinePlaceholders = false;
+  bool _isLoadingInlineImages = false;
   final Map<String, List<AttachmentInfo>> _conversationAttachments = {};
   final Set<String> _loadingConversationAttachmentIds = {};
   final Set<String> _tempFilePaths = {};
@@ -128,6 +151,37 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         widget.onMarkRead!();
       });
     }
+  }
+
+  void _pruneInlineImageCache() {
+    final now = DateTime.now();
+    _inlineImageCache.removeWhere((_, entry) => entry.expiresAt.isBefore(now));
+  }
+
+  String _inlineImageCacheKey(String messageId, String cid) {
+    return '${widget.accountId}::$messageId::${cid.toLowerCase()}';
+  }
+
+  bool _hasCachedInlineImages(Map<String, dynamic> payload, String messageId) {
+    _pruneInlineImageCache();
+    final parts = _collectInlineImageParts(payload);
+    if (parts.isEmpty) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    for (final part in parts) {
+      final cid = _normalizeContentId(part.cid);
+      if (cid.isEmpty) {
+        continue;
+      }
+      final cacheKey = _inlineImageCacheKey(messageId, cid);
+      final cached = _inlineImageCache[cacheKey];
+      if (cached == null || cached.expiresAt.isBefore(now)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @override
@@ -154,13 +208,22 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     });
   }
 
-  Future<void> _loadEmailBody() async {
+  Future<void> _loadEmailBody({bool reloadInlineOnly = false}) async {
     try {
-      if (mounted) {
-        setState(() {
-          _isLoading = true;
-        });
-      } else {
+      debugPrint('[EmailViewer] >>> loadEmailBody start <<< messageId=${_currentMessage.id}');
+      final stopTiming = _startTiming('[EmailViewer] loadEmailBody timing');
+
+      if (!reloadInlineOnly) {
+        _allowInlineImages = false;
+        _hasInlinePlaceholders = false;
+      }
+
+      if (!reloadInlineOnly) {
+        if (mounted) {
+          setState(() {
+            _isLoading = true;
+          });
+        }
       }
 
       // If viewing from local folder, load from saved file
@@ -193,18 +256,24 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             _attachments = attachments;
             _isLoading = false;
             _conversationAttachments[_currentMessage.id] = attachments;
+            _allowInlineImages = true;
+            _hasInlinePlaceholders = false;
           });
           final controller = _webViewController;
           if (controller != null) {
             unawaited(_loadHtmlIntoWebView(controller));
           }
           debugPrint('[EmailViewer] Loaded from local folder - found ${attachments.length} attachments, setState called');
+          stopTiming?.call();
+          debugPrint('[EmailViewer] <<< loadEmailBody end (local) >>> messageId=${_currentMessage.id}');
           return;
         } else {
           setState(() {
             _error = 'Email body not found in local folder';
             _isLoading = false;
           });
+          stopTiming?.call();
+          debugPrint('[EmailViewer] <<< loadEmailBody end (local-missing) >>> messageId=${_currentMessage.id}');
           return;
         }
       }
@@ -292,8 +361,48 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
           ? bodyContent
           : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
 
-      if (htmlBody != null && payload != null) {
-        final inlineResult = await _loadInlineImages(payload, _currentMessage.id, accessToken);
+      String initialBodyHtml = bodyHtml;
+      bool inlinePlaceholdersCreated = false;
+      if (!_allowInlineImages && !reloadInlineOnly && htmlBody != null && payload != null) {
+        if (_hasCachedInlineImages(payload, _currentMessage.id)) {
+          _allowInlineImages = true;
+        }
+      }
+
+      if (!_allowInlineImages && !reloadInlineOnly) {
+        final placeholderRegex = RegExp(r'<img[^>]+src="cid:([^\"]+)"[^>]*>', caseSensitive: false);
+        bodyHtml = bodyHtml.replaceAllMapped(placeholderRegex, (match) {
+          inlinePlaceholdersCreated = true;
+          final cid = match.group(1) ?? '';
+          final encodedCid = Uri.encodeComponent(cid);
+          return '<div class="inline-placeholder" data-inline-placeholder="$encodedCid" '
+              'style="padding:12px;border:1px dashed rgba(120,144,156,0.4);border-radius:8px;text-align:center;margin:8px 0;">'
+              '<span style="font-size:18px;color:#90a4ae;">&#128444;</span>'
+              '</div>';
+        });
+      }
+
+      if (!reloadInlineOnly) {
+        final initialHtml = _buildEmailHtml(initialBodyHtml);
+        if (mounted) {
+          setState(() {
+            _htmlContent = initialHtml;
+            _isLoading = false;
+            _attachments = attachments;
+            _conversationAttachments[_currentMessage.id] = attachments;
+            _hasInlinePlaceholders = inlinePlaceholdersCreated;
+          });
+        }
+      }
+
+      if (htmlBody != null && payload != null && (_allowInlineImages || reloadInlineOnly)) {
+        final inlineResult = await _loadInlineImages(
+          payload,
+          _currentMessage.id,
+          accessToken,
+          maxCount: _maxInlineImageCount,
+          maxTotalBytes: _maxInlineImageTotalBytes,
+        );
         if (inlineResult.images.isNotEmpty) {
           bodyHtml = _embedInlineImages(bodyHtml, inlineResult.images);
         }
@@ -302,87 +411,35 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               .where((attachment) => !inlineResult.consumedAttachmentIds.contains(attachment.attachmentId))
               .toList();
         }
-      }
 
-      // Create a complete HTML document with proper styling
-      final fullHtml = '''
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body {
-      margin: 0;
-      padding: 16px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      color: #1a1a1a;
-      background-color: #ffffff;
-    }
-    .email-header {
-      border-bottom: 1px solid #e0e0e0;
-      padding-bottom: 16px;
-      margin-bottom: 16px;
-    }
-    .email-header h2 {
-      margin: 0 0 8px 0;
-      font-size: 20px;
-      font-weight: 600;
-    }
-    .email-header .meta {
-      color: #666;
-      font-size: 12px;
-    }
-    .email-body {
-      max-width: 100%;
-      overflow-wrap: break-word;
-    }
-    .email-body img {
-      max-width: 100%;
-      height: auto;
-    }
-    @media (prefers-color-scheme: dark) {
-      body {
-        background-color: #1a1a1a;
-        color: #e0e0e0;
-      }
-      .email-header {
-        border-bottom-color: #333;
-      }
-      .email-header .meta {
-        color: #999;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="email-header">
-    <h2>${_escapeHtml(_currentMessage.subject)}</h2>
-    <div class="meta">
-      <div><strong>From:</strong> ${_escapeHtml(_currentMessage.from)}</div>
-      <div><strong>To:</strong> ${_escapeHtml(_currentMessage.to)}</div>
-      <div><strong>Date:</strong> ${_formatDate(_currentMessage.internalDate)}</div>
-    </div>
-  </div>
-  <div class="email-body">
-    $bodyHtml
-  </div>
-</body>
-</html>
-      ''';
-
-      if (!mounted) return;
-      setState(() {
-        _htmlContent = fullHtml;
-        _attachments = attachments;
-        _isLoading = false;
-        _conversationAttachments[_currentMessage.id] = attachments;
-      });
-      final controller = _webViewController;
-      if (controller != null) {
-        unawaited(_loadHtmlIntoWebView(controller));
+        final fullHtml = _buildEmailHtml(bodyHtml);
+        if (mounted && !reloadInlineOnly) {
+          setState(() {
+            _htmlContent = fullHtml;
+            _attachments = attachments;
+            _conversationAttachments[_currentMessage.id] = attachments;
+            _hasInlinePlaceholders = false;
+            _isLoading = false;
+            _allowInlineImages = true;
+            _isLoadingInlineImages = false;
+          });
+          final controller = _webViewController;
+          if (controller != null) {
+            unawaited(_loadHtmlIntoWebView(controller));
+          }
+        } else {
+          if (mounted) {
+            setState(() {
+              _attachments = attachments;
+              _conversationAttachments[_currentMessage.id] = attachments;
+              _hasInlinePlaceholders = false;
+              _allowInlineImages = true;
+              _isLoadingInlineImages = false;
+            });
+          } else {
+            _isLoadingInlineImages = false;
+          }
+        }
       }
       
       // Debug: Print attachment count
@@ -396,6 +453,8 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       } else if (_currentMessage.hasAttachments) {
         debugPrint('[EmailViewer]   WARNING: Message has hasAttachments=true but no real attachments found!');
       }
+      stopTiming?.call();
+      debugPrint('[EmailViewer] <<< loadEmailBody end (remote) >>> messageId=${_currentMessage.id}');
     } catch (e, stackTrace) {
       debugPrint('[EmailViewer] ERROR loading email: $e');
       debugPrint('[EmailViewer] Stack trace: $stackTrace');
@@ -403,8 +462,18 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       setState(() {
         _error = 'Error loading email: $e';
         _isLoading = false;
+        _isLoadingInlineImages = false;
       });
     }
+  }
+
+  VoidCallback? _startTiming(String label) {
+    final stopwatch = Stopwatch()..start();
+    debugPrint('$label started');
+    return () {
+      stopwatch.stop();
+      debugPrint('$label finished in ${stopwatch.elapsedMilliseconds} ms');
+    };
   }
 
   String _escapeHtml(String text) {
@@ -553,6 +622,27 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         ),
       ),
     );
+  }
+
+  Future<void> _loadEmbeddedImages() async {
+    if (_allowInlineImages || _isLoadingInlineImages) {
+      return;
+    }
+    setState(() {
+      _allowInlineImages = true;
+      _isLoadingInlineImages = true;
+    });
+    try {
+      await _loadEmailBody(reloadInlineOnly: true);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoadingInlineImages = false;
+        });
+      } else {
+        _isLoadingInlineImages = false;
+      }
+    }
   }
 
   List<AttachmentInfo> _mapLocalAttachments(List<Map<String, dynamic>> localAttachments) {
@@ -765,7 +855,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   List<_InlineImagePart> _collectInlineImageParts(Map<String, dynamic> payload) {
     final inlineParts = <_InlineImagePart>[];
 
-    void collect(dynamic part) {
+    void collect(dynamic part, int index) {
       if (part is! Map<String, dynamic>) {
         return;
       }
@@ -802,6 +892,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             mimeType: mimeType.isNotEmpty ? mimeType : rawMimeType.toLowerCase(),
             attachmentId: attachmentId,
             inlineData: inlineData,
+            sourceIndex: index,
           ),
         );
       }
@@ -809,21 +900,25 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final parts = part['parts'] as List<dynamic>?;
       if (parts != null) {
         for (final child in parts) {
-          collect(child);
+          collect(child, index);
         }
       }
     }
 
-    collect(payload);
+    collect(payload, 0);
     return inlineParts;
   }
 
   Future<_InlineImageLoadResult> _loadInlineImages(
     Map<String, dynamic> payload,
     String messageId,
-    String accessToken,
-  ) async {
+    String accessToken, {
+    int maxCount = _maxInlineImageCount,
+    int maxTotalBytes = _maxInlineImageTotalBytes,
+  }) async {
+    _pruneInlineImageCache();
     final inlineParts = _collectInlineImageParts(payload);
+    inlineParts.sort((a, b) => a.sourceIndex.compareTo(b.sourceIndex));
 
     if (inlineParts.isEmpty) {
       debugPrint('[EmailViewer] No inline image parts detected for message $messageId');
@@ -834,10 +929,35 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     final consumedAttachmentIds = <String>{};
     debugPrint('[EmailViewer] Found ${inlineParts.length} potential inline image parts for message $messageId');
 
+    int processed = 0;
+    int totalBytes = 0;
     for (final part in inlineParts) {
+      final hasCountLimit = maxCount > 0;
+      final hasSizeLimit = maxTotalBytes > 0;
+      if ((hasCountLimit && processed >= maxCount) || (hasSizeLimit && totalBytes >= maxTotalBytes)) {
+        debugPrint('[EmailViewer] Inline image budget reached (processed=$processed totalBytes=$totalBytes). Remaining parts skipped.');
+        break;
+      }
+
       final cid = _normalizeContentId(part.cid);
       if (cid.isEmpty) {
         continue;
+      }
+
+      final cacheKey = _inlineImageCacheKey(messageId, cid);
+      final cached = _inlineImageCache[cacheKey];
+      if (cached != null) {
+        if (cached.expiresAt.isAfter(DateTime.now())) {
+          final data = _InlineImageData(mimeType: cached.mimeType, base64Data: cached.base64Data);
+          inlineImages[cid] = data;
+          unawaited(_replaceInlineImageInView(cid, data));
+          processed += 1;
+          totalBytes += (base64Decode(cached.base64Data)).length;
+          debugPrint('[EmailViewer] Inline image cid=$cid served from cache');
+          continue;
+        } else {
+          _inlineImageCache.remove(cacheKey);
+        }
       }
 
       List<int>? bytes;
@@ -859,6 +979,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         continue;
       }
 
+      totalBytes += bytes.length;
+      processed += 1;
+
       final embedMimeType = part.mimeType.isNotEmpty ? part.mimeType : 'application/octet-stream';
       inlineImages[cid] = _InlineImageData(
         mimeType: embedMimeType,
@@ -869,6 +992,14 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         consumedAttachmentIds.add(attachmentId);
       }
       debugPrint('[EmailViewer] Inline image cid=$cid prepared (${part.mimeType}, bytes=${bytes.length})');
+
+      unawaited(_replaceInlineImageInView(cid, inlineImages[cid]!));
+
+      _inlineImageCache[cacheKey] = _CachedInlineImage(
+        mimeType: embedMimeType,
+        base64Data: inlineImages[cid]!.base64Data,
+        expiresAt: DateTime.now().add(_inlineImageCacheDuration),
+      );
     }
 
     return _InlineImageLoadResult(
@@ -895,6 +1026,112 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       );
     });
     return processed;
+  }
+
+  Future<void> _replaceInlineImageInView(String cid, _InlineImageData image) async {
+    final controller = _webViewController;
+    if (controller == null) {
+      return;
+    }
+    final cidAttr = Uri.encodeComponent(cid);
+    final lowerCid = cid.toLowerCase();
+    final dataUrl = 'data:${image.mimeType};base64,${image.base64Data}';
+    final script = '''
+(function() {
+  const dataUrl = ${jsonEncode(dataUrl)};
+  const placeholder = document.querySelector('[data-inline-placeholder="$cidAttr"]');
+  if (placeholder) {
+    const img = document.createElement('img');
+    img.src = dataUrl;
+    img.style.maxWidth = '100%';
+    img.style.height = 'auto';
+    placeholder.replaceWith(img);
+    return;
+  }
+  const nodes = document.querySelectorAll('img[src^="cid:"]');
+  nodes.forEach((node) => {
+    const src = (node.getAttribute('src') || '').toLowerCase();
+    if (src === ${jsonEncode('cid:$lowerCid')}) {
+      node.setAttribute('src', dataUrl);
+    }
+  });
+})();
+''';
+    try {
+      await controller.evaluateJavascript(source: script);
+    } catch (e) {
+      debugPrint('[EmailViewer] Failed to inject inline image cid=$cid via JS: $e');
+    }
+  }
+
+  String _buildEmailHtml(String bodyHtml) {
+    return '''
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background-color: #ffffff;
+    }
+    .email-header {
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+    }
+    .email-header h2 {
+      margin: 0 0 8px 0;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    .email-header .meta {
+      color: #666;
+      font-size: 12px;
+    }
+    .email-body {
+      max-width: 100%;
+      overflow-wrap: break-word;
+    }
+    .email-body img {
+      max-width: 100%;
+      height: auto;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+      }
+      .email-header {
+        border-bottom-color: #333;
+      }
+      .email-header .meta {
+        color: #999;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="email-header">
+    <h2>${_escapeHtml(_currentMessage.subject)}</h2>
+    <div class="meta">
+      <div><strong>From:</strong> ${_escapeHtml(_currentMessage.from)}</div>
+      <div><strong>To:</strong> ${_escapeHtml(_currentMessage.to)}</div>
+      <div><strong>Date:</strong> ${_formatDate(_currentMessage.internalDate)}</div>
+    </div>
+  </div>
+  <div class="email-body">
+    $bodyHtml
+  </div>
+</body>
+</html>
+    ''';
   }
 
   Future<void> _loadHtmlIntoWebView(InAppWebViewController controller) async {
@@ -1763,7 +2000,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             IconButton(
               tooltip: 'Back',
               icon: const Icon(Icons.arrow_back, size: 20),
-          color: theme.appBarTheme.foregroundColor,
+              color: theme.appBarTheme.foregroundColor,
               onPressed: () async {
                 if (_webViewController != null && await _webViewController!.canGoBack()) {
                   await _webViewController!.goBack();
@@ -1775,7 +2012,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
             IconButton(
               tooltip: 'Original Email',
               icon: const Icon(Icons.home, size: 20),
-          color: theme.appBarTheme.foregroundColor,
+              color: theme.appBarTheme.foregroundColor,
               onPressed: () async {
                 if (_webViewController != null && _htmlContent != null) {
                   if (mounted) {
@@ -1785,15 +2022,32 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                     });
                   }
                   await _loadHtmlIntoWebView(_webViewController!);
-                  await _updateNavigationState();
                 }
               },
+            ),
+          if (_hasInlinePlaceholders || _isLoadingInlineImages)
+            IconButton(
+              tooltip: _isLoadingInlineImages ? 'Loading images…' : 'Load embedded images',
+              color: theme.appBarTheme.foregroundColor,
+              icon: _isLoadingInlineImages
+                  ? SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          theme.appBarTheme.foregroundColor ?? theme.colorScheme.onPrimary,
+                        ),
+                      ),
+                    )
+                  : const Icon(Icons.image_outlined, size: 20),
+              onPressed: _isLoadingInlineImages ? null : _loadEmbeddedImages,
             ),
           if (!_isConversationMode && _showNavigationExtras && _currentUrl != null)
             IconButton(
               tooltip: 'Open in Browser',
               icon: const Icon(Icons.open_in_new, size: 20),
-          color: theme.appBarTheme.foregroundColor,
+              color: theme.appBarTheme.foregroundColor,
               onPressed: _openCurrentInBrowser,
             ),
           if (_currentMessage.threadId.isNotEmpty)
@@ -1907,136 +2161,144 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                               ],
                       )
                     : _htmlContent != null
-                        ? Column(
-                            children: [
-                              if (_attachments.isNotEmpty)
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                                    border: Border(
-                                      bottom: BorderSide(
-                                        color: Theme.of(context).dividerColor,
-                                        width: 1,
+                        ? Builder(
+                            builder: (context) {
+                              final attachmentChips = _attachments.map(_buildAttachmentChip).toList();
+
+                              return Column(
+                                children: [
+                                  if (attachmentChips.isNotEmpty)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                      decoration: BoxDecoration(
+                                        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                        border: Border(
+                                          bottom: BorderSide(
+                                            color: Theme.of(context).dividerColor,
+                                            width: 1,
+                                          ),
+                                        ),
+                                      ),
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              ...attachmentChips,
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  Expanded(
+                                    child: Listener(
+                                      onPointerSignal: _logPointerSignal,
+                                      behavior: HitTestBehavior.translucent,
+                                      child: InAppWebView(
+                                        gestureRecognizers: {
+                                          Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
+                                        },
+                                        initialData: InAppWebViewInitialData(
+                                          data: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>',
+                                          mimeType: 'text/html',
+                                          encoding: 'utf8',
+                                        ),
+                                        // ignore: deprecated_member_use
+                                        initialOptions: InAppWebViewGroupOptions(
+                                          // ignore: deprecated_member_use
+                                          crossPlatform: InAppWebViewOptions(
+                                            useShouldOverrideUrlLoading: true,
+                                            mediaPlaybackRequiresUserGesture: false,
+                                            supportZoom: true,
+                                            javaScriptEnabled: true,
+                                          ),
+                                          // ignore: deprecated_member_use
+                                          android: AndroidInAppWebViewOptions(
+                                            useHybridComposition: true,
+                                          ),
+                                          // ignore: deprecated_member_use
+                                          ios: IOSInAppWebViewOptions(
+                                            allowsInlineMediaPlayback: true,
+                                          ),
+                                        ),
+                                        onWebViewCreated: (controller) {
+                                          _webViewController = controller;
+                                          unawaited(_loadHtmlIntoWebView(controller));
+                                          _isViewingOriginal = true;
+                                          _currentUrl = null;
+                                          _updateNavigationState();
+                                        },
+                                        onConsoleMessage: (controller, consoleMessage) {
+                                          debugPrint('[WebViewConsole] ${consoleMessage.message}');
+                                        },
+                                        onLoadStart: (controller, url) {
+                                          final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
+                                          if (mounted) {
+                                            setState(() {
+                                              _isViewingOriginal = !isExternal;
+                                              _currentUrl = isExternal ? url : null;
+                                            });
+                                          }
+                                          _updateNavigationState();
+                                        },
+                                        onLoadStop: (controller, url) async {
+                                          final currentUrl = await controller.getUrl();
+                                          final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
+                                          if (mounted) {
+                                            setState(() {
+                                              _isViewingOriginal = !isExternal;
+                                              _currentUrl = isExternal ? currentUrl : null;
+                                            });
+                                          }
+                                          await _updateNavigationState();
+                                          await _applyScrollEnhancements(controller);
+                                        },
+                                        onReceivedError: (controller, request, error) {
+                                          _updateNavigationState();
+                                        },
+                                        shouldOverrideUrlLoading: (controller, navigationAction) async {
+                                          final url = navigationAction.request.url;
+                                          if (url == null) {
+                                            return NavigationActionPolicy.ALLOW;
+                                          }
+
+                                          final scheme = url.scheme.toLowerCase();
+
+                                          if (scheme.isEmpty || scheme == 'about') {
+                                            return NavigationActionPolicy.ALLOW;
+                                          }
+
+                                          if (scheme == 'mailto') {
+                                            final messenger = ScaffoldMessenger.of(context);
+                                            final canLaunch = await canLaunchUrl(url);
+                                            if (!mounted) {
+                                              return NavigationActionPolicy.CANCEL;
+                                            }
+
+                                            if (canLaunch) {
+                                              await launchUrl(
+                                                url,
+                                                mode: LaunchMode.externalApplication,
+                                              );
+                                            } else {
+                                              messenger.showSnackBar(
+                                                SnackBar(content: Text('Cannot open link: ${url.toString()}')),
+                                              );
+                                            }
+                                            return NavigationActionPolicy.CANCEL;
+                                          }
+
+                                          // Allow HTTP/HTTPS to load inside the webview so users can navigate back
+                                          return NavigationActionPolicy.ALLOW;
+                                        },
                                       ),
                                     ),
                                   ),
-                                  child: Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: SingleChildScrollView(
-                                      scrollDirection: Axis.horizontal,
-                                      child: Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        children: _attachments.map((attachment) => _buildAttachmentChip(attachment)).toList(),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              Expanded(
-                                child: Listener(
-                                  onPointerSignal: _logPointerSignal,
-                                  behavior: HitTestBehavior.translucent,
-                                  child: InAppWebView(
-                                  gestureRecognizers: {
-                                    Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
-                                  },
-                                  initialData: InAppWebViewInitialData(
-                                    data: '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body></body></html>',
-                                    mimeType: 'text/html',
-                                    encoding: 'utf8',
-                                  ),
-                                  // ignore: deprecated_member_use
-                                  initialOptions: InAppWebViewGroupOptions(
-                                    // ignore: deprecated_member_use
-                                    crossPlatform: InAppWebViewOptions(
-                                      useShouldOverrideUrlLoading: true,
-                                      mediaPlaybackRequiresUserGesture: false,
-                                      supportZoom: true,
-                                      javaScriptEnabled: true,
-                                    ),
-                                    // ignore: deprecated_member_use
-                                    android: AndroidInAppWebViewOptions(
-                                      useHybridComposition: true,
-                                    ),
-                                    // ignore: deprecated_member_use
-                                    ios: IOSInAppWebViewOptions(
-                                      allowsInlineMediaPlayback: true,
-                                    ),
-                                  ),
-                                  onWebViewCreated: (controller) {
-                                    _webViewController = controller;
-                                    unawaited(_loadHtmlIntoWebView(controller));
-                                    _isViewingOriginal = true;
-                                    _currentUrl = null;
-                                    _updateNavigationState();
-                                  },
-                                  onConsoleMessage: (controller, consoleMessage) {
-                                    debugPrint('[WebViewConsole] ${consoleMessage.message}');
-                                  },
-                                  onLoadStart: (controller, url) {
-                                    final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
-                                    if (mounted) {
-                                      setState(() {
-                                        _isViewingOriginal = !isExternal;
-                                        _currentUrl = isExternal ? url : null;
-                                      });
-                                    }
-                                    _updateNavigationState();
-                                  },
-                                  onLoadStop: (controller, url) async {
-                                    final currentUrl = await controller.getUrl();
-                                    final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
-                                    if (mounted) {
-                                      setState(() {
-                                        _isViewingOriginal = !isExternal;
-                                        _currentUrl = isExternal ? currentUrl : null;
-                                      });
-                                    }
-                                    await _updateNavigationState();
-                                    await _applyScrollEnhancements(controller);
-                                  },
-                                  onReceivedError: (controller, request, error) {
-                                    _updateNavigationState();
-                                  },
-                                  shouldOverrideUrlLoading: (controller, navigationAction) async {
-                                    final url = navigationAction.request.url;
-                                    if (url == null) {
-                                      return NavigationActionPolicy.ALLOW;
-                                    }
-
-                                    final scheme = url.scheme.toLowerCase();
-
-                                    if (scheme.isEmpty || scheme == 'about') {
-                                      return NavigationActionPolicy.ALLOW;
-                                    }
-
-                                    if (scheme == 'mailto') {
-                                      final messenger = ScaffoldMessenger.of(context);
-                                      final canLaunch = await canLaunchUrl(url);
-                                      if (!mounted) {
-                                        return NavigationActionPolicy.CANCEL;
-                                      }
-
-                                      if (canLaunch) {
-                                        await launchUrl(
-                                          url,
-                                          mode: LaunchMode.externalApplication,
-                                        );
-                                      } else {
-                                        messenger.showSnackBar(
-                                          SnackBar(content: Text('Cannot open link: ${url.toString()}')),
-                                        );
-                                      }
-                                      return NavigationActionPolicy.CANCEL;
-                                    }
-
-                                    // Allow HTTP/HTTPS to load inside the webview so users can navigate back
-                                    return NavigationActionPolicy.ALLOW;
-                                  },
-                                ),
-                              ),
-                                ),
-                            ],
+                                ],
+                              );
+                            },
                           )
                         : const Center(child: Text('No content available')),
       ),
