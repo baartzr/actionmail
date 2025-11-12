@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// Reusable modal window for desktop/mobile
@@ -337,6 +338,15 @@ class _AppWindowDialogState extends State<AppWindowDialog> {
     final media = MediaQuery.of(context);
     final theme = Theme.of(context);
     final screenSize = media.size;
+    final bool isMobilePlatform = !kIsWeb &&
+        (defaultTargetPlatform == TargetPlatform.android ||
+            defaultTargetPlatform == TargetPlatform.iOS);
+    final bool isCompact = screenSize.width < 640 || isMobilePlatform;
+
+    if (isCompact) {
+      return _buildCompactDialog(context, screenSize, theme);
+    }
+
     _lastScreenSize = screenSize;
     _initialize(screenSize);
 
@@ -431,6 +441,85 @@ class _AppWindowDialogState extends State<AppWindowDialog> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildCompactDialog(
+    BuildContext context,
+    Size screenSize,
+    ThemeData theme,
+  ) {
+    final appBarBg =
+        theme.appBarTheme.backgroundColor ?? const Color(0xFF00695C);
+    final appBarFg =
+        theme.appBarTheme.foregroundColor ?? const Color(0xFFB2DFDB);
+    final double maxWidth = widget.size == AppWindowSize.small
+        ? math.min(screenSize.width * 0.95, 520.0)
+        : math.min(screenSize.width * 0.95, 760.0);
+    final double maxHeight = widget.size == AppWindowSize.small
+        ? math.min(screenSize.height * 0.9, 640.0)
+        : math.min(screenSize.height * 0.9, 780.0);
+
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxWidth: maxWidth,
+          maxHeight: maxHeight,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.max,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Material(
+                color: appBarBg,
+                child: SafeArea(
+                  bottom: false,
+                  child: SizedBox(
+                    height: 48,
+                    child: Row(
+                      children: [
+                        const SizedBox(width: 24),
+                        Expanded(
+                          child: Text(
+                            widget.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: appBarFg,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (widget.headerActions != null)
+                          ...widget.headerActions!,
+                        IconButton(
+                          tooltip: 'Close',
+                          icon: Icon(Icons.close, color: appBarFg),
+                          onPressed: () => Navigator.of(context).maybePop(),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: Padding(
+                  padding: widget.size == AppWindowSize.small
+                      ? const EdgeInsets.all(16)
+                      : widget.bodyPadding,
+                  child: widget.child,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 

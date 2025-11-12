@@ -1161,41 +1161,75 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     return;
   }
   window.__domailScrollPatchApplied = true;
-  const SCROLL_SCALE = 0.35;
-  const SECONDARY_SCROLL_SCALE = 0.2;
-  const HORIZONTAL_SCALE = 0.35;
-  const MIN_DELTA_THRESHOLD = 0.05;
 
-  function normalize(value) {
-    return Math.abs(value) < MIN_DELTA_THRESHOLD ? 0 : value;
+  const LINE_HEIGHT = 35;
+  const PAGE_HEIGHT = 560;
+
+  function normalizeDelta(delta, mode) {
+    switch (mode) {
+      case 1: return delta * LINE_HEIGHT; // DOM_DELTA_LINE
+      case 2: return delta * PAGE_HEIGHT; // DOM_DELTA_PAGE
+      default: return delta; // pixel
+    }
+  }
+
+  function clamp(value) {
+    if (Math.abs(value) < 1) {
+      return value < 0 ? -1 : 1;
+    }
+    return value;
   }
 
   window.addEventListener('wheel', function(event) {
     if (event.ctrlKey) {
       return;
     }
-    const absY = Math.abs(event.deltaY);
-    const absX = Math.abs(event.deltaX);
-    if (absY === 0 && absX === 0) {
+
+    const rawVertical = normalizeDelta(event.deltaY, event.deltaMode);
+    const rawHorizontal = normalizeDelta(event.deltaX, event.deltaMode);
+
+    // Comment out noisy debug logs after validation.
+    // if (window.console && console.debug) {
+    //   console.debug('[EmailViewer][wheel]', JSON.stringify({
+    //     dx: event.deltaX,
+    //     dy: event.deltaY,
+    //     mode: event.deltaMode,
+    //     resolvedVertical: Math.abs(rawVertical) >= Math.abs(rawHorizontal) ? rawVertical : rawHorizontal,
+    //   }));
+    // }
+
+    const dominant = Math.abs(rawVertical) >= Math.abs(rawHorizontal)
+      ? rawVertical
+      : rawHorizontal;
+
+    const shouldReRouteHorizontally = Math.abs(rawHorizontal) > Math.abs(rawVertical) ||
+      (!event.shiftKey && rawHorizontal !== 0);
+
+    if (shouldReRouteHorizontally) {
+      event.preventDefault();
+      const scaled = clamp(dominant);
+      window.scrollBy({
+        top: scaled,
+        left: 0,
+        behavior: 'auto',
+      });
       return;
     }
-    event.preventDefault();
-    const primaryVertical = absY >= absX;
-    const targetY = primaryVertical
-      ? normalize(event.deltaY * SCROLL_SCALE)
-      : normalize(event.deltaY * SECONDARY_SCROLL_SCALE);
-    const targetX = normalize(event.deltaX * HORIZONTAL_SCALE);
-    if (targetX !== 0 || targetY !== 0) {
-      window.scrollBy({
-        top: targetY,
-        left: targetX,
-        behavior: "auto"
-      });
-    }
+
+    // Allow native vertical handling when vertical is dominant.
   }, { passive: false });
 })();
 ''';
+
     await controller.evaluateJavascript(source: script);
+  }
+
+  void _logPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent) {
+      debugPrint(
+        '[PointerScroll] dx=${event.scrollDelta.dx}, dy=${event.scrollDelta.dy}, kind=${event.kind}',
+      );
+    }
   }
 
   Future<File?> _ensureAttachmentFile(AttachmentInfo attachment, MessageIndex message) async {
@@ -1899,7 +1933,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                   ),
                                 ),
                               Expanded(
-                                child: InAppWebView(
+                                child: Listener(
+                                  onPointerSignal: _logPointerSignal,
+                                  behavior: HitTestBehavior.translucent,
+                                  child: InAppWebView(
                                   gestureRecognizers: {
                                     Factory<OneSequenceGestureRecognizer>(() => EagerGestureRecognizer()),
                                   },
@@ -1933,68 +1970,72 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
                                     _currentUrl = null;
                                     _updateNavigationState();
                                   },
-                                        onLoadStart: (controller, url) {
-                                          final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
-                                          if (mounted) {
-                                            setState(() {
-                                              _isViewingOriginal = !isExternal;
-                                              _currentUrl = isExternal ? url : null;
-                                            });
-                                          }
-                                          _updateNavigationState();
-                                        },
-                                        onLoadStop: (controller, url) async {
-                                          final currentUrl = await controller.getUrl();
-                                          final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
-                                          if (mounted) {
-                                            setState(() {
-                                              _isViewingOriginal = !isExternal;
-                                              _currentUrl = isExternal ? currentUrl : null;
-                                            });
-                                          }
-                                          await _updateNavigationState();
-                                          await _applyScrollEnhancements(controller);
-                                        },
-                                        onReceivedError: (controller, request, error) {
-                                          _updateNavigationState();
+                                  onConsoleMessage: (controller, consoleMessage) {
+                                    debugPrint('[WebViewConsole] ${consoleMessage.message}');
+                                  },
+                                  onLoadStart: (controller, url) {
+                                    final isExternal = url != null && (url.scheme == 'http' || url.scheme == 'https');
+                                    if (mounted) {
+                                      setState(() {
+                                        _isViewingOriginal = !isExternal;
+                                        _currentUrl = isExternal ? url : null;
+                                      });
+                                    }
+                                    _updateNavigationState();
+                                  },
+                                  onLoadStop: (controller, url) async {
+                                    final currentUrl = await controller.getUrl();
+                                    final isExternal = currentUrl != null && (currentUrl.scheme == 'http' || currentUrl.scheme == 'https');
+                                    if (mounted) {
+                                      setState(() {
+                                        _isViewingOriginal = !isExternal;
+                                        _currentUrl = isExternal ? currentUrl : null;
+                                      });
+                                    }
+                                    await _updateNavigationState();
+                                    await _applyScrollEnhancements(controller);
+                                  },
+                                  onReceivedError: (controller, request, error) {
+                                    _updateNavigationState();
                                   },
                                   shouldOverrideUrlLoading: (controller, navigationAction) async {
                                     final url = navigationAction.request.url;
-                                          if (url == null) {
+                                    if (url == null) {
                                       return NavigationActionPolicy.ALLOW;
                                     }
 
-                                          final scheme = url.scheme.toLowerCase();
+                                    final scheme = url.scheme.toLowerCase();
 
-                                          if (scheme.isEmpty || scheme == 'about') {
-                                            return NavigationActionPolicy.ALLOW;
-                                          }
+                                    if (scheme.isEmpty || scheme == 'about') {
+                                      return NavigationActionPolicy.ALLOW;
+                                    }
 
-                                          if (scheme == 'mailto') {
-                                            final messenger = ScaffoldMessenger.of(context);
-                                            final canLaunch = await canLaunchUrl(url);
-                                            if (!mounted) {
-                                    return NavigationActionPolicy.CANCEL;
-                                            }
+                                    if (scheme == 'mailto') {
+                                      final messenger = ScaffoldMessenger.of(context);
+                                      final canLaunch = await canLaunchUrl(url);
+                                      if (!mounted) {
+                                        return NavigationActionPolicy.CANCEL;
+                                      }
 
-                                            if (canLaunch) {
-                                              await launchUrl(
-                                                url,
-                                                mode: LaunchMode.externalApplication,
-                                              );
-                                            } else {
-                                              messenger.showSnackBar(
-                                                SnackBar(content: Text('Cannot open link: ${url.toString()}')),
-                                              );
-                                            }
-                                            return NavigationActionPolicy.CANCEL;
-                                          }
+                                      if (canLaunch) {
+                                        await launchUrl(
+                                          url,
+                                          mode: LaunchMode.externalApplication,
+                                        );
+                                      } else {
+                                        messenger.showSnackBar(
+                                          SnackBar(content: Text('Cannot open link: ${url.toString()}')),
+                                        );
+                                      }
+                                      return NavigationActionPolicy.CANCEL;
+                                    }
 
-                                          // Allow HTTP/HTTPS to load inside the webview so users can navigate back
-                                          return NavigationActionPolicy.ALLOW;
+                                    // Allow HTTP/HTTPS to load inside the webview so users can navigate back
+                                    return NavigationActionPolicy.ALLOW;
                                   },
                                 ),
                               ),
+                                ),
                             ],
                           )
                         : const Center(child: Text('No content available')),
