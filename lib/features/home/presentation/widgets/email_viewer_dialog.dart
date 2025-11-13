@@ -2241,22 +2241,31 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       String? inReplyTo;
       List<String>? references;
 
-      final replyContext = await syncService.fetchReplyContext(widget.accountId, messageToReplyTo.id);
-      if (replyContext != null) {
-        final headerMessageId = replyContext.messageIdHeader;
-        if (headerMessageId != null && headerMessageId.isNotEmpty) {
-          inReplyTo = headerMessageId;
-        }
-        final refs = replyContext.references;
-        if (refs.isNotEmpty) {
-          references = List<String>.from(refs);
-          if (inReplyTo != null && !references.contains(inReplyTo)) {
-            references.add(inReplyTo);
+      // Try to fetch reply context from Gmail API
+      // For local folder messages, this may fail if the message doesn't exist in Gmail,
+      // but that's okay - we'll just send without reply headers
+      try {
+        final replyContext = await syncService.fetchReplyContext(widget.accountId, messageToReplyTo.id);
+        if (replyContext != null) {
+          final headerMessageId = replyContext.messageIdHeader;
+          if (headerMessageId != null && headerMessageId.isNotEmpty) {
+            inReplyTo = headerMessageId;
+          }
+          final refs = replyContext.references;
+          if (refs.isNotEmpty) {
+            references = List<String>.from(refs);
+            if (inReplyTo != null && !references.contains(inReplyTo)) {
+              references.add(inReplyTo);
+            }
           }
         }
+      } catch (e) {
+        // If fetching reply context fails (e.g., for local folder messages),
+        // just log it and continue without reply headers
+        debugPrint('[EmailViewer] Failed to fetch reply context: $e');
       }
 
-      await syncService.sendEmail(
+      final success = await syncService.sendEmail(
         widget.accountId,
         to: pending.to,
         subject: pending.subject,
@@ -2266,6 +2275,10 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         references: references,
         threadId: pending.threadId.isNotEmpty ? pending.threadId : null,
       );
+
+      if (!success) {
+        throw Exception('Failed to send email (sendEmail returned false)');
+      }
 
       if (!mounted) return;
       
