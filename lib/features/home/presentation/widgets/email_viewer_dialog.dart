@@ -191,6 +191,10 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   Timer? _conversationRefreshTimer;
   final ScrollController _conversationScrollController = ScrollController();
   
+  // Expanded message state for conversation mode (allow multiple bubbles to be expanded)
+  final Set<String> _expandedMessageIds = {};
+  final Map<String, String> _expandedMessageBodies = {};
+  final Map<String, bool> _expandedMessageLoading = {};
 
   @override
   void initState() {
@@ -2367,6 +2371,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
             // ListView index 0 = top, so allMessages[0] appears at top
             if (showConversationHint && index == itemCount - 1) {
               return Padding(
+                key: const ValueKey('conversation_hint'),
                 padding: const EdgeInsets.symmetric(vertical: 12.0),
                 child: Align(
                   alignment: Alignment.center,
@@ -2413,10 +2418,16 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               });
             }
 
+            final isExpanded = _expandedMessageIds.contains(message.id);
+            final isLoadingBody = _expandedMessageLoading[message.id] == true;
+            final bodyHtml = _expandedMessageBodies[message.id];
+
             return Padding(
+              key: ValueKey('conversation_message_${message.id}'),
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
                 mainAxisAlignment: alignment,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   ConstrainedBox(
                     constraints: BoxConstraints(
@@ -2429,7 +2440,27 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                       borderRadius: BorderRadius.circular(18),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(18),
-                        onTap: () => _showMessageFromThread(message),
+                        onTap: () {
+                          // Single-click: expand/collapse
+                          if (isExpanded) {
+                            setState(() {
+                              _expandedMessageIds.remove(message.id);
+                            });
+                          } else {
+                            setState(() {
+                              _expandedMessageIds.add(message.id);
+                            });
+                            
+                            // Load email body if not already loaded
+                            if (!_expandedMessageBodies.containsKey(message.id) && !isLoadingBody) {
+                              unawaited(_loadEmailBodyForMessage(message));
+                            }
+                          }
+                        },
+                        onDoubleTap: () {
+                          // Double-click: open in normal view
+                          _showMessageFromThread(message);
+                        },
                         child: Padding(
                           padding: const EdgeInsets.all(14),
                           child: Column(
@@ -2462,11 +2493,40 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              if (message.snippet != null && message.snippet!.isNotEmpty) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  message.snippet!,
-                                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                              if (!isExpanded) ...[
+                                // Normal collapsed view - show snippet
+                                if (message.snippet != null && message.snippet!.isNotEmpty) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    message.snippet!,
+                                    style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                  ),
+                                ],
+                              ] else ...[
+                                // Expanded view - show full body
+                                const SizedBox(height: 12),
+                                ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    maxHeight: 400, // Twice normal height (approximately)
+                                  ),
+                                  child: SingleChildScrollView(
+                                    child: isLoadingBody
+                                        ? Padding(
+                                            padding: const EdgeInsets.all(16.0),
+                                            child: Center(
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: textColor,
+                                              ),
+                                            ),
+                                          )
+                                        : bodyHtml != null
+                                            ? _buildExpandedBodyContent(bodyHtml, textColor, theme)
+                                            : Text(
+                                                'No content available',
+                                                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                              ),
+                                  ),
                                 ),
                               ],
                               if ((attachments != null && attachments.isNotEmpty) || isLoadingAttachments) ...[
@@ -2502,6 +2562,172 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         );
       },
     );
+  }
+
+  String _htmlToPlainText(String html) {
+    // Simple HTML to plain text converter
+    // Remove script and style tags and their content
+    String text = html.replaceAll(RegExp(r'<script[^>]*>[\s\S]*?</script>', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'<style[^>]*>[\s\S]*?</style>', caseSensitive: false), '');
+    
+    // Replace common HTML entities
+    text = text.replaceAll('&nbsp;', ' ');
+    text = text.replaceAll('&amp;', '&');
+    text = text.replaceAll('&lt;', '<');
+    text = text.replaceAll('&gt;', '>');
+    text = text.replaceAll('&quot;', '"');
+    text = text.replaceAll('&#39;', "'");
+    text = text.replaceAll('&apos;', "'");
+    
+    // Replace block-level elements with newlines
+    text = text.replaceAll(RegExp(r'</(p|div|br|li|h[1-6]|tr)[^>]*>', caseSensitive: false), '\n');
+    
+    // Remove all remaining HTML tags
+    text = text.replaceAll(RegExp(r'<[^>]+>'), '');
+    
+    // Decode remaining HTML entities (basic ones)
+    text = text.replaceAllMapped(RegExp(r'&#(\d+);'), (match) {
+      final code = int.tryParse(match.group(1) ?? '');
+      if (code != null && code >= 32 && code <= 126) {
+        return String.fromCharCode(code);
+      }
+      return match.group(0) ?? '';
+    });
+    
+    // Clean up whitespace
+    text = text.replaceAll(RegExp(r'\n\s*\n\s*\n'), '\n\n');
+    text = text.trim();
+    
+    return text;
+  }
+
+  Widget _buildExpandedBodyContent(String htmlBody, Color textColor, ThemeData theme) {
+    // Try to detect if it's HTML or plain text
+    final isHtml = htmlBody.contains('<') && htmlBody.contains('>');
+    
+    if (isHtml) {
+      // For HTML content, convert to plain text for simple display
+      final plainText = _htmlToPlainText(htmlBody);
+      return SelectableText(
+        plainText,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: textColor,
+          height: 1.5,
+        ),
+      );
+    } else {
+      // Already plain text
+      return SelectableText(
+        htmlBody,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: textColor,
+          height: 1.5,
+        ),
+      );
+    }
+  }
+
+  Future<void> _loadEmailBodyForMessage(MessageIndex message) async {
+    // If already loaded, don't reload
+    if (_expandedMessageBodies.containsKey(message.id)) {
+      return;
+    }
+
+    // Mark as loading
+    if (mounted) {
+      setState(() {
+        _expandedMessageLoading[message.id] = true;
+      });
+    }
+
+    try {
+      String? bodyHtml;
+
+      // If viewing from local folder, load from saved file
+      if (widget.localFolderName != null) {
+        final folderService = LocalFolderService();
+        final body = await folderService.loadEmailBody(widget.localFolderName!, message.id);
+        if (body != null) {
+          bodyHtml = body;
+        }
+      } else {
+        // Load from Gmail API
+        final account = await GoogleAuthService().ensureValidAccessToken(widget.accountId);
+        final accessToken = account?.accessToken;
+        if (accessToken == null || accessToken.isEmpty) {
+          throw Exception('No access token available');
+        }
+
+        final resp = await http.get(
+          Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}?format=full'),
+          headers: {'Authorization': 'Bearer $accessToken'},
+        );
+
+        if (resp.statusCode != 200) {
+          throw Exception('Failed to load email: ${resp.statusCode}');
+        }
+
+        final map = jsonDecode(resp.body) as Map<String, dynamic>;
+        final payload = map['payload'] as Map<String, dynamic>?;
+
+        String? htmlBody;
+        String? plainBody;
+
+        // Walk through the payload structure to find HTML and plain text parts
+        void extractBody(dynamic part) {
+          if (part is! Map<String, dynamic>) return;
+
+          final mimeType = (part['mimeType'] as String? ?? '').toLowerCase();
+          final body = part['body'] as Map<String, dynamic>?;
+          final data = body?['data'] as String?;
+
+          if (data != null) {
+            try {
+              final decoded = utf8.decode(
+                base64Url.decode(data.replaceAll('-', '+').replaceAll('_', '/')),
+              );
+              if (mimeType.contains('text/html')) {
+                htmlBody = decoded;
+              } else if (mimeType.contains('text/plain')) {
+                plainBody = decoded;
+              }
+            } catch (e) {
+              // Continue to next part
+            }
+          }
+
+          // Recursively check nested parts
+          final parts = part['parts'] as List<dynamic>?;
+          if (parts != null) {
+            for (final p in parts) {
+              extractBody(p);
+            }
+          }
+        }
+
+        extractBody(payload ?? {});
+
+        // Prefer HTML over plain text
+        final bodyContent = htmlBody ?? plainBody ?? message.snippet ?? 'No content available';
+        bodyHtml = htmlBody != null
+            ? bodyContent
+            : '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(bodyContent)}</pre>';
+      }
+
+      if (mounted) {
+        setState(() {
+          _expandedMessageBodies[message.id] = bodyHtml ?? 'No content available';
+          _expandedMessageLoading[message.id] = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _expandedMessageBodies[message.id] = 'Error loading email: $e';
+          _expandedMessageLoading[message.id] = false;
+        });
+      }
+    }
   }
 
   Future<void> _showMessageFromThread(MessageIndex message) async {

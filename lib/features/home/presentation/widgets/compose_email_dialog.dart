@@ -163,11 +163,24 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
       final syncService = GmailSyncService();
       
       // Materialize attachments (handles both file paths and in-memory bytes)
-      final attachmentFiles = <File>[];
+      // Create GmailAttachmentData directly to preserve original filenames
+      final attachmentData = <GmailAttachmentData>[];
       for (final platformFile in _attachments) {
         final file = await _ensureAttachmentFile(platformFile);
         if (file != null) {
-          attachmentFiles.add(file);
+          final bytes = await file.readAsBytes();
+          // Use the original filename from platformFile.name, not the temp file path
+          final originalFilename = platformFile.name.isNotEmpty 
+              ? platformFile.name 
+              : file.path.split(Platform.pathSeparator).last;
+          final mimeType = _determineMimeTypeFromFilename(originalFilename);
+          attachmentData.add(
+            GmailAttachmentData(
+              filename: originalFilename,
+              mimeType: mimeType,
+              bytes: bytes,
+            ),
+          );
         }
       }
       
@@ -228,7 +241,8 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
         subject: _subjectController.text.trim(),
         body: plainBody,
         htmlBody: htmlBodyForSend,
-        attachments: attachmentFiles,
+        attachments: null, // Pass null since we're using attachmentData
+        attachmentData: attachmentData, // Pass the GmailAttachmentData directly
         forwardedAttachments: forwardedAttachments,
         inReplyTo: inReplyTo,
         references: references,
@@ -353,6 +367,36 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   String _sanitizeFilename(String name) {
     final sanitized = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
     return sanitized.isEmpty ? 'attachment' : sanitized;
+  }
+
+  String _determineMimeTypeFromFilename(String filename) {
+    final extension = filename.contains('.') ? filename.split('.').last.toLowerCase() : '';
+    switch (extension) {
+      case 'pdf':
+        return 'application/pdf';
+      case 'jpg':
+      case 'jpeg':
+        return 'image/jpeg';
+      case 'png':
+        return 'image/png';
+      case 'gif':
+        return 'image/gif';
+      case 'txt':
+        return 'text/plain';
+      case 'html':
+      case 'htm':
+        return 'text/html';
+      case 'doc':
+      case 'docx':
+        return 'application/msword';
+      case 'xls':
+      case 'xlsx':
+        return 'application/vnd.ms-excel';
+      case 'csv':
+        return 'text/csv';
+      default:
+        return 'application/octet-stream';
+    }
   }
 
   bool get _isReplyLike =>

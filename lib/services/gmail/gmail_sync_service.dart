@@ -1296,6 +1296,7 @@ class GmailSyncService {
     String? inReplyTo,
     List<String>? references,
     List<File>? attachments,
+    List<GmailAttachmentData>? attachmentData,
     List<GmailAttachmentData>? forwardedAttachments,
     String? threadId,
   }) async {
@@ -1315,7 +1316,10 @@ class GmailSyncService {
       final rawMessage = StringBuffer();
 
       final expandedAttachments = <GmailAttachmentData>[];
-      if (attachments != null && attachments.isNotEmpty) {
+      // Prefer attachmentData over attachments (attachmentData preserves original filenames)
+      if (attachmentData != null && attachmentData.isNotEmpty) {
+        expandedAttachments.addAll(attachmentData);
+      } else if (attachments != null && attachments.isNotEmpty) {
         for (final file in attachments) {
           if (!await file.exists()) continue;
           final bytes = await file.readAsBytes();
