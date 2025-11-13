@@ -24,6 +24,9 @@ final emailListProvider = StateNotifierProvider<EmailListNotifier, AsyncValue<Li
 final emailSyncingProvider = StateProvider<bool>((ref) => false);
 final emailLoadingLocalProvider = StateProvider<bool>((ref) => false);
 
+/// Provider for conversation mode state (persists during app runtime only)
+final conversationModeProvider = StateProvider<bool>((ref) => false);
+
 class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   final GmailSyncService _syncService;
   final Ref _ref;

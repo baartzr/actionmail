@@ -7,7 +7,9 @@ import 'package:domail/data/models/message_index.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
 import 'package:domail/services/local_folders/local_folder_service.dart';
 import 'package:domail/shared/widgets/app_window_dialog.dart';
 import 'package:file_picker/file_picker.dart';
@@ -16,6 +18,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
 import 'package:path/path.dart' as path;
@@ -90,8 +93,50 @@ class _InlineImageLoadResult {
 
 enum _ReplyMenuAction { reply, replyAll, forward }
 
+/// Represents a pending sent message (not yet loaded from Gmail)
+class _PendingSentMessage {
+  final String threadId;
+  final String to;
+  final String subject;
+  String body; // Mutable so we can update it as user types
+  final DateTime sentDate;
+  final String from;
+  bool isSent; // true when send completes, false while sending
+  final TextEditingController? textController; // For editable messages
+
+  _PendingSentMessage({
+    required this.threadId,
+    required this.to,
+    required this.subject,
+    required this.body,
+    required this.sentDate,
+    required this.from,
+    this.isSent = false,
+    this.textController,
+  });
+  
+  bool get isEditable => !isSent && textController != null;
+  
+  void dispose() {
+    textController?.dispose();
+  }
+}
+
+/// Helper class to combine real messages and pending messages in conversation list
+class _ConversationItem {
+  final MessageIndex? message;
+  final _PendingSentMessage? pending;
+  final bool isPending;
+
+  _ConversationItem({
+    this.message,
+    this.pending,
+    required this.isPending,
+  }) : assert((message != null && !isPending) || (pending != null && isPending));
+}
+
 /// Dialog for viewing email content in a webview
-class EmailViewerDialog extends StatefulWidget {
+class EmailViewerDialog extends ConsumerStatefulWidget {
   final MessageIndex message;
   final String accountId;
   final VoidCallback? onMarkRead;
@@ -106,10 +151,10 @@ class EmailViewerDialog extends StatefulWidget {
   });
 
   @override
-  State<EmailViewerDialog> createState() => _EmailViewerDialogState();
+  ConsumerState<EmailViewerDialog> createState() => _EmailViewerDialogState();
 }
 
-class _EmailViewerDialogState extends State<EmailViewerDialog> {
+class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   static final Map<String, _CachedInlineImage> _inlineImageCache = {};
   static const Duration _inlineImageCacheDuration = Duration(minutes: 30);
 
@@ -138,11 +183,35 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   final Map<String, String> _attachmentFileCache = {};
   ComposeDraftState? _pendingComposeDraft;
   ComposeEmailMode? _pendingComposeMode;
+  final TextEditingController _inlineReplyController = TextEditingController();
+  bool _isSendingInlineReply = false;
+  
+  // Pending sent messages (in-memory only, cleared on window close or when real message arrives)
+  final List<_PendingSentMessage> _pendingSentMessages = [];
+  Timer? _conversationRefreshTimer;
+  final ScrollController _conversationScrollController = ScrollController();
+  
 
   @override
   void initState() {
     super.initState();
     _currentMessage = widget.message;
+    // Load conversation mode state from provider
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final isConversationMode = ref.read(conversationModeProvider);
+      if (isConversationMode) {
+        setState(() {
+          _isConversationMode = true;
+          _threadMessages = [_currentMessage];
+          _isThreadLoading = true;
+          _threadError = null;
+          _showNavigationExtras = false;
+          _canGoBack = false;
+        });
+        unawaited(_loadThreadMessages());
+        _startConversationRefreshTimer();
+      }
+    });
     _loadAccountEmail();
     _loadEmailBody();
     // Mark as read when dialog opens
@@ -159,7 +228,7 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   }
 
   String _inlineImageCacheKey(String messageId, String cid) {
-    return '${widget.accountId}::$messageId::${cid.toLowerCase()}';
+    return '$widget.accountId::$messageId::${cid.toLowerCase()}';
   }
 
   bool _hasCachedInlineImages(Map<String, dynamic> payload, String messageId) {
@@ -186,6 +255,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
 
   @override
   void dispose() {
+    _inlineReplyController.dispose();
+    _conversationRefreshTimer?.cancel();
+    _conversationScrollController.dispose();
+    for (final pending in _pendingSentMessages) {
+      pending.dispose();
+    }
+    _pendingSentMessages.clear();
     for (final path in _tempFilePaths) {
       try {
         final file = File(path);
@@ -1652,7 +1728,73 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     return sanitized.isEmpty ? 'attachment' : sanitized;
   }
 
-  void _handleReply() {
+  void _handleReply() async {
+    // In conversation mode, create an empty message bubble at the top
+    if (_isConversationMode) {
+      // Find the last received email (not sent by user) to get the "To" address
+      MessageIndex? lastReceivedMessage;
+      final accountEmail = _accountEmail?.toLowerCase() ?? '';
+      
+      // Combine all messages (thread + current)
+      final allThreadMessages = _threadMessages.isEmpty 
+          ? <MessageIndex>[_currentMessage] 
+          : List<MessageIndex>.from(_threadMessages);
+      
+      // Find the most recent message that was NOT sent by the user
+      for (final msg in allThreadMessages) {
+        final senderEmail = _extractEmail(msg.from).toLowerCase();
+        if (senderEmail != accountEmail && accountEmail.isNotEmpty) {
+          if (lastReceivedMessage == null || 
+              msg.internalDate.isAfter(lastReceivedMessage.internalDate)) {
+            lastReceivedMessage = msg;
+          }
+        }
+      }
+      
+      // Fallback to current message if no received message found
+      final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
+      
+      // Use the sender of the last received email as the "To" address
+      final to = _extractEmail(messageToReplyTo.from);
+      final subject = messageToReplyTo.subject.startsWith('Re:') 
+          ? messageToReplyTo.subject 
+          : 'Re: ${messageToReplyTo.subject}';
+      final threadId = messageToReplyTo.threadId.isNotEmpty ? messageToReplyTo.threadId : '';
+      
+      // Get account email for "From" field
+      final account = await GoogleAuthService().getAccountById(widget.accountId);
+      final fromEmail = account?.email ?? '';
+      
+      // Create an empty editable pending message
+      final textController = TextEditingController();
+      final pendingMessage = _PendingSentMessage(
+        threadId: threadId,
+        to: to,
+        subject: subject,
+        body: '', // Empty - will be filled when user types
+        sentDate: DateTime.now(),
+        from: fromEmail,
+        isSent: false,
+        textController: textController,
+      );
+      
+      setState(() {
+        _pendingSentMessages.add(pendingMessage);
+      });
+      
+      // Scroll to top to show the new message
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_conversationScrollController.hasClients) {
+          _conversationScrollController.animateTo(
+            0,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+      return;
+    }
+    
     final to = _extractEmail(_currentMessage.from);
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
@@ -1704,6 +1846,9 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       setState(() {
         _isConversationMode = false;
       });
+      ref.read(conversationModeProvider.notifier).state = false;
+      _conversationRefreshTimer?.cancel();
+      _conversationRefreshTimer = null;
       _updateNavigationState();
       return;
     }
@@ -1716,8 +1861,25 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       _showNavigationExtras = false;
       _canGoBack = false;
     });
+    ref.read(conversationModeProvider.notifier).state = true;
 
     unawaited(_loadThreadMessages());
+    _startConversationRefreshTimer();
+  }
+
+  void _startConversationRefreshTimer() {
+    _conversationRefreshTimer?.cancel();
+    if (!_isConversationMode) return;
+    
+    // Refresh every 30 seconds to check for new messages
+    _conversationRefreshTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      if (!_isConversationMode || !mounted) {
+        _conversationRefreshTimer?.cancel();
+        return;
+      }
+      // Silent refresh - no loading indicator
+      await _refreshConversation();
+    });
   }
 
   Future<void> _loadThreadMessages() async {
@@ -1736,11 +1898,36 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       final repo = MessageRepository();
       final messages = await repo.getMessagesByThread(widget.accountId, threadId);
       if (!mounted) return;
+      
+      // Clear pending messages when new emails with same threadId arrive
+      // Track previous message IDs to detect new messages
+      final previousMessageIds = _threadMessages.map((m) => m.id).toSet();
+      final newMessageIds = messages.map((m) => m.id).toSet();
+      final hasNewMessages = newMessageIds.difference(previousMessageIds).isNotEmpty;
+      
+      if (hasNewMessages) {
+        // Remove all pending messages for this thread when any new message is received
+        _pendingSentMessages.removeWhere((pending) => pending.threadId == threadId);
+      }
+      
       setState(() {
         _threadMessages = messages.isEmpty ? [_currentMessage] : messages;
         _isThreadLoading = false;
         _threadError = null;
       });
+      
+      // Scroll to top (position 0) when new messages arrive
+      if (hasNewMessages && _conversationScrollController.hasClients) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_conversationScrollController.hasClients) {
+            _conversationScrollController.animateTo(
+              0,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -1751,6 +1938,37 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     }
   }
 
+  Future<void> _refreshConversation({bool showLoading = false}) async {
+    if (!_isConversationMode) return;
+    
+    try {
+      if (showLoading && mounted) {
+        setState(() {
+          _isThreadLoading = true;
+        });
+      }
+      
+      final syncService = GmailSyncService();
+      // Run incremental sync
+      await syncService.incrementalSync(widget.accountId);
+      // Reload thread messages (silently if not showing loading)
+      await _loadThreadMessages();
+      
+      if (showLoading && mounted) {
+        setState(() {
+          _isThreadLoading = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[EmailViewer] Failed to refresh conversation: $e');
+      if (showLoading && mounted) {
+        setState(() {
+          _isThreadLoading = false;
+        });
+      }
+    }
+  }
+
   bool _isOutgoing(MessageIndex message) {
     final accountEmail = _accountEmail;
     if (accountEmail == null || accountEmail.isEmpty) {
@@ -1758,6 +1976,322 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     }
     final senderEmail = _extractEmail(message.from).toLowerCase();
     return senderEmail == accountEmail;
+  }
+
+
+  String _wrapPlainAsHtml(String plain) {
+    return '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(plain)}</pre>';
+  }
+
+  Widget _buildPendingSentMessageBubble(
+    _PendingSentMessage pending,
+    ThemeData theme,
+    double maxWidth,
+    double minWidth,
+  ) {
+    final cs = theme.colorScheme;
+    final textColor = cs.onPrimary;
+    final metaColor = textColor.withValues(alpha: 0.8);
+    final isEditable = pending.isEditable;
+
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0.0, end: 1.0),
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+      builder: (context, value, child) {
+        return Transform.translate(
+          offset: Offset(0, -20 * (1 - value)), // Slide down from top
+          child: Opacity(
+            opacity: value,
+            child: child,
+          ),
+        );
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxWidth: maxWidth,
+                minWidth: minWidth,
+              ),
+              child: Material(
+                color: ActionMailTheme.sentMessageColor,
+                elevation: 0,
+                borderRadius: BorderRadius.circular(18),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  pending.from,
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    color: textColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _formatDate(pending.sentDate),
+                                  style: theme.textTheme.labelSmall?.copyWith(color: metaColor),
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'To: ${pending.to}',
+                                  style: theme.textTheme.bodySmall?.copyWith(color: metaColor),
+                                ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  pending.subject,
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    color: textColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isEditable)
+                            IconButton(
+                              icon: Icon(Icons.close, size: 18, color: textColor),
+                              onPressed: () {
+                                setState(() {
+                                  pending.dispose();
+                                  _pendingSentMessages.remove(pending);
+                                });
+                              },
+                              tooltip: 'Cancel',
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                        ],
+                      ),
+                      if (isEditable) ...[
+                        const SizedBox(height: 12),
+                        Builder(
+                          key: ValueKey('textfield_${pending.threadId}'),
+                          builder: (context) {
+                            return TextField(
+                              key: ValueKey('textfield_input_${pending.threadId}'),
+                              controller: pending.textController,
+                              autofocus: false,
+                              style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                              decoration: InputDecoration(
+                                hintText: 'Type your message...',
+                                hintStyle: TextStyle(color: metaColor),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide(color: metaColor.withValues(alpha: 0.3)),
+                                ),
+                                enabledBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide(color: metaColor.withValues(alpha: 0.3)),
+                                ),
+                                focusedBorder: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(8),
+                                  borderSide: BorderSide(color: textColor.withValues(alpha: 0.5)),
+                                ),
+                                filled: true,
+                                fillColor: textColor.withValues(alpha: 0.1),
+                                contentPadding: const EdgeInsets.all(12),
+                              ),
+                              maxLines: null,
+                              minLines: 3,
+                              textInputAction: TextInputAction.newline,
+                              keyboardType: TextInputType.multiline,
+                              enableSuggestions: false,
+                              autocorrect: false,
+                              onChanged: (value) {
+                                // Update the body without calling setState immediately to avoid losing focus
+                                // We'll call setState in a post-frame callback to update the UI
+                                pending.body = value;
+                                // Update UI after the current frame to preserve focus
+                                WidgetsBinding.instance.addPostFrameCallback((_) {
+                                  if (mounted) {
+                                    setState(() {
+                                      // Trigger rebuild to update button state
+                                    });
+                                  }
+                                });
+                              },
+                              onSubmitted: (value) {
+                                // Explicitly do nothing - prevent auto-send
+                                // User must click Send button to send
+                                // Even if Enter is pressed, don't send
+                              },
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Builder(
+                            key: ValueKey('sendbutton_${pending.body.length}_$_isSendingInlineReply'),
+                            builder: (context) {
+                              // Only create callback if body is not empty AND not sending
+                              final bool canSend = pending.body.trim().isNotEmpty && !_isSendingInlineReply;
+                              final VoidCallback? sendCallback = canSend
+                                  ? () {
+                                      if (pending.body.trim().isEmpty || _isSendingInlineReply) {
+                                        return;
+                                      }
+                                      _sendPendingMessage(pending);
+                                    }
+                                  : null;
+                              
+                              return TextButton.icon(
+                                onPressed: sendCallback, // Will be null if canSend is false
+                                autofocus: false, // Explicitly prevent autofocus
+                                icon: !canSend
+                                    ? (_isSendingInlineReply
+                                        ? const SizedBox(
+                                            width: 16,
+                                            height: 16,
+                                            child: CircularProgressIndicator(strokeWidth: 2),
+                                          )
+                                        : const Icon(Icons.send, size: 18, color: Colors.grey))
+                                    : const Icon(Icons.send, size: 18),
+                                focusNode: FocusNode(skipTraversal: true), // Prevent button from getting focus
+                                label: Text(_isSendingInlineReply ? 'Sending...' : 'Send'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: textColor,
+                                  disabledForegroundColor: Colors.grey,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ] else ...[
+                        if (pending.body.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            pending.body,
+                            style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text(
+                            pending.isSent ? 'Sent' : 'Sending...',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: metaColor,
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Future<void> _sendPendingMessage(_PendingSentMessage pending) async {
+    final text = pending.body.trim();
+    // Prevent sending if text is too short (less than 2 characters) - this prevents accidental sends
+    if (text.isEmpty || text.length < 2 || _isSendingInlineReply) {
+      return;
+    }
+
+    // Find the message to reply to
+    MessageIndex? lastReceivedMessage;
+    final accountEmail = _accountEmail?.toLowerCase() ?? '';
+    
+    final allThreadMessages = _threadMessages.isEmpty 
+        ? <MessageIndex>[_currentMessage] 
+        : List<MessageIndex>.from(_threadMessages);
+    
+    for (final msg in allThreadMessages) {
+      final senderEmail = _extractEmail(msg.from).toLowerCase();
+      if (senderEmail != accountEmail && accountEmail.isNotEmpty) {
+        if (lastReceivedMessage == null || 
+            msg.internalDate.isAfter(lastReceivedMessage.internalDate)) {
+          lastReceivedMessage = msg;
+        }
+      }
+    }
+    
+    final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
+    
+    setState(() {
+      _isSendingInlineReply = true;
+      pending.isSent = false; // Mark as sending
+    });
+
+    try {
+      final syncService = GmailSyncService();
+
+      String? inReplyTo;
+      List<String>? references;
+
+      final replyContext = await syncService.fetchReplyContext(widget.accountId, messageToReplyTo.id);
+      if (replyContext != null) {
+        final headerMessageId = replyContext.messageIdHeader;
+        if (headerMessageId != null && headerMessageId.isNotEmpty) {
+          inReplyTo = headerMessageId;
+        }
+        final refs = replyContext.references;
+        if (refs.isNotEmpty) {
+          references = List<String>.from(refs);
+          if (inReplyTo != null && !references.contains(inReplyTo)) {
+            references.add(inReplyTo);
+          }
+        }
+      }
+
+      await syncService.sendEmail(
+        widget.accountId,
+        to: pending.to,
+        subject: pending.subject,
+        body: text,
+        htmlBody: _wrapPlainAsHtml(text),
+        inReplyTo: inReplyTo,
+        references: references,
+        threadId: pending.threadId.isNotEmpty ? pending.threadId : null,
+      );
+
+      if (!mounted) return;
+      
+      setState(() {
+        pending.isSent = true;
+        _isSendingInlineReply = false;
+      });
+
+      // Refresh conversation to get the actual sent message
+      await _refreshConversation(showLoading: false);
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Message sent successfully')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        pending.isSent = false;
+        _isSendingInlineReply = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send message: $e')),
+      );
+    }
   }
 
   Widget _buildConversationList() {
@@ -1778,8 +2312,31 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
     }
 
     final messages = _threadMessages.isEmpty ? <MessageIndex>[_currentMessage] : _threadMessages;
-    final showConversationHint = messages.length <= 1;
-    final itemCount = showConversationHint ? messages.length + 1 : messages.length;
+    
+    // Combine real messages with pending sent messages
+    final threadId = _currentMessage.threadId;
+    final pendingForThread = _pendingSentMessages
+        .where((p) => p.threadId == threadId)
+        .toList();
+    
+    // Create a combined list with pending messages
+    final allMessages = <_ConversationItem>[];
+    for (final msg in messages) {
+      allMessages.add(_ConversationItem(message: msg, isPending: false));
+    }
+    for (final pending in pendingForThread) {
+      allMessages.add(_ConversationItem(pending: pending, isPending: true));
+    }
+    
+    // Sort by date (newest first) - newest at index 0, appears at top
+    allMessages.sort((a, b) {
+      final dateA = a.isPending ? a.pending!.sentDate : a.message!.internalDate;
+      final dateB = b.isPending ? b.pending!.sentDate : b.message!.internalDate;
+      return dateB.compareTo(dateA); // Newest first
+    });
+    
+    final showConversationHint = allMessages.length <= 1 && pendingForThread.isEmpty;
+    final itemCount = showConversationHint ? allMessages.length + 1 : allMessages.length;
     final theme = Theme.of(context);
 
     return LayoutBuilder(
@@ -1789,9 +2346,12 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
         final resolvedMinWidth = minWidth > maxWidth ? maxWidth : minWidth;
 
         return ListView.builder(
+          controller: _conversationScrollController,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           itemCount: itemCount,
           itemBuilder: (context, index) {
+            // allMessages is sorted newest first (index 0 = newest)
+            // ListView index 0 = top, so allMessages[0] appears at top
             if (showConversationHint && index == itemCount - 1) {
               return Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12.0),
@@ -1807,7 +2367,18 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               );
             }
 
-            final message = messages[index];
+            if (index < 0 || index >= allMessages.length) {
+              return const SizedBox.shrink();
+            }
+            
+            final item = allMessages[index];
+            final isPending = item.isPending;
+            
+            if (isPending) {
+              return _buildPendingSentMessageBubble(item.pending!, theme, maxWidth, resolvedMinWidth);
+            }
+            
+            final message = item.message!;
             final isOutgoing = _isOutgoing(message);
             final alignment = isOutgoing ? MainAxisAlignment.end : MainAxisAlignment.start;
             final bubbleColor = isOutgoing
@@ -1921,17 +2492,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
   }
 
   Future<void> _showMessageFromThread(MessageIndex message) async {
-    if (message.id == _currentMessage.id) {
-      setState(() {
-        _isConversationMode = false;
-      });
-      _updateNavigationState();
-      return;
-    }
-
+    // Always exit conversation mode and show the clicked email
     setState(() {
-      _currentMessage = message;
       _isConversationMode = false;
+      _currentMessage = message;
       _htmlContent = null;
       _attachments = [];
       _error = null;
@@ -1941,7 +2505,10 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
       _canGoBack = false;
       _currentUrl = null;
     });
-
+    ref.read(conversationModeProvider.notifier).state = false;
+    _conversationRefreshTimer?.cancel();
+    _conversationRefreshTimer = null;
+    _updateNavigationState();
     await _loadEmailBody();
   }
 
@@ -2049,6 +2616,13 @@ class _EmailViewerDialogState extends State<EmailViewerDialog> {
               icon: const Icon(Icons.open_in_new, size: 20),
               color: theme.appBarTheme.foregroundColor,
               onPressed: _openCurrentInBrowser,
+            ),
+          if (_isConversationMode)
+            IconButton(
+              tooltip: 'Refresh conversation',
+              icon: const Icon(Icons.refresh, size: 20),
+              color: theme.appBarTheme.foregroundColor,
+              onPressed: () => _refreshConversation(showLoading: true),
             ),
           if (_currentMessage.threadId.isNotEmpty)
             IconButton(
