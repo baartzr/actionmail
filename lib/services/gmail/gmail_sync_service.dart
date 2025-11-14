@@ -1319,6 +1319,7 @@ class GmailSyncService {
       // Prefer attachmentData over attachments (attachmentData preserves original filenames)
       if (attachmentData != null && attachmentData.isNotEmpty) {
         expandedAttachments.addAll(attachmentData);
+        debugPrint('[Gmail] sendEmail: Added ${attachmentData.length} attachment(s) from attachmentData');
       } else if (attachments != null && attachments.isNotEmpty) {
         for (final file in attachments) {
           if (!await file.exists()) continue;
@@ -1329,11 +1330,16 @@ class GmailSyncService {
             GmailAttachmentData(filename: filename, mimeType: mimeType, bytes: bytes),
           );
         }
+        debugPrint('[Gmail] sendEmail: Added ${expandedAttachments.length} attachment(s) from attachments');
       }
+      // Always add forwardedAttachments if present (for forwards and replies with forwarded content)
       if (forwardedAttachments != null && forwardedAttachments.isNotEmpty) {
         expandedAttachments.addAll(forwardedAttachments);
+        debugPrint('[Gmail] sendEmail: Added ${forwardedAttachments.length} forwarded attachment(s)');
       }
+      debugPrint('[Gmail] sendEmail: Total attachments to send: ${expandedAttachments.length}');
       final hasHtml = htmlBody != null && htmlBody.trim().isNotEmpty;
+      final hasAttachments = expandedAttachments.isNotEmpty;
 
       rawMessage.writeln('From: $senderEmail');
       rawMessage.writeln('To: $to');
@@ -1355,12 +1361,31 @@ class GmailSyncService {
         rawMessage.writeln('References: ${references.join(' ')}');
       }
 
+      // Generate boundary if needed for multipart messages
+      final needsMimeHeaders = hasAttachments || (hasHtml && htmlBody.trim().isNotEmpty);
+      String? boundary;
+      if (needsMimeHeaders) {
+        boundary = _generateBoundary();
+        rawMessage.writeln('MIME-Version: 1.0');
+        if (hasAttachments) {
+          rawMessage.writeln('Content-Type: multipart/mixed; boundary="$boundary"');
+        } else if (hasHtml) {
+          rawMessage.writeln('Content-Type: multipart/alternative; boundary="$boundary"');
+        }
+      }
+      
+      // Blank line separates headers from body (required by email format)
+      rawMessage.writeln('');
+      
+      debugPrint('[Gmail] sendEmail: Building MIME body with ${expandedAttachments.length} attachment(s), hasHtml=$hasHtml, needsMimeHeaders=$needsMimeHeaders');
       final mimeBody = _buildMimeBody(
         plainBody: body,
         htmlBody: htmlBody,
         attachments: expandedAttachments,
         hasHtml: hasHtml,
+        boundary: boundary,
       );
+      debugPrint('[Gmail] sendEmail: MIME body length: ${mimeBody.length} bytes');
       rawMessage.write(mimeBody);
 
       final rawBase64Url = base64UrlEncode(utf8.encode(rawMessage.toString()))
@@ -1430,9 +1455,11 @@ class GmailSyncService {
     String? htmlBody,
     required List<GmailAttachmentData> attachments,
     required bool hasHtml,
+    String? boundary, // Boundary passed from outside for multipart messages
   }) {
     final hasAttachments = attachments.isNotEmpty;
     final trimmedHtml = hasHtml ? (htmlBody ?? '').trim() : null;
+    debugPrint('[Gmail] _buildMimeBody: hasAttachments=$hasAttachments, attachments.count=${attachments.length}, hasHtml=$hasHtml');
 
     if (!hasAttachments && (!hasHtml || trimmedHtml == null || trimmedHtml.isEmpty)) {
       final buffer = StringBuffer();
@@ -1444,11 +1471,9 @@ class GmailSyncService {
     }
 
     if (!hasAttachments && trimmedHtml != null && trimmedHtml.isNotEmpty) {
-      final boundaryAlt = _generateBoundary();
+      final boundaryAlt = boundary ?? _generateBoundary();
       final buffer = StringBuffer();
-      buffer.writeln('MIME-Version: 1.0');
-      buffer.writeln('Content-Type: multipart/alternative; boundary="$boundaryAlt"');
-      buffer.writeln('');
+      // Don't include MIME-Version and Content-Type here - they'll be added to headers
       buffer.writeln('--$boundaryAlt');
       buffer.writeln('Content-Type: text/plain; charset=UTF-8');
       buffer.writeln('Content-Transfer-Encoding: 7bit');
@@ -1466,10 +1491,8 @@ class GmailSyncService {
     }
 
     final buffer = StringBuffer();
-    final boundaryMixed = _generateBoundary();
-    buffer.writeln('MIME-Version: 1.0');
-    buffer.writeln('Content-Type: multipart/mixed; boundary="$boundaryMixed"');
-    buffer.writeln('');
+    final boundaryMixed = boundary ?? _generateBoundary();
+    // Don't include MIME-Version and Content-Type here - they'll be added to headers
     buffer.writeln('This is a multi-part message in MIME format.');
     buffer.writeln('');
 
@@ -1503,9 +1526,11 @@ class GmailSyncService {
 
     for (final attachment in attachments) {
       final base64Data = base64Encode(attachment.bytes);
+      // Properly encode filename for MIME headers (escape quotes and backslashes)
+      final encodedFilename = _encodeMimeHeaderValue(attachment.filename);
       buffer.writeln('--$boundaryMixed');
-      buffer.writeln('Content-Type: ${attachment.mimeType}; name="${attachment.filename}"');
-      buffer.writeln('Content-Disposition: attachment; filename="${attachment.filename}"');
+      buffer.writeln('Content-Type: ${attachment.mimeType}; name="$encodedFilename"');
+      buffer.writeln('Content-Disposition: attachment; filename="$encodedFilename"');
       buffer.writeln('Content-Transfer-Encoding: base64');
       buffer.writeln('');
       buffer.writeln(_chunkBase64(base64Data));
@@ -1528,6 +1553,15 @@ class GmailSyncService {
       buffer.writeln(data.substring(i, end));
     }
     return buffer.toString();
+  }
+
+  /// Encode filename for use in MIME headers
+  /// Escapes backslashes and quotes, and handles special characters
+  String _encodeMimeHeaderValue(String filename) {
+    // Escape backslashes and quotes
+    return filename
+        .replaceAll('\\', '\\\\')
+        .replaceAll('"', '\\"');
   }
 
   /// Send an auto-unsubscribe mail when List-Unsubscribe provides a mailto: link

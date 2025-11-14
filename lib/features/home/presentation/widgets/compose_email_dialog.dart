@@ -165,6 +165,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
       // Materialize attachments (handles both file paths and in-memory bytes)
       // Create GmailAttachmentData directly to preserve original filenames
       final attachmentData = <GmailAttachmentData>[];
+      debugPrint('[Compose] Processing ${_attachments.length} attachment(s) for mode: ${widget.mode}');
       for (final platformFile in _attachments) {
         final file = await _ensureAttachmentFile(platformFile);
         if (file != null) {
@@ -181,8 +182,12 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
               bytes: bytes,
             ),
           );
+          debugPrint('[Compose] Added attachment: $originalFilename (${bytes.length} bytes)');
+        } else {
+          debugPrint('[Compose] Failed to ensure file for attachment: ${platformFile.name}');
         }
       }
+      debugPrint('[Compose] Total attachmentData: ${attachmentData.length}');
       
       String? threadId;
       String? inReplyTo;
@@ -224,7 +229,9 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
         );
         plainBody = _buildForwardPlainBody(_bodyController.text, originalPlain);
         forwardedAttachments = List<GmailAttachmentData>.from(_forwardedAttachments);
+        debugPrint('[Compose] Forward: ${forwardedAttachments.length} forwarded attachment(s), ${attachmentData.length} new attachment(s)');
       } else if (_isReplyLike) {
+        debugPrint('[Compose] Reply: ${attachmentData.length} new attachment(s)');
         final originalPlain = (_originalPlainText ?? widget.originalMessage?.snippet ?? '').trimRight();
         final originalHtml = _originalPreviewHtml ?? _wrapPlainAsHtml(originalPlain);
         htmlBodyForSend = _wrapHtmlDocument(
@@ -235,6 +242,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
         htmlBodyForSend = _wrapHtmlDocument(_wrapPlainAsHtml(plainBody));
       }
       
+      debugPrint('[Compose] Sending email with: attachmentData=${attachmentData.length}, forwardedAttachments=${forwardedAttachments.length}, mode=${widget.mode}');
       final success = await syncService.sendEmail(
         widget.accountId,
         to: _toController.text.trim(),
@@ -242,8 +250,8 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
         body: plainBody,
         htmlBody: htmlBodyForSend,
         attachments: null, // Pass null since we're using attachmentData
-        attachmentData: attachmentData, // Pass the GmailAttachmentData directly
-        forwardedAttachments: forwardedAttachments,
+        attachmentData: attachmentData.isEmpty ? null : attachmentData, // Pass null if empty, not empty list
+        forwardedAttachments: forwardedAttachments.isEmpty ? null : forwardedAttachments, // Pass null if empty, not empty list
         inReplyTo: inReplyTo,
         references: references,
         threadId: threadId,
