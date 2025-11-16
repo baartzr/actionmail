@@ -418,13 +418,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _refreshAccountUnreadCountLocal(activeAccountId);
       });
     });
-
+/*
     return Scaffold(
       appBar: PreferredSize(
-        preferredSize: Size.fromHeight((kToolbarHeight * 1.4) + MediaQuery.of(context).padding.top),
+        preferredSize: Size.fromHeight(kToolbarHeight * 2),
         child: Container(
           decoration: BoxDecoration(
-            color: Theme.of(context).appBarTheme.backgroundColor ?? Theme.of(context).colorScheme.surfaceContainerHighest,
+            color: Theme.of(context).appBarTheme.backgroundColor ??
+                Theme.of(context).colorScheme.surfaceContainerHighest,
             border: Border(
               bottom: BorderSide(
                 color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.1),
@@ -434,267 +435,141 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
           child: SafeArea(
             bottom: false,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                return Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Top row: Title and Account (centered)
-                    SizedBox(
-                      height: constraints.maxHeight * 0.5,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            GestureDetector(
-                              onTap: () {
-                                showDialog(
-                                  context: context,
-                                  builder: (_) => ActionsSummaryWindow(),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+
+                // ------------------------------------
+                // TOP ROW: Title + Account selector
+                // ------------------------------------
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      GestureDetector(
+                        onTap: () => showDialog(
+                          context: context,
+                          builder: (_) => ActionsSummaryWindow(),
+                        ),
+                        child: Text(
+                          AppConstants.appName,
+                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+
+                      // ACCOUNT SELECTOR
+                      TextButton.icon(
+                        onPressed: _isOpeningAccountDialog
+                            ? null
+                            : _showAccountSelectorDialog,
+                        icon: _isOpeningAccountDialog
+                            ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                          ),
+                        )
+                            : Icon(
+                          Icons.account_circle,
+                          size: 18,
+                          color: Theme.of(context).appBarTheme.foregroundColor,
+                        ),
+                        label: Text(
+                          _selectedAccountId != null && _accounts.isNotEmpty
+                              ? _accounts
+                              .firstWhere(
+                                  (acc) => acc.id == _selectedAccountId,
+                              orElse: () => _accounts.first)
+                              .email
+                              : '',
+                          style: TextStyle(
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                // Small gap between rows
+                const SizedBox(height: 0),
+
+                // ------------------------------------
+                // BOTTOM ROW: Folder selector + actions
+                // ------------------------------------
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                  child: Row(
+                    children: [
+                      // FOLDER DROPDOWN
+                      if (!_isLocalFolder)
+                        AppDropdown<String>(
+                          value: _selectedFolder,
+                          items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
+                          itemBuilder: (folder) =>
+                          AppConstants.folderDisplayNames[folder] ?? folder,
+                          textColor: Theme.of(context).appBarTheme.foregroundColor,
+                          onChanged: (value) async {
+                            if (value != null) {
+                              setState(() {
+                                _selectedFolder = value;
+                                _isLocalFolder = false;
+                              });
+                              if (_selectedAccountId != null) {
+                                await ref.read(emailListProvider.notifier).loadFolder(
+                                  _selectedAccountId!,
+                                  folderLabel: _selectedFolder,
                                 );
-                              },
-                              child: Text(
-                                AppConstants.appName,
-                                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  color: Theme.of(context).appBarTheme.foregroundColor,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            TextButton.icon(
-                              onPressed: _isOpeningAccountDialog ? null : _showAccountSelectorDialog,
-                              icon: _isOpeningAccountDialog
-                                  ? SizedBox(
-                                      width: 18,
-                                      height: 18,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Theme.of(context).appBarTheme.foregroundColor,
-                                      ),
-                                    )
-                                  : Icon(
-                                      Icons.account_circle,
-                                      size: 18,
-                                      color: Theme.of(context).appBarTheme.foregroundColor,
-                                    ),
-                              label: Text(
-                                _selectedAccountId != null && _accounts.isNotEmpty
-                                    ? _accounts.firstWhere((acc) => acc.id == _selectedAccountId, orElse: () => _accounts.first).email
-                                    : '',
-                                style: TextStyle(
-                                  color: Theme.of(context).appBarTheme.foregroundColor,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ),
-                          ],
+                              }
+                            }
+                          },
+                        )
+                      else
+                        Text(
+                          _selectedFolder,
+                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
-                      ),
-                    ),
-                    // Bottom row: Folder selector (left) and Filter buttons + Refresh/Settings/Menu (right)
-                    SizedBox(
-                      height: constraints.maxHeight * 0.5,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                        child: Row(
-                          children: [
-                            // Folder dropdown on left (only show for Gmail folders)
-                            if (!_isLocalFolder)
-                              AppDropdown<String>(
-                                value: _selectedFolder,
-                                items: const ['INBOX','SENT','TRASH','SPAM','ARCHIVE'],
-                                itemBuilder: (folder) => AppConstants.folderDisplayNames[folder] ?? folder,
-                                textColor: Theme.of(context).appBarTheme.foregroundColor,
-                                onChanged: (value) async {
-                                  if (value != null) {
-                                    setState(() {
-                                      _selectedFolder = value;
-                                      _isLocalFolder = false; // Reset to Gmail folder when using dropdown
-                                    });
-                                    if (_selectedAccountId != null) {
-                                      await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
-                                    }
-                                  }
-                                },
-                              )
-                            else
-                              // Show local folder name as text when viewing local folder
-                              Text(
-                                _selectedFolder,
-                                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                                  color: Theme.of(context).appBarTheme.foregroundColor,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            const Spacer(),
-                            // Personal/Business/All switch
-                            _buildAppBarLocalStateSwitch(context),
-                            const SizedBox(width: 8),
-                            PopupMenuButton<String>(
-                              icon: Icon(Icons.menu, size: 18, color: Theme.of(context).appBarTheme.foregroundColor),
-                              onSelected: (value) {
-                                switch (value) {
-                                  case 'Compose':
-                                    if (_selectedAccountId != null) {
-                                      showDialog(
-                                        context: context,
-                                        builder: (ctx) => ComposeEmailDialog(
-                                          accountId: _selectedAccountId!,
-                                          mode: ComposeEmailMode.newEmail,
-                                        ),
-                                      );
-                                    }
-                                    break;
-                                  case 'Refresh':
-                                    if (_selectedAccountId != null) {
-                                      ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
-                                    }
-                                    break;
-                                  case 'Settings':
-                                    showDialog(
-                                      context: context,
-                                      builder: (ctx) => const AccountsSettingsDialog(),
-                                    );
-                                    break;
-                                  case 'Actions':
-                                    showDialog(context: context, builder: (_) => ActionsSummaryWindow());
-                                    break;
-                                  case 'Attachments':
-                                    showDialog(context: context, builder: (_) => const AttachmentsWindow());
-                                    break;
-                                  case 'Subscriptions':
-                                    if (_selectedAccountId != null) {
-                                      showDialog(context: context, builder: (_) => SubscriptionsWindow(accountId: _selectedAccountId!));
-                                    }
-                                    break;
-                                  case 'Shopping':
-                                    showDialog(context: context, builder: (_) => const ShoppingWindow());
-                                    break;
-                                }
-                              },
-                              itemBuilder: (context) {
-                                final cs = Theme.of(context).colorScheme;
-                                return [
-                                  PopupMenuItem(
-                                    value: 'Compose',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.edit_outlined, size: 18, color: cs.onSurface),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Compose',
-                                          style: TextStyle(
-                                            color: cs.onSurface,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'Refresh',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.refresh, size: 18, color: cs.onSurface),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Refresh',
-                                          style: TextStyle(
-                                            color: cs.onSurface,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  PopupMenuItem(
-                                    value: 'Settings',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.settings_outlined, size: 18, color: cs.onSurface),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Settings',
-                                          style: TextStyle(
-                                            color: cs.onSurface,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const PopupMenuDivider(),
-                                  // Actions (renamed from Account Digest)
-                                  PopupMenuItem(
-                                    value: 'Actions',
-                                    child: Row(
-                                      children: [
-                                        Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
-                                        const SizedBox(width: 12),
-                                        Text(
-                                          'Actions',
-                                          style: TextStyle(
-                                            color: cs.onSurface,
-                                            fontSize: 13,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  // Other function windows (excluding Actions and Actions Summary which are shown separately)
-                                  ...AppConstants.allFunctionWindows.where((window) => window != AppConstants.windowActions && window != AppConstants.windowActionsSummary).map((window) {
-                                    IconData icon;
-                                    switch (window) {
-                                      case AppConstants.windowActions:
-                                        icon = Icons.auto_fix_high;
-                                        break;
-                                      case AppConstants.windowAttachments:
-                                        icon = Icons.attach_file;
-                                        break;
-                                      case AppConstants.windowSubscriptions:
-                                        icon = Icons.subscriptions;
-                                        break;
-                                      case AppConstants.windowShopping:
-                                        icon = Icons.shopping_bag;
-                                        break;
-                                      default:
-                                        icon = Icons.info_outline;
-                                    }
-                                    return PopupMenuItem(
-                                      value: window,
-                                      child: Row(
-                                        children: [
-                                          Icon(icon, size: 18, color: cs.onSurface),
-                                          const SizedBox(width: 12),
-                                          Text(
-                                            window,
-                                            style: TextStyle(
-                                              color: cs.onSurface,
-                                              fontSize: 13,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  }),
-                                ];
-                              },
-                            ),
-                          ],
+
+                      const Spacer(),
+
+                      // PERSONAL/BUSINESS SWITCH
+                      _buildAppBarLocalStateSwitch(context),
+                      const SizedBox(width: 8),
+
+                      // MENU BUTTON
+                      PopupMenuButton<String>(
+                        icon: Icon(
+                          Icons.menu,
+                          size: 18,
+                          color: Theme.of(context).appBarTheme.foregroundColor,
                         ),
+                        onSelected: _handleMenuSelection,
+                        itemBuilder: (context) => _buildPopupMenuItems(context),
                       ),
-                    ),
-                  ],
-                );
-              },
+                    ],
+                  ),
+                ),
+              ],
             ),
           ),
         ),
       ),
-            body: LayoutBuilder(
+
+
+
+
+      body: LayoutBuilder(
         builder: (context, constraints) {
           final isDesktop = constraints.maxWidth >= 900;
           final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);  
@@ -724,6 +599,193 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         },
       ),
     );
+*/
+
+
+    return Scaffold(
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        toolbarHeight: kToolbarHeight * 1.6,
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
+            Theme.of(context).colorScheme.surfaceContainerHighest,
+        elevation: 0,
+
+        flexibleSpace: Container(
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.1),
+                width: 1,
+              ),
+            ),
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+
+                // ------------------------------------
+                // TOP ROW: Title + Account selector
+                // ------------------------------------
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      GestureDetector(
+                        onTap: () => showDialog(
+                          context: context,
+                          builder: (_) => ActionsSummaryWindow(),
+                        ),
+                        child: Text(
+                          AppConstants.appName,
+                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            color: ActionMailTheme.alertColor,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+
+                      TextButton.icon(
+                        onPressed: _isOpeningAccountDialog
+                            ? null
+                            : _showAccountSelectorDialog,
+                        icon: _isOpeningAccountDialog
+                            ? SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                          ),
+                        )
+                            : Icon(
+                          Icons.account_circle,
+                          size: 18,
+                          color: Theme.of(context).appBarTheme.foregroundColor,
+                        ),
+                        label: Text(
+                          _selectedAccountId != null && _accounts.isNotEmpty
+                              ? _accounts
+                              .firstWhere(
+                                (acc) => acc.id == _selectedAccountId,
+                            orElse: () => _accounts.first,
+                          )
+                              .email
+                              : '',
+                          style: TextStyle(
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 0),
+
+                // ------------------------------------
+                // BOTTOM ROW: Folder selector + actions
+                // ------------------------------------
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                  child: Row(
+                    children: [
+                      if (!_isLocalFolder)
+                        AppDropdown<String>(
+                          value: _selectedFolder,
+                          items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
+                          itemBuilder: (folder) =>
+                          AppConstants.folderDisplayNames[folder] ?? folder,
+                          textColor: Theme.of(context).appBarTheme.foregroundColor,
+                          onChanged: (value) async {
+                            if (value != null) {
+                              setState(() {
+                                _selectedFolder = value;
+                                _isLocalFolder = false;
+                              });
+                              if (_selectedAccountId != null) {
+                                await ref
+                                    .read(emailListProvider.notifier)
+                                    .loadFolder(
+                                  _selectedAccountId!,
+                                  folderLabel: _selectedFolder,
+                                );
+                              }
+                            }
+                          },
+                        )
+                      else
+                        Text(
+                          _selectedFolder,
+                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+
+                      const Spacer(),
+
+                      _buildAppBarLocalStateSwitch(context),
+                      const SizedBox(width: 8),
+
+                      PopupMenuButton<String>(
+                        icon: Icon(
+                          Icons.menu,
+                          size: 18,
+                          color: Theme.of(context).appBarTheme.foregroundColor,
+                        ),
+                        onSelected: _handleMenuSelection,
+                        itemBuilder: (context) => _buildPopupMenuItems(context),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+
+      // ------------------------------
+      // MAIN BODY
+      // ------------------------------
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final isDesktop = constraints.maxWidth >= 900;
+          final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
+          final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (isDesktop)
+                ClipRect(
+                  child: SizedBox(
+                    width: leftWidth,
+                    child: _buildLeftPanel(context),
+                  ),
+                ),
+              Expanded(
+                child: ClipRect(child: _buildMainColumn()),
+              ),
+              if (isDesktop)
+                ClipRect(
+                  child: SizedBox(
+                    width: rightWidth,
+                    child: _buildRightPanel(context),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+
+
   }
 
   // Left panel for desktop - Accounts and Gmail folder tree
@@ -2235,78 +2297,85 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Calculate approximate button widths and text widths
-        // Personal button: icon (16) + spacing (4) + text (~60) + padding (20) ≈ 100
-        // Personal text width: ~60
-        // Business button: icon (16) + spacing (4) + text (~65) + padding (20) ≈ 105
-        // Business text width: ~65
-        const double personalButtonWidth = 95.0;
-        const double personalTextWidth = 55.0;
-        const double businessTextWidth = 60.0;
-        const double iconAndSpacing = 20.0; // icon (16) + spacing (4)
+        // Calculate approximate button widths (text only, no icons)
+        // All button: text (~30) + padding (20) ≈ 50
+        // Personal button: text (~60) + padding (20) ≈ 80
+        // Business button: text (~65) + padding (20) ≈ 85
+        const double allButtonWidth = 50.0;
+        const double allTextWidth = 30.0;
+        const double personalButtonWidth = 80.0;
+        const double personalTextWidth = 60.0;
+        const double businessTextWidth = 65.0;
         
         double underlineLeft = 0;
         double underlineWidth = 0;
         
-        if (_selectedLocalState == 'Personal') {
-          underlineLeft = iconAndSpacing; // Start after icon and spacing
+        if (_selectedLocalState == null) {
+          // All selected
+          underlineLeft = 0;
+          underlineWidth = allTextWidth;
+        } else if (_selectedLocalState == 'Personal') {
+          underlineLeft = allButtonWidth;
           underlineWidth = personalTextWidth;
         } else if (_selectedLocalState == 'Business') {
-          underlineLeft = personalButtonWidth + iconAndSpacing;
+          underlineLeft = allButtonWidth + personalButtonWidth;
           underlineWidth = businessTextWidth;
         }
         
         return Stack(
           clipBehavior: Clip.none,
           children: [
-            // Transparent row of buttons
+            // Row of text-only switch buttons
             Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 _buildAppBarStateButton(
                   context,
+                  'All',
+                  _selectedLocalState == null,
+                  () {
+                    setState(() {
+                      _selectedLocalState = null;
+                    });
+                  },
+                ),
+                _buildAppBarStateButton(
+                  context,
                   'Personal',
-                  Icons.person_outline,
-                  Icons.person,
                   _selectedLocalState == 'Personal',
                   () {
                     setState(() {
-                      // Toggle: if already selected, deselect; otherwise select
-                      _selectedLocalState = _selectedLocalState == 'Personal' ? null : 'Personal';
+                      _selectedLocalState = 'Personal';
                     });
                   },
                 ),
                 _buildAppBarStateButton(
                   context,
                   'Business',
-                  Icons.business_center_outlined,
-                  Icons.business,
                   _selectedLocalState == 'Business',
                   () {
                     setState(() {
-                      // Toggle: if already selected, deselect; otherwise select
-                      _selectedLocalState = _selectedLocalState == 'Business' ? null : 'Business';
+                      _selectedLocalState = 'Business';
                     });
                   },
                 ),
               ],
             ),
-            // Sliding underline
-            if (_selectedLocalState != null)
-              Positioned(
-                bottom: 0,
-                left: underlineLeft,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  curve: Curves.easeInOut,
-                  width: underlineWidth,
-                  height: 2,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(1),
-                  ),
+            // Sliding underline indicator
+            Positioned(
+              bottom: 0,
+              left: underlineLeft,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                width: underlineWidth,
+                height: 2,
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(1),
                 ),
               ),
+            ),
           ],
         );
       },
@@ -2316,17 +2385,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildAppBarStateButton(
     BuildContext context,
     String state,
-    IconData outlinedIcon,
-    IconData filledIcon,
     bool selected,
     VoidCallback onTap,
   ) {
     final theme = Theme.of(context);
     
-    // Color for icons and text - white for better visibility on teal background
-    final Color iconColor = Theme.of(context).appBarTheme.foregroundColor
-        ?? Theme.of(context).colorScheme.onPrimary; // fallback if not set
-
+    // Color for text - white for better visibility on teal background
     final Color textColor = Theme.of(context).appBarTheme.foregroundColor
         ?? Theme.of(context).colorScheme.onPrimary;
     
@@ -2336,32 +2400,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         onTap: onTap,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                selected ? filledIcon : outlinedIcon,
-                size: 16,
-                color: iconColor,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                state,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: textColor,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  fontSize: 12,
-                ),
-              ),
-            ],
+          child: Text(
+            state,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: textColor,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              fontSize: 12,
+            ),
           ),
         ),
       ),
     );
   }
-
-
-  // (removed) _buildSophisticatedStateButton was unused
 
   // ignore: unused_element
   Widget _buildCategoryCarousel() {
@@ -3364,6 +3414,153 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _showSearch = false;
     });
     FocusScope.of(context).unfocus();
+  }
+
+  void _handleMenuSelection(String value) async {
+    switch (value) {
+      case 'Compose':
+        if (_selectedAccountId != null) {
+          showDialog(
+            context: context,
+            builder: (ctx) => ComposeEmailDialog(
+              accountId: _selectedAccountId!,
+              mode: ComposeEmailMode.newEmail,
+            ),
+          );
+        }
+        break;
+
+      case 'Refresh':
+        if (_selectedAccountId != null) {
+          ref.read(emailListProvider.notifier)
+              .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+        }
+        break;
+
+      case 'Settings':
+        showDialog(
+          context: context,
+          builder: (ctx) => const AccountsSettingsDialog(),
+        );
+        break;
+
+      case 'Actions':
+        showDialog(
+          context: context,
+          builder: (_) => ActionsSummaryWindow(),
+        );
+        break;
+
+      case 'Attachments':
+        showDialog(
+          context: context,
+          builder: (_) => const AttachmentsWindow(),
+        );
+        break;
+
+      case 'Subscriptions':
+        if (_selectedAccountId != null) {
+          showDialog(
+            context: context,
+            builder: (_) => SubscriptionsWindow(accountId: _selectedAccountId!),
+          );
+        }
+        break;
+
+      case 'Shopping':
+        showDialog(
+          context: context,
+          builder: (_) => const ShoppingWindow(),
+        );
+        break;
+    }
+  }
+
+  List<PopupMenuEntry<String>> _buildPopupMenuItems(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    List<PopupMenuEntry<String>> items = [
+      PopupMenuItem(
+        value: 'Compose',
+        child: Row(
+          children: [
+            Icon(Icons.edit_outlined, size: 18, color: cs.onSurface),
+            const SizedBox(width: 12),
+            Text('Compose', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+          ],
+        ),
+      ),
+      PopupMenuItem(
+        value: 'Refresh',
+        child: Row(
+          children: [
+            Icon(Icons.refresh, size: 18, color: cs.onSurface),
+            const SizedBox(width: 12),
+            Text('Refresh', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+          ],
+        ),
+      ),
+      PopupMenuItem(
+        value: 'Settings',
+        child: Row(
+          children: [
+            Icon(Icons.settings_outlined, size: 18, color: cs.onSurface),
+            const SizedBox(width: 12),
+            Text('Settings', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+          ],
+        ),
+      ),
+      const PopupMenuDivider(),
+      PopupMenuItem(
+        value: 'Actions',
+        child: Row(
+          children: [
+            Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
+            const SizedBox(width: 12),
+            Text('Actions', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+          ],
+        ),
+      ),
+    ];
+
+    // Dynamically add windows except ones handled above
+    items.addAll(
+      AppConstants.allFunctionWindows
+          .where((window) =>
+      window != AppConstants.windowActions &&
+          window != AppConstants.windowActionsSummary)
+          .map((window) {
+        IconData icon;
+
+        switch (window) {
+          case AppConstants.windowAttachments:
+            icon = Icons.attach_file;
+            break;
+          case AppConstants.windowSubscriptions:
+            icon = Icons.subscriptions;
+            break;
+          case AppConstants.windowShopping:
+            icon = Icons.shopping_bag;
+            break;
+          default:
+            icon = Icons.info_outline;
+        }
+
+        return PopupMenuItem(
+          value: window,
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: cs.onSurface),
+              const SizedBox(width: 12),
+              Text(window,
+                  style: TextStyle(color: cs.onSurface, fontSize: 13)),
+            ],
+          ),
+        );
+      }),
+    );
+
+    return items;
   }
 }
 

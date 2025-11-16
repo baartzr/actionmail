@@ -793,41 +793,49 @@ class GoogleAuthService {
   Future<GoogleAccount?> _performTokenRefresh(String accountId) async {
     final account = await getAccountById(accountId);
     if (account == null || account.refreshToken == null || account.refreshToken!.isEmpty) return null;
-    final resp = await http.post(
-      Uri.parse('https://oauth2.googleapis.com/token'),
-      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-      body: {
-        'client_id': OAuthConfig.clientId,
-        'client_secret': OAuthConfig.clientSecret,
-        'grant_type': 'refresh_token',
-        'refresh_token': account.refreshToken!,
-      },
-    );
-    if (resp.statusCode != 200) {
-      // Log error details for debugging
+    try {
+      final resp = await http.post(
+        Uri.parse('https://oauth2.googleapis.com/token'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'client_id': OAuthConfig.clientId,
+          'client_secret': OAuthConfig.clientSecret,
+          'grant_type': 'refresh_token',
+          'refresh_token': account.refreshToken!,
+        },
+      );
+      if (resp.statusCode != 200) {
+        // Log error details for debugging
+        // ignore: avoid_print
+        print('[auth] refresh token request failed: status=${resp.statusCode} body=${resp.body}');
+        return null;
+      }
+      final tok = jsonDecode(resp.body) as Map<String, dynamic>;
+      final accessToken = tok['access_token'] as String?;
+      final expiresIn = (tok['expires_in'] as num?)?.toInt();
+      if (accessToken == null || accessToken.isEmpty) {
+        // ignore: avoid_print
+        print('[auth] refresh token response missing access_token: $tok');
+        return null;
+      }
+      final updated = account.copyWith(
+        accessToken: accessToken,
+        tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : account.tokenExpiryMs,
+      );
+      final list = await loadAccounts();
+      final idx = list.indexWhere((a) => a.id == account.id);
+      if (idx != -1) {
+        list[idx] = updated;
+        await saveAccounts(list);
+      }
+      return updated;
+    } catch (e) {
+      // Handle network errors (DNS failures, connection timeouts, etc.)
       // ignore: avoid_print
-      print('[auth] refresh token request failed: status=${resp.statusCode} body=${resp.body}');
+      print('[auth] refresh token network error: $e');
+      // Return null to indicate refresh failed - caller should handle re-authentication
       return null;
     }
-    final tok = jsonDecode(resp.body) as Map<String, dynamic>;
-    final accessToken = tok['access_token'] as String?;
-    final expiresIn = (tok['expires_in'] as num?)?.toInt();
-    if (accessToken == null || accessToken.isEmpty) {
-      // ignore: avoid_print
-      print('[auth] refresh token response missing access_token: $tok');
-      return null;
-    }
-    final updated = account.copyWith(
-      accessToken: accessToken,
-      tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : account.tokenExpiryMs,
-    );
-    final list = await loadAccounts();
-    final idx = list.indexWhere((a) => a.id == account.id);
-    if (idx != -1) {
-      list[idx] = updated;
-      await saveAccounts(list);
-    }
-    return updated;
   }
 }
 

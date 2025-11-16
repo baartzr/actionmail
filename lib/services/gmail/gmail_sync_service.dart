@@ -293,9 +293,15 @@ class GmailSyncService {
         if (hasAttachmentId) {
           final contentId = headers['content-id'];
           final disposition = headers['content-disposition']?.toLowerCase() ?? '';
-          if (contentId != null && contentId.isNotEmpty && !disposition.contains('attachment')) {
+          // Only treat as inline if:
+          // 1. Has Content-ID AND
+          // 2. Disposition explicitly says 'inline' (not just missing 'attachment')
+          // This ensures real attachments aren't misclassified as inline
+          final isExplicitlyInline = disposition.contains('inline') && !disposition.contains('attachment');
+          if (contentId != null && contentId.isNotEmpty && isExplicitlyInline) {
             inlineParts.add(MapEntry(part, contentId.trim()));
           } else {
+            // Default to attachment if disposition is ambiguous or missing
             attachmentParts.add(part);
           }
         }
