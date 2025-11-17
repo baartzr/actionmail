@@ -34,12 +34,18 @@ void main() async {
   // We also add timing logs to trace startup performance on desktop.
   // ignore: unawaited_futures
   Future<void>(() async {
+    debugPrint('[Main] Starting Firebase initialization in background...');
     final t0 = DateTime.now();
     bool firebaseInitialized = false;
     try {
-      await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
+      // Initialize Firebase manually (consistent across all platforms)
+      debugPrint('[Main] Checking Firebase.apps.isEmpty: ${Firebase.apps.isEmpty}');
+      if (Firebase.apps.isEmpty) {
+        debugPrint('[Main] Calling Firebase.initializeApp()...');
+        await Firebase.initializeApp(
+          options: DefaultFirebaseOptions.currentPlatform,
+        );
+      }
       final apps = Firebase.apps;
       if (apps.isEmpty) {
         debugPrint('[Main] Firebase.initializeApp() completed but no apps found');

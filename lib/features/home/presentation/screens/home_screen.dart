@@ -31,6 +31,8 @@ import 'package:domail/data/models/message_index.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:domail/app/theme/actionmail_theme.dart';
+import 'package:ensemble_app_badger/ensemble_app_badger.dart';
+import 'dart:io';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -603,9 +605,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
 
     return Scaffold(
-      appBar: AppBar(
+ /*     appBar: AppBar(
         automaticallyImplyLeading: false,
-        toolbarHeight: kToolbarHeight * 1.6,
+        toolbarHeight: kToolbarHeight * 1.8,
         backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
             Theme.of(context).colorScheme.surfaceContainerHighest,
         elevation: 0,
@@ -749,6 +751,141 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
+*/
+
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        toolbarHeight: kToolbarHeight * 1.8,
+        elevation: 0,
+        shadowColor: Colors.transparent,
+        surfaceTintColor: Colors.transparent,
+        backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
+            Theme.of(context).colorScheme.surfaceContainerHighest,
+
+        flexibleSpace: SafeArea(
+          bottom: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+
+              // -------------------------------
+              // TOP ROW: Title + Account picker
+              // -------------------------------
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    GestureDetector(
+                      onTap: () => showDialog(
+                        context: context,
+                        builder: (_) => ActionsSummaryWindow(),
+                      ),
+                      child: Text(
+                        AppConstants.appName,
+                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                          color: ActionMailTheme.alertColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+
+                    TextButton.icon(
+                      onPressed:
+                      _isOpeningAccountDialog ? null : _showAccountSelectorDialog,
+                      icon: _isOpeningAccountDialog
+                          ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                          : Icon(
+                        Icons.account_circle,
+                        size: 18,
+                        color: Theme.of(context).appBarTheme.foregroundColor,
+                      ),
+                      label: Text(
+                        _selectedAccountId != null && _accounts.isNotEmpty
+                            ? _accounts
+                            .firstWhere(
+                              (acc) => acc.id == _selectedAccountId,
+                          orElse: () => _accounts.first,
+                        )
+                            .email
+                            : '',
+                        style: TextStyle(
+                          color: Theme.of(context).appBarTheme.foregroundColor,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // -------------------------------
+              // BOTTOM ROW: Folder selector + actions
+              // -------------------------------
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(
+                  children: [
+                    if (!_isLocalFolder)
+                      AppDropdown<String>(
+                        value: _selectedFolder,
+                        items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
+                        itemBuilder: (folder) =>
+                        AppConstants.folderDisplayNames[folder] ?? folder,
+                        textColor: Theme.of(context).appBarTheme.foregroundColor,
+                        onChanged: (value) async {
+                          if (value != null) {
+                            setState(() {
+                              _selectedFolder = value;
+                              _isLocalFolder = false;
+                            });
+                            if (_selectedAccountId != null) {
+                              await ref
+                                  .read(emailListProvider.notifier)
+                                  .loadFolder(
+                                _selectedAccountId!,
+                                folderLabel: _selectedFolder,
+                              );
+                            }
+                          }
+                        },
+                      )
+                    else
+                      Text(
+                        _selectedFolder,
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: Theme.of(context).appBarTheme.foregroundColor,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+
+                    const Spacer(),
+
+                    _buildAppBarLocalStateSwitch(context),
+                    const SizedBox(width: 8),
+
+                    PopupMenuButton<String>(
+                      icon: Icon(
+                        Icons.menu,
+                        size: 18,
+                        color: Theme.of(context).appBarTheme.foregroundColor,
+                      ),
+                      onSelected: _handleMenuSelection,
+                      itemBuilder: _buildPopupMenuItems,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+
 
       // ------------------------------
       // MAIN BODY
@@ -3196,6 +3333,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       _accountUnreadCounts = updatedCounts;
     }
 
+    // Update app icon badge with total unread count (even when not mounted, since badge is system-level)
+    _updateAppIconBadge();
+
     // Then refresh from API in background for inactive accounts only (non-blocking)
     // Active account will switch to local count AFTER incremental sync (handled in account switch)
     for (final account in _accounts) {
@@ -3212,6 +3352,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             setState(() {
               _accountUnreadCounts[account.id] = count;
             });
+            // Update app icon badge after API refresh
+            _updateAppIconBadge();
           }
         } catch (_) {
           // Keep local count if API fails - counts already set from local DB above
@@ -3234,6 +3376,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (localCount != null) {
         _accountUnreadCounts[accountId] = localCount;
       }
+      // Update badge even when not mounted (system-level feature)
+      _updateAppIconBadge();
       return;
     }
 
@@ -3243,6 +3387,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _accountUnreadCounts[accountId] = localCount;
       }
     });
+    // Update app icon badge after switching to local count
+    _updateAppIconBadge();
   }
 
   /// Refresh unread count for a specific account from local DB
@@ -3259,8 +3405,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       } else {
         _accountUnreadCounts[accountId] = localCount;
       }
+      // Update app icon badge after local refresh (even when not mounted, since badge is system-level)
+      _updateAppIconBadge();
     } catch (_) {
       // Keep existing count if refresh fails
+    }
+  }
+
+  /// Calculate total unread count across all accounts
+  int _calculateTotalUnreadCount() {
+    int total = 0;
+    for (final count in _accountUnreadCounts.values) {
+      total += count;
+    }
+    return total;
+  }
+
+  /// Update app icon badge with total unread count across all accounts
+  Future<void> _updateAppIconBadge() async {
+    try {
+      final totalUnread = _calculateTotalUnreadCount();
+      debugPrint('[Badge] Attempting to update badge. Platform: ${Platform.operatingSystem}, Total unread: $totalUnread, Account counts: $_accountUnreadCounts');
+      
+      // Check if app badge is supported on this platform
+      // ensemble_app_badger maintains the FlutterAppBadger class name for compatibility
+      final isSupported = await FlutterAppBadger.isAppBadgeSupported();
+      debugPrint('[Badge] Badge supported: $isSupported');
+      
+      if (!isSupported) {
+        debugPrint('[Badge] App badge not supported on ${Platform.operatingSystem}. '
+            'Badges are supported on iOS, macOS, and some Android devices/launchers (Samsung, HTC, etc.).');
+        return;
+      }
+
+      if (totalUnread > 0) {
+        // Update badge with total unread count
+        await FlutterAppBadger.updateBadgeCount(totalUnread);
+        debugPrint('[Badge] Successfully updated app icon badge: $totalUnread unread messages');
+      } else {
+        // Remove badge if no unread messages
+        await FlutterAppBadger.removeBadge();
+        debugPrint('[Badge] Removed app icon badge (no unread messages)');
+      }
+    } catch (e, stackTrace) {
+      // Log the error with stack trace for debugging
+      debugPrint('[Badge] Failed to update app icon badge: $e');
+      debugPrint('[Badge] Stack trace: $stackTrace');
     }
   }
 

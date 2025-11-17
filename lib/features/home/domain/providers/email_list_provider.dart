@@ -4,9 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/data/models/gmail_message.dart';
 import 'package:domail/services/gmail/gmail_sync_service.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:domail/firebase_options.dart';
 import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/sync/firebase_init.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 
 /// Provider for Gmail sync service
@@ -85,16 +84,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     }
     
     try {
-      // Initialize Firebase app if not already done
-      if (Firebase.apps.isEmpty) {
-        final t0 = DateTime.now();
-        await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-        final ms = DateTime.now().difference(t0).inMilliseconds;
-        if (kDebugMode) {
-          // ignore: avoid_print
-          print('[FirebaseInit] Firebase.initializeApp completed in ${ms}ms (post-local-load)');
-        }
-      }
+      // Wait for Firebase initialization to complete (handled by main.dart)
+      // Don't try to initialize here - main.dart already handles it
+      await FirebaseInit.instance.whenReady;
       
       final syncService = FirebaseSyncService();
       final initialized = await syncService.initialize();

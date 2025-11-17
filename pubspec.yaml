@@ -15,8 +15,7 @@ dependencies:
   flutter_riverpod: ^2.5.1
   # removed window_size; using modal dialogs instead of resizing native window
   
-  # Google Sign-In and OAuth (reuse from inboxiq)
-  google_sign_in: ^6.1.6
+  # Google APIs and OAuth
   googleapis: ^11.4.0
   googleapis_auth: ^1.4.1
   flutter_web_auth_2: ^4.1.0
@@ -25,6 +24,8 @@ dependencies:
   # Window management for desktop
   window_manager: ^0.3.7
   window_to_front: ^0.0.3
+  # App icon badge support
+  ensemble_app_badger: ^1.0.0
   
   # Local Storage
   sqflite: ^2.3.0

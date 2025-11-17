@@ -4,7 +4,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath("com.google.gms:google-services:4.4.2")
+        // Removed: Google Services classpath - Firebase is now initialized manually in Flutter
     }
 }
 

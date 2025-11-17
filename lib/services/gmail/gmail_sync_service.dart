@@ -1532,11 +1532,12 @@ class GmailSyncService {
 
     for (final attachment in attachments) {
       final base64Data = base64Encode(attachment.bytes);
-      // Properly encode filename for MIME headers (escape quotes and backslashes)
-      final encodedFilename = _encodeMimeHeaderValue(attachment.filename);
+      // Properly encode filename for MIME headers using RFC 2231 for maximum compatibility
+      final filenameHeader = _encodeFilenameForMimeHeader(attachment.filename);
+      final nameHeader = _encodeNameForMimeHeader(attachment.filename);
       buffer.writeln('--$boundaryMixed');
-      buffer.writeln('Content-Type: ${attachment.mimeType}; name="$encodedFilename"');
-      buffer.writeln('Content-Disposition: attachment; filename="$encodedFilename"');
+      buffer.writeln('Content-Type: ${attachment.mimeType}; $nameHeader');
+      buffer.writeln('Content-Disposition: attachment; $filenameHeader');
       buffer.writeln('Content-Transfer-Encoding: base64');
       buffer.writeln('');
       buffer.writeln(_chunkBase64(base64Data));
@@ -1561,8 +1562,76 @@ class GmailSyncService {
     return buffer.toString();
   }
 
-  /// Encode filename for use in MIME headers
+  /// Encode filename/name parameter value for MIME headers using RFC 2231
+  /// Provides both ASCII fallback and UTF-8 encoded version for maximum compatibility
+  String _encodeParameterValue(String value, String paramName) {
+    if (value.isEmpty) {
+      return '$paramName="attachment"';
+    }
+    
+    // Check if value contains only ASCII printable characters (excluding control chars and some specials)
+    final isAsciiOnly = value.codeUnits.every((codeUnit) {
+      // Allow ASCII printable characters (32-126) except some problematic ones
+      // Exclude: \ (92), " (34), ; (59), : (58), < (60), > (62), ? (63), = (61)
+      return codeUnit >= 32 && codeUnit <= 126 && 
+             codeUnit != 92 && codeUnit != 34 && codeUnit != 59 && 
+             codeUnit != 58 && codeUnit != 60 && codeUnit != 62 && 
+             codeUnit != 63 && codeUnit != 61;
+    });
+    
+    if (isAsciiOnly) {
+      // Simple case: ASCII-only value, just escape quotes and backslashes
+      final escaped = value
+          .replaceAll('\\', '\\\\')
+          .replaceAll('"', '\\"');
+      return '$paramName="$escaped"';
+    } else {
+      // Complex case: contains non-ASCII or special characters
+      // Use RFC 2231 encoding: param="fallback"; param*=UTF-8''encoded
+      // Create ASCII fallback by replacing problematic chars
+      final fallback = value
+          .replaceAll(RegExp(r'[^\x20-\x7E]'), '_') // Replace non-ASCII with underscore
+          .replaceAll('\\', '_')
+          .replaceAll('"', '_')
+          .replaceAll(';', '_')
+          .replaceAll(':', '_')
+          .replaceAll('<', '_')
+          .replaceAll('>', '_')
+          .replaceAll('?', '_')
+          .replaceAll('=', '_');
+      
+      // Percent-encode the UTF-8 bytes for the param* parameter
+      final utf8Bytes = utf8.encode(value);
+      final encoded = utf8Bytes.map((byte) {
+        // Percent-encode non-ASCII and special characters
+        if ((byte >= 0x20 && byte <= 0x7E && 
+             byte != 0x22 && byte != 0x5C && byte != 0x3B && 
+             byte != 0x3A && byte != 0x3C && byte != 0x3E && 
+             byte != 0x3F && byte != 0x3D) || 
+            byte == 0x09 || byte == 0x20) {
+          return String.fromCharCode(byte);
+        } else {
+          return '%${byte.toRadixString(16).toUpperCase().padLeft(2, '0')}';
+        }
+      }).join();
+      
+      return '$paramName="$fallback"; $paramName*=UTF-8\'\'$encoded';
+    }
+  }
+  
+  /// Encode filename for Content-Disposition header
+  String _encodeFilenameForMimeHeader(String filename) {
+    return _encodeParameterValue(filename, 'filename');
+  }
+  
+  /// Encode name for Content-Type header
+  String _encodeNameForMimeHeader(String name) {
+    return _encodeParameterValue(name, 'name');
+  }
+  
+  /// Encode filename for use in MIME headers (legacy method, kept for backward compatibility)
   /// Escapes backslashes and quotes, and handles special characters
+  @Deprecated('Use _encodeFilenameForMimeHeader instead')
   String _encodeMimeHeaderValue(String filename) {
     // Escape backslashes and quotes
     return filename

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:domail/constants/app_constants.dart';
@@ -22,23 +21,6 @@ class GoogleAuthService {
   factory GoogleAuthService() => _instance;
   GoogleAuthService._internal();
 
-  // Lazy-initialize GoogleSignIn only when needed to prevent automatic sign-in attempts
-  GoogleSignIn? _googleSignIn;
-  GoogleSignIn get _googleSignInInstance {
-    _googleSignIn ??= GoogleSignIn(
-      scopes: <String>[
-        'email',
-        'https://www.googleapis.com/auth/gmail.readonly',
-        'https://www.googleapis.com/auth/gmail.modify',
-        'https://www.googleapis.com/auth/userinfo.profile',
-      ],
-      // Prevent automatic sign-in attempts that can trigger chooser unexpectedly
-      signInOption: SignInOption.standard,
-      // Don't request server auth code (we handle OAuth manually)
-      serverClientId: null,
-    );
-    return _googleSignIn!;
-  }
 
   // Cache for ongoing ensureValidAccessToken calls to prevent duplicate checks
   final Map<String, Future<GoogleAccount?>> _tokenCheckCache = {};
@@ -482,39 +464,15 @@ class GoogleAuthService {
         }
         return account;
       } catch (_) {
-        // fall through to google_sign_in if available
+        // OAuth flow failed - return null (no fallback since GoogleSignIn doesn't provide refresh tokens)
       }
     }
-    // Fallback to google_sign_in where supported
-    if (kIsWeb || Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
-      final account = await _googleSignInInstance.signIn();
-      if (account == null) return null;
-      final auth = await account.authentication;
-      final googleAccount = GoogleAccount(
-        id: account.id,
-        email: account.email,
-        displayName: account.displayName ?? account.email,
-        photoUrl: account.photoUrl,
-        accessToken: auth.accessToken ?? '',
-        refreshToken: null,
-        tokenExpiryMs: null,
-        idToken: auth.idToken ?? '',
-      );
-      // Bring window to front after successful sign-in (for desktop)
-      if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-        try {
-          await WindowToFront.activate();
-        } catch (_) {
-          // Ignore if it fails
-        }
-      }
-      return googleAccount;
-    }
+    // No fallback - GoogleSignIn doesn't provide refresh tokens which are required
     return null;
   }
 
   Future<void> signOutAll() async {
-    await _googleSignInInstance.disconnect();
+    // No GoogleSignIn to disconnect - we use manual OAuth only
   }
 
   Future<bool> signOutAccount(String accountId) async {
