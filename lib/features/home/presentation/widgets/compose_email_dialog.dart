@@ -10,6 +10,7 @@ import 'package:open_file/open_file.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
+import 'package:domail/services/pdf_viewer_preference_service.dart';
 
 enum ComposeEmailMode {
   newEmail,
@@ -320,21 +321,29 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
         return;
       }
 
+      // Check preference for PDF viewer
+      // Check both extension and filename for PDF (filename check handles cases where file path doesn't have extension)
       final extension = path.extension(file.path).toLowerCase();
-      if (extension == '.pdf') {
-        if (!mounted) return;
-        await PdfViewerWindow.open(
-          context,
-          filePath: file.path,
-        );
-      } else {
-        final result = await OpenFile.open(file.path);
-        if (!mounted) return;
-        if (result.type != ResultType.done) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Cannot open file: ${result.message}')),
+      final isPdf = extension == '.pdf' || attachment.name.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        final useInternal = await PdfViewerPreferenceService().useInternalViewer();
+        if (useInternal) {
+          if (!mounted) return;
+          await PdfViewerWindow.open(
+            context,
+            filePath: file.path,
           );
+          return;
         }
+      }
+      
+      // Use system file opener (allows package selection on Windows)
+      final result = await OpenFile.open(file.path);
+      if (!mounted) return;
+      if (result.type != ResultType.done) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cannot open file: ${result.message}')),
+        );
       }
     } catch (e) {
       if (!mounted) return;

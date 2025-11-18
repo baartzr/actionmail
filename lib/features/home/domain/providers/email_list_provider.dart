@@ -327,6 +327,19 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     try {
       // ignore: avoid_print
       print('[sync] sync current account=$accountId folder=$currentFolder');
+      
+      // Check if account needs re-authentication before syncing
+      final auth = GoogleAuthService();
+      final account = await auth.ensureValidAccessToken(accountId);
+      if (account == null || account.accessToken.isEmpty) {
+        // Account needs re-authentication - this will be handled by the caller
+        // (e.g., home_screen will show the prompt)
+        // ignore: avoid_print
+        print('[sync] sync current: account needs re-authentication account=$accountId');
+        _ref.read(emailSyncingProvider.notifier).state = false;
+        return;
+      }
+      
       _ref.read(emailSyncingProvider.notifier).state = true;
       await _syncService.processPendingOps();
       
@@ -407,6 +420,39 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         updated[idx] = updated[idx].copyWith(isRead: isRead);
         state = AsyncValue.data(updated);
       }
+    }
+  }
+
+  void setUnsubscribed(String messageId, bool unsubscribed) {
+    final current = state;
+    if (current is AsyncData<List<MessageIndex>>) {
+      final list = current.value;
+      final idx = list.indexWhere((m) => m.id == messageId);
+      if (idx != -1) {
+        final updated = List<MessageIndex>.from(list);
+        updated[idx] = updated[idx].copyWith(unsubscribedLocal: unsubscribed);
+        state = AsyncValue.data(updated);
+      }
+    }
+  }
+
+  /// Mark all messages from a sender as unsubscribed in the provider state
+  void setSenderUnsubscribed(String senderEmail, bool unsubscribed) {
+    final current = state;
+    if (current is AsyncData<List<MessageIndex>>) {
+      final list = current.value;
+      final updated = list.map((m) {
+        // Extract email from fromAddr field (handles "Name <email@domain.com>" format)
+        final match = RegExp(r'<([^>]+)>').firstMatch(m.from);
+        final email = match != null 
+            ? match.group(1)!.trim().toLowerCase()
+            : (m.from.contains('@') ? m.from.trim().toLowerCase() : '');
+        if (email == senderEmail.toLowerCase()) {
+          return m.copyWith(unsubscribedLocal: unsubscribed);
+        }
+        return m;
+      }).toList();
+      state = AsyncValue.data(updated);
     }
   }
 

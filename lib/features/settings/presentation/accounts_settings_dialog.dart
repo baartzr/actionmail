@@ -5,6 +5,7 @@ import 'package:domail/shared/widgets/app_window_dialog.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/pdf_viewer_preference_service.dart';
 import 'package:domail/data/repositories/action_feedback_repository.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
@@ -508,6 +509,66 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                       messenger.showSnackBar(
                                         SnackBar(
                                           content: Text(value ? 'Firebase sync enabled' : 'Firebase sync disabled'),
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    elevation: 0,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'PDF Viewer',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Use internal PDF viewer instead of system file opener',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Consumer(
+                            builder: (context, ref, child) {
+                              return FutureBuilder<bool>(
+                                future: PdfViewerPreferenceService().useInternalViewer(),
+                                builder: (context, snapshot) {
+                                  final useInternal = snapshot.data ?? false;
+                                  return Switch(
+                                    value: useInternal,
+                                    onChanged: (value) async {
+                                      final messenger = ScaffoldMessenger.of(context);
+                                      final prefService = PdfViewerPreferenceService();
+                                      await prefService.setUseInternalViewer(value);
+                                      if (!context.mounted) return;
+                                      setState(() {});
+                                      messenger.showSnackBar(
+                                        SnackBar(
+                                          content: Text(value 
+                                            ? 'PDFs will open in internal viewer' 
+                                            : 'PDFs will open with system file opener'),
                                           duration: const Duration(seconds: 2),
                                         ),
                                       );

@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:domail/constants/app_constants.dart';
@@ -564,6 +563,8 @@ class GoogleAuthService {
 
   // Interactive re-auth to obtain a fresh access/refresh token and persist it for an existing account
   Future<GoogleAccount?> reauthenticateAccount(String accountId) async {
+    // ignore: avoid_print
+    print('[auth] reauthenticateAccount called for account=$accountId');
     // Desktop flow similar to signIn, but force consent to obtain refresh_token
     if (Platform.isWindows || Platform.isLinux) {
       try {
@@ -582,18 +583,36 @@ class GoogleAuthService {
           'code_challenge_method': 'S256',
         }).toString();
         final port = redirect.port == 0 ? 8400 : redirect.port;
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: opening browser for OAuth, port=$port');
         final listener = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
         await launchUrl(Uri.parse(authUrl), mode: LaunchMode.externalApplication);
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: waiting for OAuth callback...');
         final request = await listener.first;
         final uri = request.uri;
         final code = uri.queryParameters['code'];
+        final error = uri.queryParameters['error'];
+        final errorDescription = uri.queryParameters['error_description'];
+        
+        if (error != null) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: OAuth error=$error description=$errorDescription');
+        }
+        
         request.response
           ..statusCode = 200
           ..headers.set('Content-Type', 'text/html')
           ..write('<html><body><p>Authentication complete. You can close this window.</p></body></html>');
         await request.response.close();
         await listener.close(force: true);
-        if (code == null) return null;
+        if (code == null) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: no code received, user may have cancelled');
+          return null;
+        }
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: received code, exchanging for tokens...');
         final resp = await http.post(
           Uri.parse('https://oauth2.googleapis.com/token'),
           headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -606,7 +625,11 @@ class GoogleAuthService {
             'client_secret': OAuthConfig.clientSecret,
           },
         );
-        if (resp.statusCode != 200) return null;
+        if (resp.statusCode != 200) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: token exchange failed status=${resp.statusCode} body=${resp.body}');
+          return null;
+        }
         final tok = jsonDecode(resp.body) as Map<String, dynamic>;
         final accessToken = tok['access_token'] as String? ?? '';
         final refreshToken = tok['refresh_token'] as String?;
@@ -615,7 +638,11 @@ class GoogleAuthService {
         // Fetch user info and update existing account (no longer needed as email is not used)
         final list = await loadAccounts();
         final idx = list.indexWhere((a) => a.id == accountId);
-        if (idx == -1) return null;
+        if (idx == -1) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: account not found in list accountId=$accountId');
+          return null;
+        }
         final updated = list[idx].copyWith(
           accessToken: accessToken,
           refreshToken: refreshToken ?? list[idx].refreshToken,
@@ -623,8 +650,12 @@ class GoogleAuthService {
         );
         list[idx] = updated;
         await saveAccounts(list);
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: success, tokens updated for account=$accountId');
         return updated;
-      } catch (_) {
+      } catch (e) {
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: exception=$e');
         return null;
       }
     }
@@ -766,6 +797,31 @@ class GoogleAuthService {
         // Log error details for debugging
         // ignore: avoid_print
         print('[auth] refresh token request failed: status=${resp.statusCode} body=${resp.body}');
+        
+        // Check if refresh token is invalid (expired or revoked)
+        try {
+          final errorBody = jsonDecode(resp.body) as Map<String, dynamic>;
+          final error = errorBody['error'] as String?;
+          if (error == 'invalid_grant') {
+            // Refresh token is expired or revoked - clear it from storage
+            // ignore: avoid_print
+            print('[auth] refresh token invalid (expired/revoked), clearing from storage account=$accountId');
+            final list = await loadAccounts();
+            final idx = list.indexWhere((a) => a.id == account.id);
+            if (idx != -1) {
+              // Clear the invalid refresh token and access token
+              list[idx] = list[idx].copyWith(
+                refreshToken: null,
+                accessToken: '',
+                tokenExpiryMs: null,
+              );
+              await saveAccounts(list);
+            }
+          }
+        } catch (_) {
+          // If we can't parse the error, just continue
+        }
+        
         return null;
       }
       final tok = jsonDecode(resp.body) as Map<String, dynamic>;

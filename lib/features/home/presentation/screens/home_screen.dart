@@ -17,6 +17,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:domail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/email_viewer_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
+import 'package:domail/shared/widgets/reauth_prompt_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'package:domail/services/sync/firebase_sync_service.dart';
@@ -975,6 +976,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     child: InkWell(
                       onTap: () async {
                         if (account.id != _selectedAccountId) {
+                          // Check if account needs re-authentication before switching
+                          final auth = GoogleAuthService();
+                          final authAccount = await auth.ensureValidAccessToken(account.id);
+                          if (authAccount == null || authAccount.accessToken.isEmpty) {
+                            // Show re-auth prompt
+                            if (!context.mounted) return;
+                            final shouldReauth = await ReauthPromptDialog.show(
+                              context: context,
+                              accountId: account.id,
+                              accountEmail: account.email,
+                            );
+                            if (!shouldReauth || !context.mounted) return;
+                            
+                            // Attempt re-authentication
+                            final reauthAccount = await auth.reauthenticateAccount(account.id);
+                            if (!context.mounted) return;
+                            final messenger = ScaffoldMessenger.of(context);
+                            if (reauthAccount == null || reauthAccount.accessToken.isEmpty) {
+                              messenger.showSnackBar(
+                                const SnackBar(content: Text('Re-authentication failed or cancelled')),
+                              );
+                              return;
+                            }
+                            
+                            messenger.showSnackBar(
+                              const SnackBar(content: Text('Re-authentication successful')),
+                            );
+                          }
+                          
                           _pendingLocalUnreadAccounts.add(account.id);
                           setState(() {
                             _selectedAccountId = account.id;
@@ -3622,8 +3652,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       case 'Refresh':
         if (_selectedAccountId != null) {
-          ref.read(emailListProvider.notifier)
-              .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+          // Check if account needs re-authentication before refreshing
+          final auth = GoogleAuthService();
+          final account = await auth.ensureValidAccessToken(_selectedAccountId!);
+          if (account == null || account.accessToken.isEmpty) {
+            // Show re-auth prompt
+            final accountInfo = _accounts.firstWhere(
+              (acc) => acc.id == _selectedAccountId,
+              orElse: () => GoogleAccount(
+                id: _selectedAccountId!,
+                email: 'Unknown',
+                displayName: '',
+                photoUrl: null,
+                accessToken: '',
+                refreshToken: null,
+                tokenExpiryMs: null,
+                idToken: '',
+              ),
+            );
+            if (!mounted) return;
+            final shouldReauth = await ReauthPromptDialog.show(
+              context: context,
+              accountId: _selectedAccountId!,
+              accountEmail: accountInfo.email,
+            );
+            if (!mounted) return;
+            if (shouldReauth) {
+              // Attempt re-authentication
+              final reauthAccount = await auth.reauthenticateAccount(_selectedAccountId!);
+              if (!mounted) return;
+              if (reauthAccount != null && reauthAccount.accessToken.isNotEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Re-authentication successful')),
+                );
+                // Retry refresh after re-auth
+                ref.read(emailListProvider.notifier)
+                    .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Re-authentication failed or cancelled')),
+                );
+              }
+            }
+          } else {
+            // Account is valid, proceed with refresh
+            ref.read(emailListProvider.notifier)
+                .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+          }
         }
         break;
 

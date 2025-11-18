@@ -1,0 +1,3 @@
+{"emailId":"example_political_party","detectorOutput":{"actionDate":"2025-11-22","insightText":"Party on 22 Nov","confidence":0.62},"groundTruth":null,"errorType":"false_positive","causationComment":"\"Republican Party\" mention triggered the party keyword but there is no event invitation.","analyzedBy":"manual_seed","analyzedAt":"2025-11-17T00:00:00Z","extractorRevision":"seed"}
+{"emailId":"example_breakfast_metaphor","detectorOutput":{"actionDate":"2025-11-14","insightText":"Breakfast on 14 Nov","confidence":0.58},"groundTruth":null,"errorType":"false_positive","causationComment":"Figurative \"breakfast\" phrasing misinterpreted as a meeting.","analyzedBy":"manual_seed","analyzedAt":"2025-11-17T00:00:00Z","extractorRevision":"seed"}
+

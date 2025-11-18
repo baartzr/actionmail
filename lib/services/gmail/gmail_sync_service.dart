@@ -83,8 +83,13 @@ class GmailSyncService {
   }
   /// Download messages from Gmail API for the given account
   Future<List<GmailMessage>> downloadMessages(String accountId, {String label = 'INBOX', int maxResults = 50}) async {
-    final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+    final auth = GoogleAuthService();
+    var account = await auth.ensureValidAccessToken(accountId);
+    
+    // If token check failed, skip download (don't attempt re-auth during background sync)
+    // Re-authentication requires user interaction and should be done manually via Accounts menu
     if (account == null || account.accessToken.isEmpty) {
+      debugPrint('[Gmail] downloadMessages: no access token, skipping download account=$accountId (account needs re-authentication)');
       return [];
     }
     final headers = {'Authorization': 'Bearer ${account.accessToken}'};
@@ -416,9 +421,16 @@ class GmailSyncService {
   /// Incremental sync using Gmail History API: fetch changes since last historyId
   /// Returns list of new INBOX messages for background tagging
   Future<List<GmailMessage>> incrementalSync(String accountId) async {
-    final account = await GoogleAuthService().ensureValidAccessToken(accountId);
-    final accessToken = account?.accessToken;
-    if (accessToken == null || accessToken.isEmpty) return [];
+    final auth = GoogleAuthService();
+    var account = await auth.ensureValidAccessToken(accountId);
+    var accessToken = account?.accessToken;
+    
+    // If token check failed, skip sync (don't attempt re-auth during background sync)
+    // Re-authentication requires user interaction and should be done manually via Accounts menu
+    if (accessToken == null || accessToken.isEmpty) {
+      debugPrint('[Gmail] incrementalSync: no access token, skipping sync account=$accountId (account needs re-authentication)');
+      return [];
+    }
     final lastHistoryId = await _repo.getLastHistoryId(accountId);
     if (lastHistoryId == null) return []; // no baseline yet
 
@@ -806,51 +818,59 @@ class GmailSyncService {
         walkPart(p);
       }
     }
-    // Regex for unsubscribe-like links - only test for keywords in link TEXT, not URL
-    // Common variations: unsubscribe, unsub, opt-out, opt out, optout, opt_out
-    // We capture the actual link URL regardless of what it contains
+    // Regex patterns to find the link DIRECTLY attached to unsubscribe text/button
+    // Priority: match links where unsubscribe text is the direct content of the anchor tag
+    // Common variations: unsubscribe, unsub, opt-out, opt out, optout, opt_out, click here to unsubscribe, unsubscribe click here
     final patterns = [
-      // mailto: links - these are legitimate unsubscribe links even if URL doesn't say "unsubscribe"
+      // mailto: links - these are legitimate unsubscribe links
       RegExp(r'''mailto:[^\s"\'<>]*(?:unsubscribe|unsub|opt[-_]?out|optout)[^\s"\'<>]*''', caseSensitive: false),
-      // Catch links where href is followed by "Unsubscribe" text inside the tag
-      // Matches: <a href="tracking-url">Unsubscribe</a> or <a href="url">Unsubscribe</a>
-      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>(?:[^<]*<[^>]*>)*[^<]*(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*</a>''', caseSensitive: false),
-      // Catch links where "Unsubscribe" text precedes the href
-      // Matches: <a>Unsubscribe</a> with href elsewhere, or text before href
-      RegExp(r'''(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<>]*?<a[^>]*href=["']([^"']+)["']''', caseSensitive: false),
-      // Catch links where href and unsubscribe text are in the same tag area
-      // More flexible: allows whitespace and other attributes between href and text
-      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,500}?(?:unsubscribe|unsub|opt[-_\s]?out|optout)[\s\S]{0,500}?</a>''', caseSensitive: false),
-      // Reverse: href followed by unsubscribe text (within reasonable distance)
-      RegExp(r'''href=["']([^"']+)["'][^>]*>[\s\S]{0,500}?(?:unsubscribe|unsub|opt[-_\s]?out|optout)''', caseSensitive: false),
+      
+      // Pattern 1: Direct match - unsubscribe text is the main/only text in the anchor tag
+      // Matches: <a href="url">Unsubscribe</a>, <a href="url">Opt-out</a>
+      // Also matches: "click here to unsubscribe" (prefix) and "unsubscribe click here" (suffix)
+      // This is the most reliable pattern - the text is directly in the anchor tag
+      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:[^<]*<[^>]*>)*\s*(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)\s+click\s+here)[^<]*</a>''', caseSensitive: false),
+      
+      // Pattern 2: Unsubscribe text with optional "click here" or "here" as prefix or suffix
+      // Matches: <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
+      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:(?:click\s+here|here)[^<]*(?:to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)|(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*(?:click\s+here|here))[^<]*</a>''', caseSensitive: false),
+      
+      // Pattern 3: Button-style with unsubscribe text (with click here as prefix or suffix)
+      // Matches: <a href="url" class="button">Unsubscribe</a>, <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
+      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,200}?(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout)\s+click\s+here)[\s\S]{0,200}?</a>''', caseSensitive: false),
     ];
     
+    // Try to find the most specific match first (direct unsubscribe text in anchor)
     for (final body in bodies) {
+      // Try patterns in order of specificity
       for (final pattern in patterns) {
-        final match = pattern.firstMatch(body);
-        if (match != null) {
-          // Use group(1) if it exists (capturing group), otherwise use group(0) (full match)
-          // Some patterns have capturing groups, others don't
+        final matches = pattern.allMatches(body);
+        for (final match in matches) {
           String? link;
           if (match.groupCount >= 1) {
-            try {
-              link = match.group(1);
-            } catch (e) {
-              // group(1) doesn't exist, fall back to full match
-              link = match.group(0);
-            }
+            link = match.group(1);
           } else {
             link = match.group(0);
           }
+          
           if (link != null && link.isNotEmpty) {
-            debugPrint('[Phase2] Found unsubscribe link: $link');
-            // Decode HTML entities if needed
-            return link
+            // Decode HTML entities
+            final decodedLink = link
                 .replaceAll('&amp;', '&')
                 .replaceAll('&lt;', '<')
                 .replaceAll('&gt;', '>')
                 .replaceAll('&quot;', '"')
-                .replaceAll('&#39;', "'");
+                .replaceAll('&#39;', "'")
+                .replaceAll('%26', '&') // URL-encoded &
+                .trim();
+            
+            // Only return if it's a valid URL
+            if (decodedLink.startsWith('http://') || 
+                decodedLink.startsWith('https://') || 
+                decodedLink.startsWith('mailto:')) {
+              debugPrint('[Phase2] Found unsubscribe link: $decodedLink');
+              return decodedLink;
+            }
           }
         }
       }
@@ -1117,9 +1137,12 @@ class GmailSyncService {
       orElse: () => '',
     );
     final chosen = https.isNotEmpty ? https : parts.first;
-    // ignore: avoid_print
-    print('[subs] header chosen=$chosen');
-    return chosen;
+    if (chosen.isNotEmpty) {
+      // ignore: avoid_print
+      print('[subs] header chosen=$chosen');
+      return chosen;
+    }
+    return null;
   }
 
   /// Apply sender preferences to messages (auto-apply local tag)
@@ -1629,14 +1652,43 @@ class GmailSyncService {
     return _encodeParameterValue(name, 'name');
   }
   
-  /// Encode filename for use in MIME headers (legacy method, kept for backward compatibility)
-  /// Escapes backslashes and quotes, and handles special characters
-  @Deprecated('Use _encodeFilenameForMimeHeader instead')
-  String _encodeMimeHeaderValue(String filename) {
-    // Escape backslashes and quotes
-    return filename
-        .replaceAll('\\', '\\\\')
-        .replaceAll('"', '\\"');
+
+  /// Extract unsubscribe link from email, prioritizing List-Unsubscribe header
+  /// Returns the best available unsubscribe link, or null if none found
+  Future<String?> extractUnsubscribeLink(String accountId, String messageId) async {
+    final account = await GoogleAuthService().ensureValidAccessToken(accountId);
+    final accessToken = account?.accessToken;
+    if (accessToken == null || accessToken.isEmpty) return null;
+    
+    try {
+      final resp = await http.get(
+        Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId?format=full'),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
+      if (resp.statusCode != 200) return null;
+      final map = jsonDecode(resp.body) as Map<String, dynamic>;
+      final gm = GmailMessage.fromJson(map);
+      final headers = gm.payload?.headers ?? [];
+      
+      // First, try to extract from List-Unsubscribe header (most reliable)
+      final headerLink = _extractUnsubFromHeader(headers);
+      if (headerLink != null && headerLink.isNotEmpty) {
+        debugPrint('[extractUnsubscribeLink] Using header link: $headerLink');
+        return headerLink;
+      }
+      
+      // Fallback to extracting from email body
+      final bodyLink = await _tryExtractUnsubLink(accountId, messageId);
+      if (bodyLink != null && bodyLink.isNotEmpty) {
+        debugPrint('[extractUnsubscribeLink] Using body link: $bodyLink');
+        return bodyLink;
+      }
+      
+      return null;
+    } catch (e) {
+      debugPrint('[extractUnsubscribeLink] Error: $e');
+      return null;
+    }
   }
 
   /// Send an auto-unsubscribe mail when List-Unsubscribe provides a mailto: link

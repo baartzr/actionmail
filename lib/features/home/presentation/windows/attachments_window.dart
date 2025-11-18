@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
 import 'package:domail/shared/widgets/app_window_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
+import 'package:domail/services/pdf_viewer_preference_service.dart';
 import 'package:domail/shared/widgets/personal_business_filter.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:domail/data/models/message_index.dart';
@@ -313,15 +314,24 @@ class _AttachmentsWindowState extends ConsumerState<AttachmentsWindow> {
 
         final extension = path.extension(file.path).toLowerCase();
         if (!mounted) return;
-        if (extension == '.pdf') {
-          await PdfViewerWindow.open(
-            context,
-            filePath: file.path,
-          );
-          return;
+        
+        // Check preference for PDF viewer
+        // Check both extension and filename for PDF (filename check handles cases where file path doesn't have extension)
+        final isPdf = extension == '.pdf' || filename.toLowerCase().endsWith('.pdf');
+        if (isPdf) {
+          final useInternal = await PdfViewerPreferenceService().useInternalViewer();
+          if (!mounted) return;
+          if (useInternal) {
+            await PdfViewerWindow.open(
+              context,
+              filePath: file.path,
+            );
+            return;
+          }
         }
-
+        
         // Open the file using platform-specific method
+        // PDFs use system file opener to allow package selection (e.g., pdf_editor) unless preference is set
         if (Platform.isAndroid || Platform.isIOS) {
           // On mobile, use open_file package which handles FileProvider automatically
           try {

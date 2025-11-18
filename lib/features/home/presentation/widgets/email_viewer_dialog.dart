@@ -7,6 +7,7 @@ import 'package:domail/data/models/message_index.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
+import 'package:domail/services/pdf_viewer_preference_service.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 import 'package:domail/services/gmail/gmail_sync_service.dart';
@@ -1446,16 +1447,23 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         return;
       }
 
+      // Check preference for PDF viewer
+      // Check both extension and filename for PDF (filename check handles cases where file path doesn't have extension)
       final extension = path.extension(file.path).toLowerCase();
-      if (extension == '.pdf') {
-        if (!mounted) return;
-        await PdfViewerWindow.open(
-          context,
-          filePath: file.path,
-        );
-        return;
+      final isPdf = extension == '.pdf' || attachment.filename.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        final useInternal = await PdfViewerPreferenceService().useInternalViewer();
+        if (useInternal) {
+          if (!mounted) return;
+          await PdfViewerWindow.open(
+            context,
+            filePath: file.path,
+          );
+          return;
+        }
       }
-
+      
+      // Use system file opener (allows package selection on Windows)
       final result = await OpenFile.open(file.path);
       if (!mounted) return;
       if (result.type != ResultType.done) {

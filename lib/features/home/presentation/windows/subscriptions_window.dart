@@ -62,7 +62,9 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                   final hasSubs = m.subsLocal;
                   if (!hasSubs) return false;
                   // Filter by unsubscribed status based on toggle
-                  if (!_showUnsubscribed && m.unsubscribedLocal) return false;
+                  // Check both database state and session state
+                  final isUnsubscribed = m.unsubscribedLocal || _unsubscribedIds.contains(m.id);
+                  if (!_showUnsubscribed && isUnsubscribed) return false;
                   // Apply Personal/Business filter if set
                   if (_filterLocal == null) return true;
                   return m.localTagPersonal == _filterLocal;
@@ -90,7 +92,9 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                   senderToAllMessages.putIfAbsent(senderEmail, () => []).add(m);
                   
                   // Track separately for subscribed vs unsubscribed
-                  if (m.unsubscribedLocal) {
+                  // Check both database state and session state
+                  final isUnsubscribed = m.unsubscribedLocal || _unsubscribedIds.contains(m.id);
+                  if (isUnsubscribed) {
                     final existing = senderToLatestUnsubscribed[senderEmail];
                     if (existing == null || m.internalDate.isAfter(existing.internalDate)) {
                       senderToLatestUnsubscribed[senderEmail] = m;
@@ -118,8 +122,13 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
                     final message = allLatestMessages[i];
                     final senderEmail = _extractEmail(message.from);
                     // Filter messages by sender AND unsubscribed status to get correct count
+                    // Check both database state and session state for the message
+                    final messageIsUnsubscribed = message.unsubscribedLocal || _unsubscribedIds.contains(message.id);
                     final allMessages = (senderToAllMessages[senderEmail] ?? [])
-                        .where((m) => m.unsubscribedLocal == message.unsubscribedLocal)
+                        .where((m) {
+                          final mIsUnsubscribed = m.unsubscribedLocal || _unsubscribedIds.contains(m.id);
+                          return mIsUnsubscribed == messageIsUnsubscribed;
+                        })
                         .toList();
                     return _subscriptionTile(message, allMessages);
                   },
@@ -205,87 +214,140 @@ class _SubscriptionsWindowState extends ConsumerState<SubscriptionsWindow> {
             elevation: const WidgetStatePropertyAll(0),
           ),
           onPressed: () async {
-            // Use stored unsubLink if present; fallback to sender domain
-            final repo = MessageRepository();
-            final stored = await repo.getUnsubLink(m.id);
-            if (stored != null && stored.startsWith('mailto:')) {
-              final ok = await GmailSyncService().sendUnsubscribeMailto(widget.accountId, stored);
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(ok ? 'Unsubscribe email sent' : 'Failed to send unsubscribe email')),
-              );
-              if (ok) {
-                // Mark this email and all emails from this sender as unsubscribed
-                final senderEmail = _extractEmail(m.from);
-                if (senderEmail.isNotEmpty) {
-                  await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
-                } else {
-                  // Fallback: just mark this email if we can't extract sender
-                  await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
-                }
-                setState(() => _unsubscribedIds.add(m.id));
-              }
-              return;
-            }
-            final url = stored != null && stored.isNotEmpty ? Uri.tryParse(stored) : _guessUnsubscribeUrl(m);
-            // Debug which URL we're opening
-            // ignore: avoid_print
-            print('[subs] open unsub id=${m.id} url=${url?.toString() ?? 'null'}');
+            // Re-extract unsubscribe link from email to ensure we get the correct one
+            // This prioritizes List-Unsubscribe header, then looks for link directly attached to unsubscribe text
+            final syncService = GmailSyncService();
+            String? unsubLink = await syncService.extractUnsubscribeLink(widget.accountId, m.id);
             
-            if (url != null && await canLaunchUrl(url)) {
-              // Show confirmation dialog before opening browser
-              if (!mounted) return;
-              final shouldOpen = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Manual Unsubscribe'),
-                  content: const Text('This website doesn\'t have auto-unsubscribe. Click OK to open the website for manual unsubscribe.'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text('Close'),
-                    ),
-                    TextButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('OK'),
-                    ),
-                  ],
-                ),
-              );
-              
-              if (shouldOpen != true || !mounted) return;
-              
-              // Open the unsubscribe link
-              await launchUrl(url, mode: LaunchMode.externalApplication);
-              
-              // Show confirmation dialog asking if they unsubscribed
-              if (!mounted) return;
-              final confirmed = await showDialog<bool>(
-                context: context,
-                builder: (ctx) => AlertDialog(
-                  title: const Text('Manual Unsubscribe'),
-                  content: const Text('Were you able to unsubscribe successfully?'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
-                    TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes')),
-                  ],
-                ),
-              );
-              if (confirmed == true && mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Marked as unsubscribed')));
-                // Mark this email and all emails from this sender as unsubscribed
-                final senderEmail = _extractEmail(m.from);
-                if (senderEmail.isNotEmpty) {
-                  await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
-                } else {
-                  // Fallback: just mark this email if we can't extract sender
-                  await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+            // If extraction failed, try stored link as fallback
+            if (unsubLink == null || unsubLink.isEmpty) {
+              final repo = MessageRepository();
+              final stored = await repo.getUnsubLink(m.id);
+              unsubLink = stored;
+            }
+            
+            // Debug which URL we're using
+            // ignore: avoid_print
+            print('[subs] open unsub id=${m.id} extracted=${unsubLink ?? 'null'}');
+            
+            if (unsubLink != null && unsubLink.isNotEmpty) {
+              // Handle mailto: links
+              if (unsubLink.startsWith('mailto:')) {
+                final ok = await syncService.sendUnsubscribeMailto(widget.accountId, unsubLink);
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(ok ? 'Unsubscribe email sent' : 'Failed to send unsubscribe email')),
+                );
+                if (ok) {
+                  // Mark this email and all emails from this sender as unsubscribed
+                  final senderEmail = _extractEmail(m.from);
+                  if (senderEmail.isNotEmpty) {
+                    await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
+                    // Update provider state for all messages from this sender
+                    ref.read(emailListProvider.notifier).setSenderUnsubscribed(senderEmail, true);
+                  } else {
+                    // Fallback: just mark this email if we can't extract sender
+                    await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                    // Update provider state for this message
+                    ref.read(emailListProvider.notifier).setUnsubscribed(m.id, true);
+                  }
+                  setState(() => _unsubscribedIds.add(m.id));
                 }
-                setState(() => _unsubscribedIds.add(m.id));
+                return;
+              }
+              
+              // Handle https: links
+              final url = Uri.tryParse(unsubLink);
+              if (url != null && await canLaunchUrl(url)) {
+                // Show confirmation dialog before opening browser
+                if (!mounted) return;
+                final shouldOpen = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Manual Unsubscribe'),
+                    content: const Text('This website doesn\'t have auto-unsubscribe. Click OK to open the website for manual unsubscribe.'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Close'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                );
+                
+                if (shouldOpen != true || !mounted) return;
+                
+                // Open the unsubscribe link
+                await launchUrl(url, mode: LaunchMode.externalApplication);
+                
+                // Show confirmation dialog asking if they unsubscribed
+                if (!mounted) return;
+                final confirmed = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Manual Unsubscribe'),
+                    content: const Text('Were you able to unsubscribe successfully?'),
+                    actions: [
+                      TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')),
+                      TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Yes')),
+                    ],
+                  ),
+                );
+                if (confirmed == true && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Marked as unsubscribed')));
+                  // Mark this email and all emails from this sender as unsubscribed
+                  final senderEmail = _extractEmail(m.from);
+                  if (senderEmail.isNotEmpty) {
+                    await MessageRepository().markSenderUnsubscribed(widget.accountId, senderEmail);
+                    // Update provider state for all messages from this sender
+                    ref.read(emailListProvider.notifier).setSenderUnsubscribed(senderEmail, true);
+                  } else {
+                    // Fallback: just mark this email if we can't extract sender
+                    await MessageRepository().updateLocalClassification(m.id, unsubscribed: true);
+                    // Update provider state for this message
+                    ref.read(emailListProvider.notifier).setUnsubscribed(m.id, true);
+                  }
+                  setState(() => _unsubscribedIds.add(m.id));
+                }
+              } else {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Could not open unsubscribe link')));
               }
             } else {
-              if (!mounted) return;
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No unsubscribe link available')));
+              // No unsubscribe link found - fallback to guessing sender domain
+              final url = _guessUnsubscribeUrl(m);
+              if (url != null && await canLaunchUrl(url)) {
+                // Show confirmation dialog before opening browser
+                if (!mounted) return;
+                final shouldOpen = await showDialog<bool>(
+                  context: context,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Manual Unsubscribe'),
+                    content: const Text('No unsubscribe link found in this email. Click OK to open the sender\'s website for manual unsubscribe.'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        child: const Text('Close'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(ctx, true),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
+                );
+                
+                if (shouldOpen == true && mounted) {
+                  await launchUrl(url, mode: LaunchMode.externalApplication);
+                }
+              } else {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No unsubscribe link available')));
+              }
             }
           },
           child: const Text('Unsubscribe'),
