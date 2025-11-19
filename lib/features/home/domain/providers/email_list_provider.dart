@@ -65,14 +65,11 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       state = AsyncValue.data(local);
 
       if (folderLabel == 'INBOX') {
-        // Check if this is a new account (no history = no emails locally)
-        final hasHistory = await _syncService.hasHistoryId(accountId);
-
-        if (hasHistory && local.isNotEmpty) {
-          // Existing account with emails: start Firebase after local load (fast path)
-          unawaited(_startFirebaseAfterLocalLoad(accountId));
-        }
-        // For new accounts (no history), Firebase will start after initial sync completes
+        // Start Firebase listening immediately for INBOX (regardless of history or email count)
+        // This ensures we receive real-time updates from other devices even if inbox is empty
+        // For existing accounts: start listening now (data sync happens in background)
+        // For new accounts: listening will also start after initial sync completes (as backup)
+        unawaited(_startFirebaseAfterLocalLoad(accountId));
       }
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -489,7 +486,44 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       final idx = list.indexWhere((m) => m.id == messageId);
       if (idx != -1) {
         final updated = List<MessageIndex>.from(list);
-        updated[idx] = updated[idx].copyWith(localTagPersonal: localTag);
+        final existing = updated[idx];
+        // Handle null explicitly - copyWith treats null as "not provided", so we need to manually construct
+        // when setting to null to ensure the UI updates correctly
+        if (localTag == null) {
+          // Explicitly set to null - manually construct to override copyWith's null handling
+          updated[idx] = MessageIndex(
+            id: existing.id,
+            threadId: existing.threadId,
+            accountId: existing.accountId,
+            accountEmail: existing.accountEmail,
+            historyId: existing.historyId,
+            internalDate: existing.internalDate,
+            from: existing.from,
+            to: existing.to,
+            subject: existing.subject,
+            snippet: existing.snippet,
+            hasAttachments: existing.hasAttachments,
+            gmailCategories: existing.gmailCategories,
+            gmailSmartLabels: existing.gmailSmartLabels,
+            localTagPersonal: null, // Explicitly set to null
+            subsLocal: existing.subsLocal,
+            shoppingLocal: existing.shoppingLocal,
+            unsubscribedLocal: existing.unsubscribedLocal,
+            actionDate: existing.actionDate,
+            actionConfidence: existing.actionConfidence,
+            actionInsightText: existing.actionInsightText,
+            actionComplete: existing.actionComplete,
+            hasAction: existing.hasAction,
+            isRead: existing.isRead,
+            isStarred: existing.isStarred,
+            isImportant: existing.isImportant,
+            folderLabel: existing.folderLabel,
+            prevFolderLabel: existing.prevFolderLabel,
+          );
+        } else {
+          // Set to a value - copyWith works fine for non-null values
+          updated[idx] = existing.copyWith(localTagPersonal: localTag);
+        }
         state = AsyncValue.data(updated);
       }
     }

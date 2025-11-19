@@ -365,14 +365,33 @@ class FirebaseSyncService {
           (snapshot) {
             // Process on main thread - use scheduleMicrotask for async operations
             scheduleMicrotask(() async {
+              if (kDebugMode) {
+                _logFirebaseSync('Listener received snapshot with ${snapshot.docChanges.length} changes');
+              }
               for (final docChange in snapshot.docChanges) {
                 final messageId = docChange.doc.id;
+                final changeType = docChange.type.toString();
                 final data = docChange.doc.data() as Map<String, dynamic>?;
+                
+                if (kDebugMode) {
+                  _logFirebaseSync('Processing change: messageId=$messageId, type=$changeType, hasData=${data != null}');
+                }
                 
                 if (data == null) continue;
                 
                 final current = data['current'] as Map<String, dynamic>?;
-                if (current == null) continue;
+                if (current == null) {
+                  if (kDebugMode) {
+                    _logFirebaseSync('Skipping $messageId: current is null');
+                  }
+                  continue;
+                }
+                
+                if (kDebugMode) {
+                  final hasTag = current.containsKey('localTagPersonal');
+                  final tagValue = current['localTagPersonal'];
+                  _logFirebaseSync('Processing $messageId: hasLocalTagPersonal=$hasTag, value=$tagValue');
+                }
                 
                 // Process this email change (await to ensure errors are caught)
                 try {
@@ -567,30 +586,53 @@ class FirebaseSyncService {
       final localMessage = await repo.getById(messageId);
       
       bool needsUpdate = false;
+      bool tagWasUpdated = false; // Track if tag was explicitly updated (even if to null)
       String? updatedLocalTag;
       DateTime? updatedActionDate;
       String? updatedActionText;
       bool? updatedActionComplete;
       
       // Compare and update localTagPersonal
-      // Handle null values: if Firebase has null (or field missing), it should clear local tag
+      // Handle missing fields: if Firebase field is missing, treat as null (cleared)
       final firebaseTagValue = current['localTagPersonal'];
-      // Get the actual value - preserve null if it's null in Firebase
-      final firebaseTag = firebaseTagValue?.toString();
-      final localTag = localMessage?.localTagPersonal;
-      
-      // Check if Firebase has the field (even if null)
+      // Check if Firebase has the field
       final hasFirebaseField = current.containsKey('localTagPersonal');
       
-      // Determine what value to apply
-      final tagToApply = hasFirebaseField ? firebaseTag : null;
+      // Get the actual value from Firebase
+      String? firebaseTag;
+      if (hasFirebaseField) {
+        // Field exists in Firebase - get value (could be null, empty string, or actual tag)
+        if (firebaseTagValue == null) {
+          firebaseTag = null; // Explicitly null in Firebase
+        } else {
+          firebaseTag = firebaseTagValue.toString();
+          // Treat empty string as null for consistency
+          if (firebaseTag.isEmpty) {
+            firebaseTag = null;
+          }
+        }
+      } else {
+        // Field is missing in Firebase - treat as null (user cleared it or it was never set)
+        firebaseTag = null;
+      }
       
-      // Update if values differ (explicitly compare null vs non-null)
+      final localTag = localMessage?.localTagPersonal;
+      
+      // Determine what value to apply
+      // If field is missing in Firebase, we set local to null (treat missing as cleared)
+      final tagToApply = firebaseTag;
+      
+      // Update if values differ
       // This handles: null != "Personal", "Personal" != null, "Personal" != "Business", etc.
       final shouldUpdate = tagToApply != localTag;
       
+      if (kDebugMode) {
+        _logFirebaseSync('localTagPersonal update check: firebase=${hasFirebaseField ? firebaseTag : "missing (→null)"}, local=$localTag, shouldUpdate=$shouldUpdate');
+      }
+      
       if (shouldUpdate) {
         updatedLocalTag = tagToApply;
+        tagWasUpdated = true; // Mark that tag was updated (even if to null)
         // Don't update lastUpdated when applying Firebase changes (not a user change)
         await repo.updateLocalTag(messageId, tagToApply, updateTimestamp: false);
         needsUpdate = true;
@@ -666,10 +708,17 @@ class FirebaseSyncService {
       }
       
       if (needsUpdate && onUpdateApplied != null) {
-        final finalTag = updatedLocalTag ?? localTag;
+        // Use updated values if they were explicitly updated (even if null), otherwise keep local values
+        // This ensures null values are properly propagated to the UI when clearing tags
+        final finalTag = tagWasUpdated ? updatedLocalTag : localTag;
         final finalActionDate = updatedActionDate ?? localActionDate;
         final finalActionText = updatedActionText ?? localActionText;
         final finalActionComplete = updatedActionComplete ?? localActionComplete;
+        
+        if (kDebugMode) {
+          _logFirebaseSync('Calling onUpdateApplied: messageId=$messageId, finalTag=$finalTag, tagWasUpdated=$tagWasUpdated, updatedLocalTag=$updatedLocalTag, localTag=$localTag');
+        }
+        
         onUpdateApplied!(
           messageId,
           finalTag,
@@ -677,6 +726,10 @@ class FirebaseSyncService {
           finalActionText,
           finalActionComplete,
         );
+      } else if (needsUpdate && onUpdateApplied == null) {
+        if (kDebugMode) {
+          _logFirebaseSync('needsUpdate=true but onUpdateApplied is null - UI callback not set');
+        }
       }
     } catch (e) {
       _logFirebaseSync('Error applying email meta update for $messageId: $e');
