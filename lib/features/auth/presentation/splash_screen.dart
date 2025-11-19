@@ -104,24 +104,110 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
           if (verifier != null && redirectUri != null && clientId != null && clientSecret != null) {
             // Mark as processing to prevent duplicate
             _processedAppLink = appLink;
+            
+            // Check if this is a re-authentication
+            final reauthAccountId = prefs.getString('oauth_reauth_account_id');
+            final isReauth = reauthAccountId != null && reauthAccountId.isNotEmpty;
+            
             // ignore: avoid_print
-            print('[splash] completing OAuth with stored verifier');
+            print('[splash] completing OAuth with stored verifier, isReauth=$isReauth accountId=$reauthAccountId');
             
             // Exchange code for tokens
             final svc = GoogleAuthService();
+            // ignore: avoid_print
+            print('[splash] Calling completeOAuthFlow for ${isReauth ? "re-auth" : "sign-in"}...');
             final account = await svc.completeOAuthFlow(code, verifier, redirectUri, clientId, clientSecret);
+            
+            if (account == null) {
+              // ignore: avoid_print
+              print('[splash] completeOAuthFlow returned null - token exchange may have failed');
+              // Clear stored OAuth state on failure
+              await prefs.remove('oauth_pkce_verifier');
+              await prefs.remove('oauth_redirect_uri');
+              await prefs.remove('oauth_client_id');
+              await prefs.remove('oauth_client_secret');
+              await prefs.remove('oauth_reauth_account_id');
+              _processedAppLink = null;
+              return;
+            }
+            
+            // ignore: avoid_print
+            print('[splash] completeOAuthFlow succeeded, got tokens: accessToken=${account.accessToken.isNotEmpty ? '${account.accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${account.refreshToken != null && account.refreshToken!.isNotEmpty ? '${account.refreshToken!.substring(0, 20)}...' : 'null/empty'} tokenExpiryMs=${account.tokenExpiryMs}');
             
             // Clear stored OAuth state
             await prefs.remove('oauth_pkce_verifier');
             await prefs.remove('oauth_redirect_uri');
             await prefs.remove('oauth_client_id');
             await prefs.remove('oauth_client_secret');
+            await prefs.remove('oauth_reauth_account_id');
             
-            if (account != null && mounted) {
-              // ignore: avoid_print
-              print('[splash] OAuth completed, saving account');
-              final stored = await svc.upsertAccount(account);
-              await _saveLastActiveAccount(stored.id);
+            if (mounted) {
+              if (isReauth) {
+                // Re-authentication: Update existing account
+                // ignore: avoid_print
+                print('[splash] OAuth re-auth completed, updating account $reauthAccountId');
+                final existingAccounts = await svc.loadAccounts();
+                // ignore: avoid_print
+                print('[splash] Found ${existingAccounts.length} existing accounts');
+                final idx = existingAccounts.indexWhere((a) => a.id == reauthAccountId);
+                if (idx != -1) {
+                  // Update existing account with new tokens
+                  final existingAccount = existingAccounts[idx];
+                  // ignore: avoid_print
+                  print('[splash] Before update - existing account: accessToken=${existingAccount.accessToken.isNotEmpty ? '${existingAccount.accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${existingAccount.refreshToken != null && existingAccount.refreshToken!.isNotEmpty ? '${existingAccount.refreshToken!.substring(0, 20)}...' : 'null/empty'} tokenExpiryMs=${existingAccount.tokenExpiryMs}');
+                  
+                  final updated = existingAccount.copyWith(
+                    accessToken: account.accessToken,
+                    refreshToken: account.refreshToken ?? existingAccount.refreshToken,
+                    tokenExpiryMs: account.tokenExpiryMs,
+                  );
+                  // ignore: avoid_print
+                  print('[splash] After copyWith - updated account: accessToken=${updated.accessToken.isNotEmpty ? '${updated.accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${updated.refreshToken != null && updated.refreshToken!.isNotEmpty ? '${updated.refreshToken!.substring(0, 20)}...' : 'null/empty'} tokenExpiryMs=${updated.tokenExpiryMs}');
+                  
+                  existingAccounts[idx] = updated;
+                  await svc.saveAccounts(existingAccounts);
+                  // ignore: avoid_print
+                  print('[splash] Accounts saved to SharedPreferences');
+                  
+                  // Verify what was saved by reloading
+                  final verifyAccounts = await svc.loadAccounts();
+                  final verifyIdx = verifyAccounts.indexWhere((a) => a.id == reauthAccountId);
+                  if (verifyIdx != -1) {
+                    final verifyAccount = verifyAccounts[verifyIdx];
+                    // ignore: avoid_print
+                    print('[splash] Verification after save - loaded account: accessToken=${verifyAccount.accessToken.isNotEmpty ? '${verifyAccount.accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${verifyAccount.refreshToken != null && verifyAccount.refreshToken!.isNotEmpty ? '${verifyAccount.refreshToken!.substring(0, 20)}...' : 'null/empty'} tokenExpiryMs=${verifyAccount.tokenExpiryMs}');
+                  } else {
+                    // ignore: avoid_print
+                    print('[splash] ERROR: Account not found after save! accountId=$reauthAccountId');
+                  }
+                  
+                  // Clear token check cache since tokens were updated
+                  svc.clearTokenCheckCache(reauthAccountId);
+                  // ignore: avoid_print
+                  print('[splash] Token check cache cleared for account $reauthAccountId');
+                  
+                  // Clear error state
+                  svc.clearLastError(reauthAccountId);
+                  // Mark as recently re-authenticated to prevent immediate callback trigger
+                  await prefs.setBool('oauth_recently_reauthd_$reauthAccountId', true);
+                  // Clear the flag after 5 seconds (enough time for app to resume and check tokens)
+                  Future.delayed(const Duration(seconds: 5), () async {
+                    await prefs.remove('oauth_recently_reauthd_$reauthAccountId');
+                  });
+                  // ignore: avoid_print
+                  print('[splash] Re-auth successful, tokens updated for account $reauthAccountId: accessToken=${updated.accessToken.isNotEmpty} refreshToken=${updated.refreshToken != null && updated.refreshToken!.isNotEmpty} tokenExpiryMs=${updated.tokenExpiryMs}');
+                } else {
+                  // ignore: avoid_print
+                  print('[splash] Re-auth account not found: $reauthAccountId');
+                  print('[splash] Available account IDs: ${existingAccounts.map((a) => a.id).join(", ")}');
+                }
+              } else {
+                // New sign-in: Create new account
+                // ignore: avoid_print
+                print('[splash] OAuth completed, saving new account');
+                final stored = await svc.upsertAccount(account);
+                await _saveLastActiveAccount(stored.id);
+              }
               
               // Clear the App Link from intent after successful processing
               try {
@@ -131,12 +217,14 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
               }
               
               if (mounted) {
+                // Navigate to home - use reauthAccountId if re-auth, otherwise use new account id
+                final targetAccountId = isReauth ? reauthAccountId : (await svc.loadAccounts()).firstWhere((a) => a.id == account.id, orElse: () => account).id;
                 // ignore: avoid_print
-                print('[splash] navigating to home with account ${stored.id}');
+                print('[splash] navigating to home with account $targetAccountId');
                 _navigatedAway = true; // Mark as navigated to prevent pop attempts
                 // Use pushReplacementNamed to avoid Navigator history issues
                 Navigator.of(context, rootNavigator: true)
-                    .pushReplacementNamed('/home', arguments: stored.id);
+                    .pushReplacementNamed('/home', arguments: targetAccountId);
                 return; // Exit early after successful navigation
               }
             } else {

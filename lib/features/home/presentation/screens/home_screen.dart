@@ -34,6 +34,7 @@ import 'package:http/http.dart' as http;
 import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:ensemble_app_badger/ensemble_app_badger.dart';
 import 'dart:io';
+import 'package:flutter/services.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -63,7 +64,8 @@ class _ProcessingDialog extends StatelessWidget {
               width: 28,
               child: CircularProgressIndicator(
                 strokeWidth: 3,
-                valueColor: AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
+                valueColor:
+                    AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
               ),
             ),
             const SizedBox(width: 16),
@@ -80,7 +82,7 @@ class _ProcessingDialog extends StatelessWidget {
   }
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   // Selected folder (default to Inbox)
   String _selectedFolder = AppConstants.folderInbox;
   // Whether viewing a local backup folder (vs Gmail folder)
@@ -92,28 +94,417 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isOpeningAccountDialog = false;
   bool _isAccountsRefreshing = false;
   DateTime? _lastAccountTap;
-  
+
   // Account unread counts (for left panel display)
   Map<String, int> _accountUnreadCounts = {};
   final Set<String> _pendingLocalUnreadAccounts = {};
   Timer? _unreadCountRefreshTimer;
-  
+
   // Selected local state filter: null (show all), 'Personal', or 'Business'
   String? _selectedLocalState;
-  
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _unreadCountRefreshTimer?.cancel();
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // When app resumes, check if re-auth completed successfully
+    // Only check if we're actually expecting a re-auth (oauth_reauth_account_id exists)
+    if (state == AppLifecycleState.resumed && Platform.isAndroid) {
+      // Check if re-auth is in progress before checking completion
+      SharedPreferences.getInstance().then((prefs) async {
+        final reauthAccountId = prefs.getString('oauth_reauth_account_id');
+        if (reauthAccountId != null && reauthAccountId == _selectedAccountId) {
+          // ignore: avoid_print
+          print('[home] app resumed, re-auth in progress, checking if re-auth completed successfully...');
+          _checkReauthCompletion();
+        }
+      });
+    }
+  }
+
+  /// Check if re-authentication completed successfully after app resume
+  Future<void> _checkReauthCompletion() async {
+    if (!mounted || _selectedAccountId == null) return;
+
+    // ignore: avoid_print
+    print('[home] _checkReauthCompletion: starting check for account $_selectedAccountId');
+
+    // First, check if there's an App Link that needs to be processed (Android re-auth)
+    // Only check if we're actually expecting a re-auth (oauth_reauth_account_id exists)
+    if (Platform.isAndroid) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final reauthAccountId = prefs.getString('oauth_reauth_account_id');
+        
+        // Only process App Links if we're expecting a re-auth for the selected account
+        if (reauthAccountId != null && reauthAccountId == _selectedAccountId) {
+          final methodChannel = MethodChannel('com.seagreen.domail/bringToFront');
+          // ignore: avoid_print
+          print('[home] _checkReauthCompletion: checking for App Link (re-auth in progress)...');
+          final appLink = await methodChannel.invokeMethod<String>('getInitialAppLink');
+          // ignore: avoid_print
+          print('[home] _checkReauthCompletion: getInitialAppLink returned: $appLink');
+          
+          if (appLink != null && appLink.isNotEmpty && appLink.contains('code=')) {
+          // App Link found - need to complete OAuth flow
+          // ignore: avoid_print
+          print('[home] _checkReauthCompletion: detected OAuth App Link, completing OAuth flow...');
+          
+          final uri = Uri.parse(appLink);
+          final code = uri.queryParameters['code'];
+          final error = uri.queryParameters['error'];
+          
+          if (error != null) {
+            // ignore: avoid_print
+            print('[home] _checkReauthCompletion: OAuth error in App Link: $error');
+            // Clear the App Link
+            try {
+              await methodChannel.invokeMethod('clearAppLink');
+            } catch (_) {}
+            return;
+          }
+          
+          if (code != null) {
+            final prefs = await SharedPreferences.getInstance();
+            final verifier = prefs.getString('oauth_pkce_verifier');
+            final redirectUri = prefs.getString('oauth_redirect_uri');
+            final clientId = prefs.getString('oauth_client_id');
+            final clientSecret = prefs.getString('oauth_client_secret');
+            final reauthAccountId = prefs.getString('oauth_reauth_account_id');
+            
+            if (verifier != null && redirectUri != null && clientId != null && clientSecret != null) {
+              // Check if this is a re-auth for the selected account
+              if (reauthAccountId != null && reauthAccountId == _selectedAccountId) {
+                // ignore: avoid_print
+                print('[home] _checkReauthCompletion: completing OAuth re-auth for account $reauthAccountId');
+                
+                final auth = GoogleAuthService();
+                final account = await auth.completeOAuthFlow(code, verifier, redirectUri, clientId, clientSecret);
+                
+                if (account != null) {
+                  // ignore: avoid_print
+                  print('[home] _checkReauthCompletion: OAuth completed, updating account tokens');
+                  
+                  // Update existing account with new tokens
+                  final existingAccounts = await auth.loadAccounts();
+                  final idx = existingAccounts.indexWhere((a) => a.id == reauthAccountId);
+                  if (idx != -1) {
+                    final updated = existingAccounts[idx].copyWith(
+                      accessToken: account.accessToken,
+                      refreshToken: account.refreshToken ?? existingAccounts[idx].refreshToken,
+                      tokenExpiryMs: account.tokenExpiryMs,
+                    );
+                    existingAccounts[idx] = updated;
+                    await auth.saveAccounts(existingAccounts);
+                    
+                    // Clear token check cache since tokens were updated
+                    auth.clearTokenCheckCache(reauthAccountId);
+                    // ignore: avoid_print
+                    print('[home] _checkReauthCompletion: tokens updated and cache cleared');
+                    
+                    // Clear error state
+                    auth.clearLastError(reauthAccountId);
+                    
+                    // Clear stored OAuth state
+                    await prefs.remove('oauth_pkce_verifier');
+                    await prefs.remove('oauth_redirect_uri');
+                    await prefs.remove('oauth_client_id');
+                    await prefs.remove('oauth_client_secret');
+                    await prefs.remove('oauth_reauth_account_id');
+                    
+                    // Clear the App Link
+                    try {
+                      await methodChannel.invokeMethod('clearAppLink');
+                    } catch (_) {}
+                    
+                    // OAuth completed successfully, now validate tokens below
+                  } else {
+                    // ignore: avoid_print
+                    print('[home] _checkReauthCompletion: ERROR - account not found after OAuth completion');
+                    return;
+                  }
+                } else {
+                  // ignore: avoid_print
+                  print('[home] _checkReauthCompletion: OAuth completion failed');
+                  // Clear stored OAuth state on failure
+                  await prefs.remove('oauth_pkce_verifier');
+                  await prefs.remove('oauth_redirect_uri');
+                  await prefs.remove('oauth_client_id');
+                  await prefs.remove('oauth_client_secret');
+                  await prefs.remove('oauth_reauth_account_id');
+                  return;
+                }
+              } else {
+                // ignore: avoid_print
+                print('[home] _checkReauthCompletion: App Link is for different account (reauthAccountId=$reauthAccountId, selected=$_selectedAccountId)');
+              }
+            } else {
+              // ignore: avoid_print
+              print('[home] _checkReauthCompletion: OAuth state missing in SharedPreferences');
+            }
+          }
+          }
+        }
+      } catch (e) {
+        // ignore: avoid_print
+        print('[home] _checkReauthCompletion: error checking App Link: $e');
+        // Continue with normal validation flow
+      }
+    }
+
+    // Reload accounts first to ensure we have the latest tokens
+    await _loadAccounts();
+    if (!mounted) return;
+
+    // Debug: Check what tokens are in the account before validation
+    final auth = GoogleAuthService();
+    final rawAccount = await auth.getAccountById(_selectedAccountId!);
+    if (rawAccount != null) {
+      // ignore: avoid_print
+      print('[home] _checkReauthCompletion: loaded account from storage - accessToken=${rawAccount.accessToken.isNotEmpty ? '${rawAccount.accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${rawAccount.refreshToken != null && rawAccount.refreshToken!.isNotEmpty ? '${rawAccount.refreshToken!.substring(0, 20)}...' : 'null/empty'} tokenExpiryMs=${rawAccount.tokenExpiryMs}');
+    } else {
+      // ignore: avoid_print
+      print('[home] _checkReauthCompletion: ERROR - account not found in storage! accountId=$_selectedAccountId');
+    }
+
+    // Check if the selected account now has valid tokens
+    // ignore: avoid_print
+    print('[home] _checkReauthCompletion: calling ensureValidAccessToken...');
+    final account = await auth.ensureValidAccessToken(_selectedAccountId!);
+    
+    if (account != null && account.accessToken.isNotEmpty) {
+      // ignore: avoid_print
+      print('[home] _checkReauthCompletion: ensureValidAccessToken returned valid account - accessToken=${account.accessToken.substring(0, 20)}...');
+      // Re-auth succeeded - clear error state
+      // ignore: avoid_print
+      print('[home] Re-auth completed successfully for account $_selectedAccountId');
+      auth.clearLastError(_selectedAccountId!);
+      
+      // Clear auth failure provider
+      ref.read(authFailureProvider.notifier).state = null;
+      
+      if (mounted) {
+        // Dismiss any open dialogs by popping navigator
+        final navigator = Navigator.of(context, rootNavigator: true);
+        while (navigator.canPop()) {
+          navigator.pop();
+        }
+        
+        // Reload emails for the selected account now that tokens are valid
+        if (_selectedAccountId != null) {
+          ref.read(emailListProvider.notifier)
+              .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+        }
+        
+        // Show success message
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Re-authentication successful')),
+        );
+      }
+    } else {
+      // Re-auth failed or tokens are still invalid
+      // ignore: avoid_print
+      print('[home] _checkReauthCompletion: ensureValidAccessToken returned null or empty token');
+      if (account != null) {
+        // ignore: avoid_print
+        print('[home] _checkReauthCompletion: account exists but accessToken is empty - accessToken=${account.accessToken.isEmpty} refreshToken=${account.refreshToken != null && account.refreshToken!.isNotEmpty}');
+      } else {
+        // ignore: avoid_print
+        print('[home] _checkReauthCompletion: account is null');
+      }
+      // ignore: avoid_print
+      print('[home] Re-auth check: tokens still invalid for account $_selectedAccountId');
+      // Clear provider first, then set it again to trigger ref.listen
+      ref.read(authFailureProvider.notifier).state = null;
+      // Use post-frame callback to set it again, ensuring ref.listen fires
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedAccountId != null) {
+          ref.read(authFailureProvider.notifier).state = _selectedAccountId;
+        }
+      });
+    }
+  }
+
+  /// Handle re-auth needed notification - show dialog and wait for user action
+  /// Dialog shows automatically when token refresh fails or internet is down
+  /// Dialog stays open (modal) until user takes action: retry, reauth, or cancel
+  /// Only called for the active/selected account
+  /// Since there's only one active account, there will only ever be one dialog
+  Future<void> _handleReauthNeeded(String accountId) async {
+    if (!mounted) return;
+
+    final account = _accounts.firstWhere(
+      (acc) => acc.id == accountId,
+      orElse: () => GoogleAccount(
+        id: accountId,
+        email: 'Unknown',
+        displayName: '',
+        photoUrl: null,
+        accessToken: '',
+        refreshToken: null,
+        tokenExpiryMs: null,
+        idToken: '',
+      ),
+    );
+    final email = account.email;
+
+    final auth = GoogleAuthService();
+    final isConnectionError = auth.isLastErrorNetworkError(accountId) == true;
+
+    try {
+      // Show dialog - it stays open until user takes action (modal, barrierDismissible: false)
+      final action = await ReauthPromptDialog.show(
+        context: context,
+        accountId: accountId,
+        accountEmail: email,
+        isConnectionError: isConnectionError,
+      );
+
+      if (!mounted || action == null || action == 'cancel') {
+        // User cancelled - clear auth failure provider
+        if (ref.read(authFailureProvider) == accountId) {
+          ref.read(authFailureProvider.notifier).state = null;
+        }
+        return; // User cancelled
+      }
+
+      if (action == 'retry') {
+        // User chose to retry - attempt token refresh again
+        final refreshed = await auth.ensureValidAccessToken(accountId);
+        if (refreshed != null && refreshed.accessToken.isNotEmpty) {
+          // Success - clear error
+          auth.clearLastError(accountId);
+          // Clear auth failure provider
+          if (ref.read(authFailureProvider) == accountId) {
+            ref.read(authFailureProvider.notifier).state = null;
+          }
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Connection restored')),
+            );
+          }
+        } else {
+          // Retry failed - re-trigger dialog
+          // Clear and re-set provider to ensure ref.listen fires
+          if (ref.read(authFailureProvider) == accountId) {
+            ref.read(authFailureProvider.notifier).state = null;
+          }
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ref.read(authFailureProvider.notifier).state = accountId;
+            }
+          });
+        }
+        return;
+      }
+
+      // User chose to re-authenticate/reconnect
+      final reauthAccount = await auth.reauthenticateAccount(accountId);
+      if (!mounted) return;
+
+      // reauthenticateAccount returns null when browser was launched (completion handled on app resume)
+      // or null when re-auth failed/cancelled (desktop/iOS)
+      // or the updated account when re-auth completed successfully (desktop/iOS)
+      if (reauthAccount == null) {
+        // Browser was launched - app will handle completion on resume via _checkReauthCompletion
+        // Clear auth failure provider temporarily - _checkReauthCompletion will handle it
+        // ignore: avoid_print
+        print('[home] Re-auth: browser launched or failed, app will handle completion on resume');
+        ref.read(authFailureProvider.notifier).state = null;
+        return;
+      }
+
+      // Re-authentication completed successfully (returned account)
+      if (reauthAccount.accessToken.isEmpty) {
+        final messenger = ScaffoldMessenger.of(context);
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(isConnectionError 
+                ? 'Reconnection failed. Please check your internet connection.'
+                : 'Re-authentication failed or cancelled'),
+          ),
+        );
+        // Re-trigger dialog
+        ref.read(authFailureProvider.notifier).state = null;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ref.read(authFailureProvider.notifier).state = accountId;
+          }
+        });
+        return;
+      }
+
+      // Success - clear error and provider
+      auth.clearLastError(accountId);
+      if (ref.read(authFailureProvider) == accountId) {
+        ref.read(authFailureProvider.notifier).state = null;
+      }
+      
+      // Reload accounts to get updated tokens
+      await _loadAccounts();
+      if (!mounted) return;
+      
+      final messenger = ScaffoldMessenger.of(context);
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(isConnectionError 
+              ? 'Reconnected successfully'
+              : 'Re-authentication successful'),
+        ),
+      );
+      
+      // Reload emails with new tokens
+      if (_selectedAccountId == accountId) {
+        ref.read(emailListProvider.notifier)
+            .loadEmails(accountId, folderLabel: _selectedFolder);
+      }
+    } catch (e, stackTrace) {
+      // Log any errors that occur during re-auth handling
+      // ignore: avoid_print
+      print('[home] Error handling re-auth for account=$accountId: $e');
+      // ignore: avoid_print
+      print('[home] Stack trace: $stackTrace');
+      // Re-trigger dialog if needed (only if provider is not already set to this account)
+      if (mounted) {
+        final current = ref.read(authFailureProvider);
+        if (current != accountId) {
+          ref.read(authFailureProvider.notifier).state = null;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) {
+              ref.read(authFailureProvider.notifier).state = accountId;
+            }
+          });
+        }
+      }
+    }
+  }
+
   // Selected action summary filter (null = no filter / show all)
   String? _selectedActionFilter;
-  
+
   // Email state filter (single-select or none)
   String? _stateFilter; // 'Unread' | 'Starred' | 'Important' | null
   final Set<String> _selectedCategories = {};
   bool _showFilterBar = false;
-  
+
   // Search filter
   bool _showSearch = false;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
-  
+
   final FirebaseSyncService _firebaseSync = FirebaseSyncService();
   final LocalFolderService _localFolderService = LocalFolderService();
 
@@ -134,23 +525,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       final svc = GoogleAuthService();
       final list = await svc.loadAccounts();
       if (!mounted) return;
-      
+
       // Check if selected account is still valid
       bool needsAccountSelection = false;
       if (_selectedAccountId == null) {
         needsAccountSelection = list.isNotEmpty;
-      } else if (list.isNotEmpty && !list.any((acc) => acc.id == _selectedAccountId)) {
+      } else if (list.isNotEmpty &&
+          !list.any((acc) => acc.id == _selectedAccountId)) {
         // Selected account no longer exists in list
         needsAccountSelection = true;
         setState(() {
           _selectedAccountId = null;
         });
       }
-      
+
       setState(() {
         _accounts = list;
       });
-      
+
       // If accounts list is empty, clear selected account and emails
       if (list.isEmpty) {
         if (_selectedAccountId != null) {
@@ -175,58 +567,88 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
         // Load emails for the selected account
         if (_selectedAccountId != null) {
-          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+          await ref
+              .read(emailListProvider.notifier)
+              .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
       }
-      
+
       // Refresh unread counts in background (non-blocking)
       // Use local DB first for instant display, then refresh from API
       unawaited(_refreshAccountUnreadCounts());
-    
-    // Initialize Firebase sync if enabled and an account is selected
-    final syncEnabled = await _firebaseSync.isSyncEnabled();
-    if (syncEnabled && _selectedAccountId != null && list.isNotEmpty) {
-      // Set callback to update provider state when Firebase updates are applied
-      try {
-        _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText, actionComplete) {
-          // Update provider state to reflect Firebase changes in UI
-          ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-          ref.read(emailListProvider.notifier).setAction(
-            messageId,
-            actionDate,
-            actionText,
-            actionComplete: actionComplete,
-            preserveExisting: true,
-          );
-        };
-        
-        // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
-        // Load sender preferences from Firebase on startup (after Firebase sync is ready)
-        unawaited(_loadSenderPrefsFromFirebase());
-      } catch (e) {
-        // Selected account not found in list - stop Firebase sync
-        debugPrint('[HomeScreen] Selected account $_selectedAccountId not found, stopping Firebase sync');
+
+      // Initialize Firebase sync if enabled and an account is selected
+      final syncEnabled = await _firebaseSync.isSyncEnabled();
+      if (syncEnabled && _selectedAccountId != null && list.isNotEmpty) {
+        // Set callback to update provider state when Firebase updates are applied
+        try {
+          _firebaseSync.onUpdateApplied =
+              (messageId, localTag, actionDate, actionText, actionComplete) {
+            // Update provider state to reflect Firebase changes in UI
+            ref
+                .read(emailListProvider.notifier)
+                .setLocalTag(messageId, localTag);
+            ref.read(emailListProvider.notifier).setAction(
+                  messageId,
+                  actionDate,
+                  actionText,
+                  actionComplete: actionComplete,
+                  preserveExisting: true,
+                );
+          };
+
+          // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
+          // Load sender preferences from Firebase on startup (after Firebase sync is ready)
+          unawaited(_loadSenderPrefsFromFirebase());
+        } catch (e) {
+          // Selected account not found in list - stop Firebase sync
+          debugPrint(
+              '[HomeScreen] Selected account $_selectedAccountId not found, stopping Firebase sync');
+          await _firebaseSync.initializeUser(null);
+        }
+      } else if (syncEnabled && _selectedAccountId == null) {
+        // No account selected - stop Firebase sync
         await _firebaseSync.initializeUser(null);
       }
-    } else if (syncEnabled && _selectedAccountId == null) {
-      // No account selected - stop Firebase sync
-      await _firebaseSync.initializeUser(null);
-    }
     } finally {
       _isAccountsRefreshing = false;
     }
   }
 
+  /// Ensure account is authenticated for user-initiated actions.
+  /// Shows dialog if needed. Returns true if authenticated.
+  Future<bool> _ensureAccountAuthenticated(
+    String accountId, {
+    String? accountEmail,
+  }) async {
+    final auth = GoogleAuthService();
+    final account = await auth.ensureValidAccessToken(accountId);
+    if (account != null && account.accessToken.isNotEmpty) {
+      return true;
+    }
+
+    // Account needs authentication
+    // Dialog will be shown automatically when incremental sync fails for this account
+    // For now, just return false - user can try manual refresh which will trigger sync and show dialog if needed
+    return false;
+  }
+
   /// Determine feedback type based on original and user actions
-  FeedbackType? _determineFeedbackType(ActionResult? original, ActionResult? user) {
+  FeedbackType? _determineFeedbackType(
+      ActionResult? original, ActionResult? user) {
     if (original == null && user == null) return null; // No change
-    if (original == null && user != null) return FeedbackType.falseNegative; // User added action
-    if (original != null && user == null) return FeedbackType.falsePositive; // User removed action
-    
+    if (original == null && user != null) {
+      return FeedbackType.falseNegative; // User added action
+    }
+    if (original != null && user == null) {
+      return FeedbackType.falsePositive; // User removed action
+    }
+
     // Both exist - check if they're different
-    final originalStr = '${original!.actionDate.toIso8601String()}_${original.insightText}';
+    final originalStr =
+        '${original!.actionDate.toIso8601String()}_${original.insightText}';
     final userStr = '${user!.actionDate.toIso8601String()}_${user.insightText}';
-    
+
     if (originalStr == userStr) {
       return FeedbackType.confirmation; // User confirmed
     } else {
@@ -236,11 +658,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _loadSenderPrefsFromFirebase() async {
     if (!await _firebaseSync.isSyncEnabled()) return;
-    
+
     try {
       // This will be handled by the Firebase listener in the sync service
       // We just need to ensure it's initialized
-      debugPrint('[HomeScreen] Firebase sync initialized, sender prefs will sync automatically');
+      debugPrint(
+          '[HomeScreen] Firebase sync initialized, sender prefs will sync automatically');
     } catch (e) {
       debugPrint('[HomeScreen] Error loading sender prefs from Firebase: $e');
     }
@@ -258,12 +681,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Future<void> _showAccountSelectorDialog() async {
     final now = DateTime.now();
-    if (_lastAccountTap != null && now.difference(_lastAccountTap!).inMilliseconds < 200) {
+    if (_lastAccountTap != null &&
+        now.difference(_lastAccountTap!).inMilliseconds < 200) {
       return;
     }
     _lastAccountTap = now;
     if (_isOpeningAccountDialog) return;
-    setState(() { _isOpeningAccountDialog = true; });
+    setState(() {
+      _isOpeningAccountDialog = true;
+    });
     try {
       // Ensure we have an account list, but don't block dialog on Firebase sync
       if (_accounts.isEmpty) {
@@ -278,80 +704,109 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       );
       // Reload accounts to ensure new account is in the list
+      // Set the selected account BEFORE calling _loadAccounts() so it doesn't get reset
+      if (selectedAccount != null) {
+        setState(() {
+          _selectedAccountId = selectedAccount;
+          _isLocalFolder = false; // Ensure we're viewing Gmail folders, not local folders
+        });
+      }
       await _loadAccounts();
       if (!mounted) return;
       if (selectedAccount != null) {
-      // Verify the account still exists in the list (should be there after reload)
-      if (_accounts.any((acc) => acc.id == selectedAccount)) {
-        _pendingLocalUnreadAccounts.add(selectedAccount);
-        setState(() {
-          _selectedAccountId = selectedAccount;
-        });
-        await _saveLastActiveAccount(selectedAccount);
+        // Verify the account still exists in the list (should be there after reload)
+        if (_accounts.any((acc) => acc.id == selectedAccount)) {
+          // Allow account selection even if token is invalid
+          // Dialog will be shown automatically when incremental sync fails
+          _pendingLocalUnreadAccounts.add(selectedAccount);
+          // Ensure _selectedAccountId is still set (in case _loadAccounts() reset it)
+          if (_selectedAccountId != selectedAccount) {
+            setState(() {
+              _selectedAccountId = selectedAccount;
+              _isLocalFolder = false; // Ensure we're not viewing a local folder
+            });
+          } else {
+            // Also ensure _isLocalFolder is false if it wasn't already set
+            if (_isLocalFolder) {
+              setState(() {
+                _isLocalFolder = false;
+              });
+            }
+          }
+          await _saveLastActiveAccount(selectedAccount);
           if (kDebugMode) {
             debugPrint('[HomeScreen] Account selected: $selectedAccount');
           }
-        
-        // Re-initialize Firebase sync with the new account's email
-        final syncEnabled = await _firebaseSync.isSyncEnabled();
-        if (syncEnabled) {
-          // Set callback to update provider state when Firebase updates are applied
-          _firebaseSync.onUpdateApplied = (messageId, localTag, actionDate, actionText, actionComplete) {
-            // Update provider state to reflect Firebase changes in UI
-            ref.read(emailListProvider.notifier).setLocalTag(messageId, localTag);
-          ref.read(emailListProvider.notifier).setAction(
-            messageId,
-            actionDate,
-            actionText,
-            actionComplete: actionComplete,
-            preserveExisting: true,
-          );
-          };
-          
-          // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
-        }
-        
-        // Load emails immediately (non-blocking UI update)
-        // Then run sync in background (incremental if history exists, initial if not)
-        // Firebase sync will start after local load completes
-        if (_selectedAccountId != null) {
-          // Load emails from local DB immediately (fast UI update)
-          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
-          
-          // Run sync in background (non-blocking)
-          unawaited(Future(() async {
-            try {
-              final syncService = GmailSyncService();
-              await syncService.processPendingOps();
-              final hasHistory = await syncService.hasHistoryId(_selectedAccountId!);
-              if (hasHistory) {
-                // Account already has history - run incremental sync
-                await syncService.incrementalSync(_selectedAccountId!);
+
+          // Re-initialize Firebase sync with the new account's email
+          final syncEnabled = await _firebaseSync.isSyncEnabled();
+          if (syncEnabled) {
+            // Set callback to update provider state when Firebase updates are applied
+            _firebaseSync.onUpdateApplied =
+                (messageId, localTag, actionDate, actionText, actionComplete) {
+              // Update provider state to reflect Firebase changes in UI
+              ref
+                  .read(emailListProvider.notifier)
+                  .setLocalTag(messageId, localTag);
+              ref.read(emailListProvider.notifier).setAction(
+                    messageId,
+                    actionDate,
+                    actionText,
+                    actionComplete: actionComplete,
+                    preserveExisting: true,
+                  );
+            };
+
+            // Firebase sync will be initialized after local emails are loaded (via email_list_provider)
+          }
+
+          // Load emails immediately (non-blocking UI update)
+          // Then run sync in background (incremental if history exists, initial if not)
+          // Firebase sync will start after local load completes
+          if (_selectedAccountId != null) {
+            // Load emails from local DB immediately (fast UI update)
+            await ref
+                .read(emailListProvider.notifier)
+                .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+
+            // Run sync in background (non-blocking)
+            unawaited(Future(() async {
+              try {
+                final syncService = GmailSyncService();
+                await syncService.processPendingOps();
+                final hasHistory =
+                    await syncService.hasHistoryId(_selectedAccountId!);
+                if (hasHistory) {
+                  // Account already has history - run incremental sync
+                  await syncService.incrementalSync(_selectedAccountId!);
+                }
+                // If no history, loadEmails already triggered initial sync in background
+
+                // Switch unread count to local after sync
+                await _switchUnreadCountToLocal(_selectedAccountId!);
+              } catch (e) {
+                debugPrint(
+                    '[HomeScreen] Error during background sync on account tap: $e');
+                await _switchUnreadCountToLocal(_selectedAccountId!);
               }
-              // If no history, loadEmails already triggered initial sync in background
-              
-              // Switch unread count to local after sync
-              await _switchUnreadCountToLocal(_selectedAccountId!);
-            } catch (e) {
-              debugPrint('[HomeScreen] Error during background sync on account tap: $e');
-              await _switchUnreadCountToLocal(_selectedAccountId!);
-            }
-          }));
+            }));
+          }
+        }
+      } else {
+        // Account selector returned null (e.g., all accounts removed or dialog dismissed)
+        // Clear the selected account if no accounts remain
+        if (_accounts.isEmpty) {
+          setState(() {
+            _selectedAccountId = null;
+          });
+          ref.read(emailListProvider.notifier).clearEmails();
         }
       }
-    } else {
-      // Account selector returned null (e.g., all accounts removed or dialog dismissed)
-      // Clear the selected account if no accounts remain
-      if (_accounts.isEmpty) {
-        setState(() {
-          _selectedAccountId = null;
-        });
-        ref.read(emailListProvider.notifier).clearEmails();
-      }
-    }
     } finally {
       if (mounted) {
-        setState(() { _isOpeningAccountDialog = false; });
+        setState(() {
+          _isOpeningAccountDialog = false;
+        });
       } else {
         _isOpeningAccountDialog = false;
       }
@@ -360,14 +815,101 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Listen for auth failures during incremental sync
+    // Must be in build method - ref.listen can only be used here
+    // authFailureProvider is only set for the active account during incremental sync
+    // Since there's only one active account, there will only ever be one dialog
+    // Listen for network errors - show simple message dialog (only for manual refresh)
+    ref.listen<bool>(networkErrorProvider, (previous, next) {
+      // ignore: avoid_print
+      print('[home] networkErrorProvider changed: previous=$previous, next=$next, mounted=$mounted');
+      if (!mounted) {
+        // ignore: avoid_print
+        print('[home] networkErrorProvider: widget not mounted, skipping');
+        return;
+      }
+      if (!next) {
+        // ignore: avoid_print
+        print('[home] networkErrorProvider: next is false, skipping');
+        return;
+      }
+      // ignore: avoid_print
+      print('[home] Network error detected, showing network error message');
+      // Clear the provider immediately
+      ref.read(networkErrorProvider.notifier).state = false;
+      // Show simple dialog
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          // ignore: avoid_print
+          print('[home] Showing network error dialog');
+          showDialog(
+            context: context,
+            barrierDismissible: true,
+            builder: (ctx) => AlertDialog(
+              title: const Text('Network Issue'),
+              content: const Text('There\'s a network issue. Please try again later.'),
+              actions: [
+                FilledButton(
+                  onPressed: () {
+                    // ignore: avoid_print
+                    print('[home] Network error dialog OK pressed');
+                    Navigator.of(ctx).pop();
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            ),
+          );
+        } else {
+          // ignore: avoid_print
+          print('[home] Widget not mounted in post-frame callback, skipping network error dialog');
+        }
+      });
+    });
+
+    ref.listen<String?>(authFailureProvider, (previous, next) {
+      // ignore: avoid_print
+      print('[home] authFailureProvider changed: previous=$previous, next=$next, mounted=$mounted, selectedAccountId=$_selectedAccountId');
+      if (!mounted) {
+        // ignore: avoid_print
+        print('[home] authFailureProvider: widget not mounted, skipping');
+        return;
+      }
+      if (next == null) {
+        // ignore: avoid_print
+        print('[home] authFailureProvider: next is null, skipping');
+        return;
+      }
+      // Only show dialog if this is for the currently selected account
+      if (next != _selectedAccountId) {
+        // ignore: avoid_print
+        print('[home] Auth failure detected for account=$next, but it is not the active account (active=$_selectedAccountId)');
+        return;
+      }
+      // ignore: avoid_print
+      print('[home] Auth failure detected for active account=$next during incremental sync, showing dialog');
+      // Use post-frame callback to avoid showing dialog during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          // ignore: avoid_print
+          print('[home] Calling _handleReauthNeeded for account=$next');
+          _handleReauthNeeded(next);
+        } else {
+          // ignore: avoid_print
+          print('[home] Widget not mounted in post-frame callback, skipping dialog');
+        }
+      });
+    });
+    
     // Initialize selected account from route args if provided (e.g., new account sign-in)
     if (!_initializedFromRoute) {
       final args = ModalRoute.of(context)?.settings.arguments;
-      final accountIdFromRoute = args is String && args.isNotEmpty ? args : null;
-      
+      final accountIdFromRoute =
+          args is String && args.isNotEmpty ? args : null;
+
       WidgetsBinding.instance.addPostFrameCallback((_) async {
         await _loadAccounts();
-        
+
         // If account ID was provided in route args (new sign-in), always use it and make it active
         if (accountIdFromRoute != null) {
           // Reload accounts again to ensure new account is in the list (in case it was just added)
@@ -381,7 +923,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         } else if (_selectedAccountId == null && _accounts.isNotEmpty) {
           // No route args: try to load last active account from preferences
           final lastAccount = await _loadLastActiveAccount();
-          if (lastAccount != null && _accounts.any((acc) => acc.id == lastAccount)) {
+          if (lastAccount != null &&
+              _accounts.any((acc) => acc.id == lastAccount)) {
             _selectedAccountId = lastAccount;
           } else {
             _selectedAccountId = _accounts.first.id;
@@ -391,10 +934,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             await _saveLastActiveAccount(_selectedAccountId!);
           }
         }
-        
+
         if (_selectedAccountId != null) {
           // Load emails - this will trigger initial sync if no history, or incremental sync if history exists
-          await ref.read(emailListProvider.notifier).loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
+          await ref
+              .read(emailListProvider.notifier)
+              .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
         }
         // Load initial unread counts in background (non-blocking) and start periodic refresh
         unawaited(_refreshAccountUnreadCounts());
@@ -404,7 +949,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
 
     // Listen to email list changes and refresh active account's unread count
-    ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider, (previous, next) {
+    ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider,
+        (previous, next) {
       final activeAccountId = _selectedAccountId;
       if (!mounted || !next.hasValue || activeAccountId == null) {
         return;
@@ -604,9 +1150,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
 */
 
-
     return Scaffold(
- /*     appBar: AppBar(
+      /*     appBar: AppBar(
         automaticallyImplyLeading: false,
         toolbarHeight: kToolbarHeight * 1.8,
         backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
@@ -762,13 +1307,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         surfaceTintColor: Colors.transparent,
         backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
             Theme.of(context).colorScheme.surfaceContainerHighest,
-
         flexibleSpace: SafeArea(
           bottom: false,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-
               // -------------------------------
               // TOP ROW: Title + Account picker
               // -------------------------------
@@ -784,36 +1327,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       ),
                       child: Text(
                         AppConstants.appName,
-                        style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                          color: ActionMailTheme.alertColor,
-                          fontWeight: FontWeight.w500,
-                        ),
+                        style:
+                            Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                  color: ActionMailTheme.alertColor,
+                                  fontWeight: FontWeight.w500,
+                                ),
                       ),
                     ),
                     const SizedBox(width: 16),
-
                     TextButton.icon(
-                      onPressed:
-                      _isOpeningAccountDialog ? null : _showAccountSelectorDialog,
+                      onPressed: _isOpeningAccountDialog
+                          ? null
+                          : _showAccountSelectorDialog,
                       icon: _isOpeningAccountDialog
                           ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
                           : Icon(
-                        Icons.account_circle,
-                        size: 18,
-                        color: Theme.of(context).appBarTheme.foregroundColor,
-                      ),
+                              Icons.account_circle,
+                              size: 18,
+                              color:
+                                  Theme.of(context).appBarTheme.foregroundColor,
+                            ),
                       label: Text(
                         _selectedAccountId != null && _accounts.isNotEmpty
                             ? _accounts
-                            .firstWhere(
-                              (acc) => acc.id == _selectedAccountId,
-                          orElse: () => _accounts.first,
-                        )
-                            .email
+                                .firstWhere(
+                                  (acc) => acc.id == _selectedAccountId,
+                                  orElse: () => _accounts.first,
+                                )
+                                .email
                             : '',
                         style: TextStyle(
                           color: Theme.of(context).appBarTheme.foregroundColor,
@@ -835,10 +1380,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     if (!_isLocalFolder)
                       AppDropdown<String>(
                         value: _selectedFolder,
-                        items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
+                        items: const [
+                          'INBOX',
+                          'SENT',
+                          'TRASH',
+                          'SPAM',
+                          'ARCHIVE'
+                        ],
                         itemBuilder: (folder) =>
-                        AppConstants.folderDisplayNames[folder] ?? folder,
-                        textColor: Theme.of(context).appBarTheme.foregroundColor,
+                            AppConstants.folderDisplayNames[folder] ?? folder,
+                        textColor:
+                            Theme.of(context).appBarTheme.foregroundColor,
                         onChanged: (value) async {
                           if (value != null) {
                             setState(() {
@@ -849,9 +1401,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               await ref
                                   .read(emailListProvider.notifier)
                                   .loadFolder(
-                                _selectedAccountId!,
-                                folderLabel: _selectedFolder,
-                              );
+                                    _selectedAccountId!,
+                                    folderLabel: _selectedFolder,
+                                  );
                             }
                           }
                         },
@@ -860,16 +1412,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       Text(
                         _selectedFolder,
                         style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                          fontWeight: FontWeight.w500,
-                        ),
+                              color:
+                                  Theme.of(context).appBarTheme.foregroundColor,
+                              fontWeight: FontWeight.w500,
+                            ),
                       ),
-
                     const Spacer(),
-
                     _buildAppBarLocalStateSwitch(context),
                     const SizedBox(width: 8),
-
                     PopupMenuButton<String>(
                       icon: Icon(
                         Icons.menu,
@@ -886,7 +1436,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
-
 
       // ------------------------------
       // MAIN BODY
@@ -922,8 +1471,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         },
       ),
     );
-
-
   }
 
   // Left panel for desktop - Accounts and Gmail folder tree
@@ -931,9 +1478,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
-    final highlightBorderColor = ActionMailTheme.alertColor.withValues(alpha: 1);
+    final highlightBorderColor =
+        ActionMailTheme.alertColor.withValues(alpha: 1);
     const accountSelectedBorderColor = Color(0xFF00695C);
-    
+
     final column = Column(
       children: [
         // Accounts section
@@ -952,7 +1500,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   child: Row(
                     children: [
                       const Icon(Icons.account_circle, size: 20),
@@ -976,35 +1525,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     child: InkWell(
                       onTap: () async {
                         if (account.id != _selectedAccountId) {
-                          // Check if account needs re-authentication before switching
-                          final auth = GoogleAuthService();
-                          final authAccount = await auth.ensureValidAccessToken(account.id);
-                          if (authAccount == null || authAccount.accessToken.isEmpty) {
-                            // Show re-auth prompt
-                            if (!context.mounted) return;
-                            final shouldReauth = await ReauthPromptDialog.show(
-                              context: context,
-                              accountId: account.id,
-                              accountEmail: account.email,
-                            );
-                            if (!shouldReauth || !context.mounted) return;
-                            
-                            // Attempt re-authentication
-                            final reauthAccount = await auth.reauthenticateAccount(account.id);
-                            if (!context.mounted) return;
-                            final messenger = ScaffoldMessenger.of(context);
-                            if (reauthAccount == null || reauthAccount.accessToken.isEmpty) {
-                              messenger.showSnackBar(
-                                const SnackBar(content: Text('Re-authentication failed or cancelled')),
-                              );
-                              return;
-                            }
-                            
-                            messenger.showSnackBar(
-                              const SnackBar(content: Text('Re-authentication successful')),
-                            );
-                          }
-                          
+                          // Allow account selection even if token is invalid
+                          // Dialog will be shown automatically when incremental sync fails
                           _pendingLocalUnreadAccounts.add(account.id);
                           setState(() {
                             _selectedAccountId = account.id;
@@ -1016,25 +1538,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             // Load emails from local DB immediately (fast UI update)
                             await ref
                                 .read(emailListProvider.notifier)
-                                .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
-                            
+                                .loadEmails(_selectedAccountId!,
+                                    folderLabel: _selectedFolder);
+
                             // Run sync in background (non-blocking)
                             unawaited(Future(() async {
                               try {
                                 final syncService = GmailSyncService();
                                 await syncService.processPendingOps();
-                                final hasHistory = await syncService.hasHistoryId(_selectedAccountId!);
+                                final hasHistory = await syncService
+                                    .hasHistoryId(_selectedAccountId!);
                                 if (hasHistory) {
                                   // Account already has history - run incremental sync
-                                  await syncService.incrementalSync(_selectedAccountId!);
+                                  await syncService
+                                      .incrementalSync(_selectedAccountId!);
                                 }
                                 // If no history, loadEmails already triggered initial sync in background
-                                
+
                                 // Switch unread count to local after sync
-                                await _switchUnreadCountToLocal(_selectedAccountId!);
+                                await _switchUnreadCountToLocal(
+                                    _selectedAccountId!);
                               } catch (e) {
-                                debugPrint('[HomeScreen] Error during background sync on account tap: $e');
-                                await _switchUnreadCountToLocal(_selectedAccountId!);
+                                debugPrint(
+                                    '[HomeScreen] Error during background sync on account tap: $e');
+                                await _switchUnreadCountToLocal(
+                                    _selectedAccountId!);
                               }
                             }));
                           }
@@ -1044,15 +1572,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                             _selectedFolder = AppConstants.folderInbox;
                           });
                           if (_selectedAccountId != null) {
-                            await _loadFolderEmails(AppConstants.folderInbox, false);
+                            await _loadFolderEmails(
+                                AppConstants.folderInbox, false);
                           }
                           await _saveLastActiveAccount(account.id);
                         }
                       },
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
                         decoration: BoxDecoration(
-                          color: isAccountActive ? highlightColor : Colors.transparent,
+                          color: isAccountActive
+                              ? highlightColor
+                              : Colors.transparent,
                           border: isAccountActive
                               ? Border(
                                   left: BorderSide(
@@ -1072,24 +1604,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         child: Row(
                           children: [
                             Icon(
-                              isSelected ? Icons.account_circle : Icons.account_circle_outlined,
+                              isSelected
+                                  ? Icons.account_circle
+                                  : Icons.account_circle_outlined,
                               size: 18,
                               color: isAccountActive
                                   ? cs.onSurface
-                                  : (isSelected ? accountSelectedBorderColor : cs.onSurfaceVariant),
+                                  : (isSelected
+                                      ? accountSelectedBorderColor
+                                      : cs.onSurfaceVariant),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
                                 account.email,
                                 style: theme.textTheme.bodySmall?.copyWith(
-                                  color: isAccountActive || !isSelected ? cs.onSurface : accountSelectedBorderColor,
-                                  fontWeight: isAccountActive ? FontWeight.w600 : FontWeight.normal,
+                                  color: isAccountActive || !isSelected
+                                      ? cs.onSurface
+                                      : accountSelectedBorderColor,
+                                  fontWeight: isAccountActive
+                                      ? FontWeight.w600
+                                      : FontWeight.normal,
                                 ),
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            if (_accountUnreadCounts[account.id] != null && _accountUnreadCounts[account.id]! > 0)
+                            if (_accountUnreadCounts[account.id] != null &&
+                                _accountUnreadCounts[account.id]! > 0)
                               Padding(
                                 padding: const EdgeInsets.only(left: 8),
                                 child: Text(
@@ -1097,7 +1638,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                   style: theme.textTheme.bodySmall?.copyWith(
                                     color: isAccountActive
                                         ? cs.onSurface
-                                        : (isSelected ? accountSelectedBorderColor : cs.onSurfaceVariant),
+                                        : (isSelected
+                                            ? accountSelectedBorderColor
+                                            : cs.onSurfaceVariant),
                                     fontWeight: FontWeight.normal,
                                     fontSize: 12,
                                   ),
@@ -1115,123 +1658,153 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // Gmail folder tree
         Expanded(
           child: GmailFolderTree(
-      selectedFolder: _selectedFolder,
-      isViewingLocalFolder: _isLocalFolder,
-      accountId: _selectedAccountId,
-      selectedBackgroundColor: highlightColor,
-      onFolderSelected: (folderId) async {
-        setState(() {
-          _selectedFolder = folderId;
-          _isLocalFolder = false; // Reset to Gmail folder
-        });
-        if (_selectedAccountId != null) {
-          await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: _selectedFolder);
-        }
-      },
-      onEmailDropped: (folderId, message) async {
-        if (_isLocalFolder) {
-          if (folderId.toUpperCase() != 'INBOX') {
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Local emails can only be restored to Inbox')),
-              );
-            }
-            return;
-          }
-          await _restoreLocalEmailToInbox(message);
-          return;
-        }
+            selectedFolder: _selectedFolder,
+            isViewingLocalFolder: _isLocalFolder,
+            accountId: _selectedAccountId,
+            selectedBackgroundColor: highlightColor,
+            onFolderSelected: (folderId) async {
+              setState(() {
+                _selectedFolder = folderId;
+                _isLocalFolder = false; // Reset to Gmail folder
+              });
+              if (_selectedAccountId != null) {
+                await ref.read(emailListProvider.notifier).loadFolder(
+                    _selectedAccountId!,
+                    folderLabel: _selectedFolder);
+              }
+            },
+            onEmailDropped: (folderId, message) async {
+              if (_isLocalFolder) {
+                if (folderId.toUpperCase() != 'INBOX') {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text(
+                              'Local emails can only be restored to Inbox')),
+                    );
+                  }
+                  return;
+                }
+                await _restoreLocalEmailToInbox(message);
+                return;
+              }
 
-        if (_selectedAccountId == null) return;
-        try {
-          // Optimistic UI update first
-          if (folderId == 'TRASH') {
-            if (_selectedFolder != 'TRASH') {
-              ref.read(emailListProvider.notifier).removeMessage(message.id);
-            } else {
-              ref.read(emailListProvider.notifier).setFolder(message.id, 'TRASH');
-            }
-            final prev = message.folderLabel;
-            if (prev.toUpperCase() == 'ARCHIVE') {
-              // ARCHIVE -> TRASH: do not change prevFolderLabel
-              unawaited(MessageRepository().updateFolderNoPrev(message.id, 'TRASH'));
-            } else {
-              unawaited(MessageRepository().updateFolderWithPrev(
-                message.id,
-                'TRASH',
-                prevFolderLabel: prev,
-              ));
-            }
-            _enqueueGmailUpdate('trash:${prev.toUpperCase()}', message.id);
-          } else if (folderId == 'ARCHIVE') {
-            if (_selectedFolder != 'ARCHIVE') {
-              ref.read(emailListProvider.notifier).removeMessage(message.id);
-            } else {
-              ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
-            }
-            final prev = message.folderLabel;
-            if (prev.toUpperCase() == 'TRASH') {
-              // TRASH -> ARCHIVE: do not change prevFolderLabel
-              unawaited(MessageRepository().updateFolderNoPrev(message.id, 'ARCHIVE'));
-            } else {
-              unawaited(MessageRepository().updateFolderWithPrev(
-                message.id,
-                'ARCHIVE',
-                prevFolderLabel: prev,
-              ));
-            }
-            _enqueueGmailUpdate('archive:${prev.toUpperCase()}', message.id);
-          } else if (folderId == 'INBOX') {
-            if (_selectedFolder != 'INBOX') {
-              ref.read(emailListProvider.notifier).removeMessage(message.id);
-            } else {
-              ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
-            }
-            final prev = message.folderLabel;
-            unawaited(MessageRepository().updateFolderWithPrev(
-              message.id,
-              'INBOX',
-              prevFolderLabel: prev,
-            ));
-            _enqueueGmailUpdate('moveToInbox', message.id);
-          } else {
-            // Restore to previous folder (if prevFolderLabel matches target)
-            final prevFolder = message.prevFolderLabel;
-            if (prevFolder != null && prevFolder.toUpperCase() == folderId.toUpperCase()) {
-              // Optimistic: assume restore succeeded; we'll adjust based on refreshed value
-              // Remove from current view if destination differs, else update folder
-              unawaited(() async {
-                await MessageRepository().restoreToPrev(message.id);
-                if (_selectedAccountId != null) {
-                  final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
-                  final restored = updated[message.id];
-                  if (restored != null) {
-                    final dest = restored.folderLabel;
-                    if (_selectedFolder != dest) {
-                      ref.read(emailListProvider.notifier).removeMessage(message.id);
-                    } else {
-                      ref.read(emailListProvider.notifier).setFolder(message.id, dest);
-                    }
-                    _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
+              if (_selectedAccountId == null) return;
+              try {
+                // Optimistic UI update first
+                if (folderId == 'TRASH') {
+                  if (_selectedFolder != 'TRASH') {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .removeMessage(message.id);
+                  } else {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .setFolder(message.id, 'TRASH');
+                  }
+                  final prev = message.folderLabel;
+                  if (prev.toUpperCase() == 'ARCHIVE') {
+                    // ARCHIVE -> TRASH: do not change prevFolderLabel
+                    unawaited(MessageRepository()
+                        .updateFolderNoPrev(message.id, 'TRASH'));
+                  } else {
+                    unawaited(MessageRepository().updateFolderWithPrev(
+                      message.id,
+                      'TRASH',
+                      prevFolderLabel: prev,
+                    ));
+                  }
+                  _enqueueGmailUpdate(
+                      'trash:${prev.toUpperCase()}', message.id);
+                } else if (folderId == 'ARCHIVE') {
+                  if (_selectedFolder != 'ARCHIVE') {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .removeMessage(message.id);
+                  } else {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .setFolder(message.id, 'ARCHIVE');
+                  }
+                  final prev = message.folderLabel;
+                  if (prev.toUpperCase() == 'TRASH') {
+                    // TRASH -> ARCHIVE: do not change prevFolderLabel
+                    unawaited(MessageRepository()
+                        .updateFolderNoPrev(message.id, 'ARCHIVE'));
+                  } else {
+                    unawaited(MessageRepository().updateFolderWithPrev(
+                      message.id,
+                      'ARCHIVE',
+                      prevFolderLabel: prev,
+                    ));
+                  }
+                  _enqueueGmailUpdate(
+                      'archive:${prev.toUpperCase()}', message.id);
+                } else if (folderId == 'INBOX') {
+                  if (_selectedFolder != 'INBOX') {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .removeMessage(message.id);
+                  } else {
+                    ref
+                        .read(emailListProvider.notifier)
+                        .setFolder(message.id, 'INBOX');
+                  }
+                  final prev = message.folderLabel;
+                  unawaited(MessageRepository().updateFolderWithPrev(
+                    message.id,
+                    'INBOX',
+                    prevFolderLabel: prev,
+                  ));
+                  _enqueueGmailUpdate('moveToInbox', message.id);
+                } else {
+                  // Restore to previous folder (if prevFolderLabel matches target)
+                  final prevFolder = message.prevFolderLabel;
+                  if (prevFolder != null &&
+                      prevFolder.toUpperCase() == folderId.toUpperCase()) {
+                    // Optimistic: assume restore succeeded; we'll adjust based on refreshed value
+                    // Remove from current view if destination differs, else update folder
+                    unawaited(() async {
+                      await MessageRepository().restoreToPrev(message.id);
+                      if (_selectedAccountId != null) {
+                        final updated = await MessageRepository()
+                            .getByIds(_selectedAccountId!, [message.id]);
+                        final restored = updated[message.id];
+                        if (restored != null) {
+                          final dest = restored.folderLabel;
+                          if (_selectedFolder != dest) {
+                            ref
+                                .read(emailListProvider.notifier)
+                                .removeMessage(message.id);
+                          } else {
+                            ref
+                                .read(emailListProvider.notifier)
+                                .setFolder(message.id, dest);
+                          }
+                          _enqueueGmailUpdate(
+                              'restore:${dest.toUpperCase()}', message.id);
+                        }
+                      }
+                    }());
                   }
                 }
-              }());
-            }
-          }
-          if (!context.mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
-          );
-        } catch (e) {
-          debugPrint('[HomeScreen] Error moving email to Gmail folder: $e');
-          if (!context.mounted) return;
-          {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Error: $e')),
-            );
-          }
-        }
-      },
+                if (!context.mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                      content: Text(
+                          'Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
+                );
+              } catch (e) {
+                debugPrint(
+                    '[HomeScreen] Error moving email to Gmail folder: $e');
+                if (!context.mounted) return;
+                {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: $e')),
+                  );
+                }
+              }
+            },
           ),
         ),
       ],
@@ -1241,7 +1814,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       child: column,
     );
   }
-  
+
   // Right panel for desktop - local folder tree
   Widget _buildRightPanel(BuildContext context) {
     final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
@@ -1269,7 +1842,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             if (src == 'TRASH' || src == 'ARCHIVE') {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+                  const SnackBar(
+                      content: Text(
+                          'Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
                 );
               }
               return;
@@ -1281,7 +1856,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
   }
-  
+
   /// Load emails for the selected folder (Gmail or local)
   Future<void> _loadFolderEmails(String folderLabel, bool isLocal) async {
     if (isLocal) {
@@ -1293,7 +1868,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     } else {
       // Load from Gmail
       if (_selectedAccountId != null) {
-        await ref.read(emailListProvider.notifier).loadFolder(_selectedAccountId!, folderLabel: folderLabel);
+        await ref
+            .read(emailListProvider.notifier)
+            .loadFolder(_selectedAccountId!, folderLabel: folderLabel);
       }
     }
   }
@@ -1305,16 +1882,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       children: [
         // Saved List indicator when viewing local folder
         if (_isLocalFolder) _buildSavedListIndicator(),
-        
+
         // Top filter row: Personal/Business, Action buttons, Filter toggle
         _buildTopFilterRow(),
-        
+
         // Filter bar: Unread, Starred, Important, Category filter, Search
         if (_showFilterBar) _buildFilterBar(),
-        
+
         // Search field (below filter bar when active)
         if (_showFilterBar && _showSearch) _buildSearchField(),
-        
+
         // Email list
         Expanded(
           child: _buildEmailList(),
@@ -1322,7 +1899,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ],
     );
   }
-  
+
   /// Indicator showing we're viewing a saved list
   Widget _buildSavedListIndicator() {
     final theme = Theme.of(context);
@@ -1394,11 +1971,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ),
     );
   }
-  
+
   Widget _buildFilterBar() {
     final isDesktop = MediaQuery.of(context).size.width >= 900;
     return Container(
-      padding: const EdgeInsets.only(left: 8.0, right: 8.0, top: 2.0, bottom: 6.0),
+      padding:
+          const EdgeInsets.only(left: 8.0, right: 8.0, top: 2.0, bottom: 6.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -1446,7 +2024,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               enabledBorder: InputBorder.none,
               focusedBorder: InputBorder.none,
               disabledBorder: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               isDense: true,
               filled: true,
               fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -1470,11 +2049,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final isDesktop = MediaQuery.of(context).size.width >= 900;
-    
+
     // Get counts from the currently displayed email list (account + folder)
     // This reflects what's actually shown in the email list
     final emailListAsync = ref.watch(emailListProvider);
-    
+
     // Calculate counts from the current email list
     final counts = emailListAsync.when(
       data: (emails) {
@@ -1488,11 +2067,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       loading: () => {'unread': 0, 'starred': 0, 'important': 0},
       error: (_, __) => {'unread': 0, 'starred': 0, 'important': 0},
     );
-    
+
     final unreadCount = counts['unread']!;
     final starredCount = counts['starred']!;
     final importantCount = counts['important']!;
-    
+
     return Container(
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
@@ -1562,7 +2141,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final cs = theme.colorScheme;
     final hasCategories = _selectedCategories.isNotEmpty;
     final isDesktop = MediaQuery.of(context).size.width >= 900;
-    
+
     return Container(
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
@@ -1580,17 +2159,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           borderRadius: BorderRadius.circular(10),
           onTap: () => _showCategoriesPopup(context),
           child: Container(
-            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
+            padding: isDesktop
+                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
+                : const EdgeInsets.all(6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Stack(
                   children: [
                     Icon(
-                      hasCategories ? Icons.filter_alt : Icons.filter_alt_outlined,
+                      hasCategories
+                          ? Icons.filter_alt
+                          : Icons.filter_alt_outlined,
                       size: 18,
-                      color: hasCategories 
-                          ? cs.onPrimaryContainer 
+                      color: hasCategories
+                          ? cs.onPrimaryContainer
                           : const Color(0xFF00897B), // Teal for categories
                     ),
                     if (hasCategories)
@@ -1603,7 +2186,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           decoration: BoxDecoration(
                             color: cs.primary,
                             shape: BoxShape.circle,
-                            border: Border.all(color: cs.primaryContainer, width: 1),
+                            border: Border.all(
+                                color: cs.primaryContainer, width: 1),
                           ),
                         ),
                       ),
@@ -1614,8 +2198,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Text(
                     'Categories',
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: hasCategories ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                      fontWeight: hasCategories ? FontWeight.w600 : FontWeight.w500,
+                      color: hasCategories
+                          ? cs.onPrimaryContainer
+                          : cs.onSurfaceVariant,
+                      fontWeight:
+                          hasCategories ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                 ],
@@ -1630,10 +2217,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget _buildMarkAllAsReadButton(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    
+
     // Get unread emails from the current list (reactive)
     final emailListAsync = ref.watch(emailListProvider);
-    
+
     final unreadInfo = emailListAsync.when(
       data: (emails) {
         final unreadEmails = emails.where((m) => !m.isRead).toList();
@@ -1645,11 +2232,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       loading: () => {'count': 0, 'ids': <String>[]},
       error: (_, __) => {'count': 0, 'ids': <String>[]},
     );
-    
+
     final unreadCount = unreadInfo['count'] as int;
     final unreadMessageIds = unreadInfo['ids'] as List<String>;
     final isEnabled = unreadCount > 0 && !_isLocalFolder;
-    
+
     return Tooltip(
       message: 'Mark all as Read',
       child: Material(
@@ -1657,9 +2244,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
-          onTap: isEnabled
-              ? () => _markAllUnreadAsRead(unreadMessageIds)
-              : null,
+          onTap:
+              isEnabled ? () => _markAllUnreadAsRead(unreadMessageIds) : null,
           child: Container(
             padding: const EdgeInsets.all(6),
             child: Icon(
@@ -1680,7 +2266,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final cs = theme.colorScheme;
     final isSearchActive = _showSearch;
     final isDesktop = MediaQuery.of(context).size.width >= 900;
-    
+
     return Container(
       decoration: BoxDecoration(
         color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
@@ -1706,15 +2292,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             });
           },
           child: Container(
-            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
+            padding: isDesktop
+                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
+                : const EdgeInsets.all(6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
                   isSearchActive ? Icons.search_off : Icons.search,
                   size: 18,
-                  color: isSearchActive 
-                      ? cs.onPrimaryContainer 
+                  color: isSearchActive
+                      ? cs.onPrimaryContainer
                       : const Color(0xFF42A5F5), // Blue for search
                 ),
                 if (isDesktop) ...[
@@ -1722,8 +2310,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Text(
                     'Search',
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: isSearchActive ? cs.onPrimaryContainer : cs.onSurfaceVariant,
-                      fontWeight: isSearchActive ? FontWeight.w600 : FontWeight.w500,
+                      color: isSearchActive
+                          ? cs.onPrimaryContainer
+                          : cs.onSurfaceVariant,
+                      fontWeight:
+                          isSearchActive ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                 ],
@@ -1747,7 +2338,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final isDesktop = MediaQuery.of(context).size.width >= 900;
-    
+
     // Assign colors based on filter type
     Color iconColor;
     if (selected) {
@@ -1767,7 +2358,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           iconColor = cs.onSurfaceVariant;
       }
     }
-    
+
     // Tooltip text
     String tooltipText;
     switch (label) {
@@ -1783,7 +2374,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (count > 0) {
       tooltipText = '$tooltipText ($count)';
     }
-    
+
     return Tooltip(
       message: tooltipText,
       child: Material(
@@ -1793,7 +2384,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           borderRadius: BorderRadius.circular(10),
           onTap: onTap,
           child: Container(
-            padding: isDesktop ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6) : const EdgeInsets.all(6),
+            padding: isDesktop
+                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
+                : const EdgeInsets.all(6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1807,14 +2400,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   Text(
                     label,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: selected ? cs.onPrimaryContainer : cs.onSurfaceVariant,
+                      color: selected
+                          ? cs.onPrimaryContainer
+                          : cs.onSurfaceVariant,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                   ),
                   if (count > 0) ...[
                     const SizedBox(width: 4),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 5, vertical: 1),
                       decoration: BoxDecoration(
                         color: selected ? cs.primary : iconColor,
                         borderRadius: BorderRadius.circular(8),
@@ -1832,7 +2428,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ] else if (count > 0) ...[
                   const SizedBox(width: 4),
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                     decoration: BoxDecoration(
                       color: selected ? cs.primary : iconColor,
                       borderRadius: BorderRadius.circular(8),
@@ -1859,21 +2456,51 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final currentSelections = Set<String>.from(_selectedCategories);
-    
+
     // Map categories to icons and colors
     final categoryConfig = <String, Map<String, dynamic>>{
-      'categoryPersonal': {'icon': Icons.person_outline, 'color': const Color(0xFF2196F3)},
-      'categorySocial': {'icon': Icons.people_outline, 'color': const Color(0xFF673AB7)},
-      'categoryPromotions': {'icon': Icons.local_offer_outlined, 'color': const Color(0xFFE91E63)},
-      'categoryUpdates': {'icon': Icons.info_outline, 'color': const Color(0xFF00BCD4)},
-      'categoryForums': {'icon': Icons.forum_outlined, 'color': const Color(0xFFFF9800)},
-      'categoryBills': {'icon': Icons.receipt_long_outlined, 'color': const Color(0xFF4CAF50)},
-      'categoryPurchases': {'icon': Icons.shopping_bag_outlined, 'color': const Color(0xFFFF5722)},
-      'categoryFinance': {'icon': Icons.account_balance_outlined, 'color': const Color(0xFF009688)},
-      'categoryTravel': {'icon': Icons.flight_outlined, 'color': const Color(0xFF03A9F4)},
-      'categoryReceipts': {'icon': Icons.receipt_outlined, 'color': const Color(0xFF795548)},
+      'categoryPersonal': {
+        'icon': Icons.person_outline,
+        'color': const Color(0xFF2196F3)
+      },
+      'categorySocial': {
+        'icon': Icons.people_outline,
+        'color': const Color(0xFF673AB7)
+      },
+      'categoryPromotions': {
+        'icon': Icons.local_offer_outlined,
+        'color': const Color(0xFFE91E63)
+      },
+      'categoryUpdates': {
+        'icon': Icons.info_outline,
+        'color': const Color(0xFF00BCD4)
+      },
+      'categoryForums': {
+        'icon': Icons.forum_outlined,
+        'color': const Color(0xFFFF9800)
+      },
+      'categoryBills': {
+        'icon': Icons.receipt_long_outlined,
+        'color': const Color(0xFF4CAF50)
+      },
+      'categoryPurchases': {
+        'icon': Icons.shopping_bag_outlined,
+        'color': const Color(0xFFFF5722)
+      },
+      'categoryFinance': {
+        'icon': Icons.account_balance_outlined,
+        'color': const Color(0xFF009688)
+      },
+      'categoryTravel': {
+        'icon': Icons.flight_outlined,
+        'color': const Color(0xFF03A9F4)
+      },
+      'categoryReceipts': {
+        'icon': Icons.receipt_outlined,
+        'color': const Color(0xFF795548)
+      },
     };
-    
+
     showDialog(
       context: context,
       barrierDismissible: true,
@@ -1889,7 +2516,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 children: [
                   // Header
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     child: Row(
                       children: [
                         Text(
@@ -1915,13 +2543,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     child: SingleChildScrollView(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
-                        children: AppConstants.allGmailCategories.map((category) {
-                          final displayName = AppConstants.categoryDisplayNames[category] ?? category;
-                          final isSelected = currentSelections.contains(category);
-                          final config = categoryConfig[category] ?? {'icon': Icons.label_outline, 'color': cs.onSurfaceVariant};
+                        children:
+                            AppConstants.allGmailCategories.map((category) {
+                          final displayName =
+                              AppConstants.categoryDisplayNames[category] ??
+                                  category;
+                          final isSelected =
+                              currentSelections.contains(category);
+                          final config = categoryConfig[category] ??
+                              {
+                                'icon': Icons.label_outline,
+                                'color': cs.onSurfaceVariant
+                              };
                           final icon = config['icon'] as IconData;
                           final color = config['color'] as Color;
-                          
+
                           return InkWell(
                             onTap: () {
                               setDialogState(() {
@@ -1933,9 +2569,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                               });
                             },
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 12),
                               decoration: BoxDecoration(
-                                color: isSelected ? cs.primaryContainer.withValues(alpha: 0.3) : null,
+                                color: isSelected
+                                    ? cs.primaryContainer.withValues(alpha: 0.3)
+                                    : null,
                               ),
                               child: Row(
                                 children: [
@@ -1948,9 +2587,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                   Expanded(
                                     child: Text(
                                       displayName,
-                                      style: theme.textTheme.bodyMedium?.copyWith(
-                                        color: isSelected ? cs.onPrimaryContainer : null,
-                                        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                                      style:
+                                          theme.textTheme.bodyMedium?.copyWith(
+                                        color: isSelected
+                                            ? cs.onPrimaryContainer
+                                            : null,
+                                        fontWeight: isSelected
+                                            ? FontWeight.w600
+                                            : FontWeight.normal,
                                       ),
                                     ),
                                   ),
@@ -1983,15 +2627,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-
   /// Save email to local folder and move to Archive
-  Future<void> _saveEmailToFolder(String folderName, MessageIndex message) async {
+  Future<void> _saveEmailToFolder(
+      String folderName, MessageIndex message) async {
     // Disallow saving to local from Gmail TRASH/ARCHIVE
     final src = (message.folderLabel).toUpperCase();
     if (src == 'TRASH' || src == 'ARCHIVE') {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+          const SnackBar(
+              content: Text(
+                  'Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
         );
       }
       return;
@@ -2012,7 +2658,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
         // Get access token for downloading email body and attachments
-        final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
+        final account = await GoogleAuthService()
+            .ensureValidAccessToken(_selectedAccountId!);
         final accessToken = account?.accessToken;
         if (accessToken == null) {
           if (mounted) {
@@ -2025,33 +2672,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
         // Fetch full email body
         final gmailService = GmailSyncService();
-        final emailBody = await gmailService.getEmailBody(message.id, accessToken);
+        final emailBody =
+            await gmailService.getEmailBody(message.id, accessToken);
         if (emailBody == null) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Unable to save: Could not fetch email body')),
+              const SnackBar(
+                  content: Text('Unable to save: Could not fetch email body')),
             );
           }
           return;
         }
 
-      String accountEmail = message.accountEmail ??
-          _accounts.firstWhere(
-            (a) => a.id == _selectedAccountId,
-            orElse: () => const GoogleAccount(
-              id: '',
-              email: '',
-              displayName: '',
-              photoUrl: null,
-              accessToken: '',
-              refreshToken: null,
-              tokenExpiryMs: null,
-              idToken: '',
-            ),
-          ).email;
-      if (accountEmail.isEmpty) {
-        accountEmail = message.to.isNotEmpty ? message.to : message.from;
-      }
+        String accountEmail = message.accountEmail ??
+            _accounts
+                .firstWhere(
+                  (a) => a.id == _selectedAccountId,
+                  orElse: () => const GoogleAccount(
+                    id: '',
+                    email: '',
+                    displayName: '',
+                    photoUrl: null,
+                    accessToken: '',
+                    refreshToken: null,
+                    tokenExpiryMs: null,
+                    idToken: '',
+                  ),
+                )
+                .email;
+        if (accountEmail.isEmpty) {
+          accountEmail = message.to.isNotEmpty ? message.to : message.from;
+        }
         if (accountEmail.isEmpty) {
           accountEmail = message.to.isNotEmpty ? message.to : message.from;
         }
@@ -2078,14 +2729,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             _enqueueGmailUpdate('archive:$src', message.id);
           }
           if (mounted && _isLocalFolder && _selectedFolder == folderName) {
-            final refreshed = await _localFolderService.loadFolderEmails(folderName);
+            final refreshed =
+                await _localFolderService.loadFolderEmails(folderName);
             ref.read(emailListProvider.notifier).setEmails(refreshed);
           }
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(wasArchive
-                  ? 'Email copied to "$folderName"'
-                  : 'Email saved to "$folderName" and moved to Archive')),
+              SnackBar(
+                  content: Text(wasArchive
+                      ? 'Email copied to "$folderName"'
+                      : 'Email saved to "$folderName" and moved to Archive')),
             );
           }
         } else {
@@ -2095,7 +2748,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             );
             // Best-effort: refresh current folder to reconcile UI if save failed
             if (_selectedAccountId != null) {
-              unawaited(ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder));
+              unawaited(ref
+                  .read(emailListProvider.notifier)
+                  .refresh(_selectedAccountId!, folderLabel: _selectedFolder));
             }
           }
         }
@@ -2107,7 +2762,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           );
           // Best-effort reconcile
           if (_selectedAccountId != null) {
-            unawaited(ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder));
+            unawaited(ref
+                .read(emailListProvider.notifier)
+                .refresh(_selectedAccountId!, folderLabel: _selectedFolder));
           }
         }
       }
@@ -2115,38 +2772,43 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// Move email between local folders
-  Future<void> _moveLocalEmailToFolder(String targetFolderPath, MessageIndex message) async {
+  Future<void> _moveLocalEmailToFolder(
+      String targetFolderPath, MessageIndex message) async {
     if (_selectedAccountId == null) return;
-    
+
     try {
       // Get the source folder path (from current selection)
       final sourceFolderPath = _isLocalFolder ? _selectedFolder : null;
-      
+
       if (sourceFolderPath == null || sourceFolderPath.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to move: Source folder not found')),
+            const SnackBar(
+                content: Text('Unable to move: Source folder not found')),
           );
         }
         return;
       }
-      
+
       // Load email body from source folder
-      final emailBody = await _localFolderService.loadEmailBody(sourceFolderPath, message.id);
-      
+      final emailBody =
+          await _localFolderService.loadEmailBody(sourceFolderPath, message.id);
+
       if (emailBody == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to move: Could not load email body')),
+            const SnackBar(
+                content: Text('Unable to move: Could not load email body')),
           );
         }
         return;
       }
-      
+
       // Get access token for downloading attachments if needed
-      final account = await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
+      final account =
+          await GoogleAuthService().ensureValidAccessToken(_selectedAccountId!);
       final accessToken = account?.accessToken;
-      
+
       if (accessToken == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2155,21 +2817,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         }
         return;
       }
-      
+
       final accountEmail = message.accountEmail ??
-          _accounts.firstWhere(
-            (a) => a.id == _selectedAccountId,
-            orElse: () => const GoogleAccount(
-              id: '',
-              email: '',
-              displayName: '',
-              photoUrl: null,
-              accessToken: '',
-              refreshToken: null,
-              tokenExpiryMs: null,
-              idToken: '',
-            ),
-          ).email;
+          _accounts
+              .firstWhere(
+                (a) => a.id == _selectedAccountId,
+                orElse: () => const GoogleAccount(
+                  id: '',
+                  email: '',
+                  displayName: '',
+                  photoUrl: null,
+                  accessToken: '',
+                  refreshToken: null,
+                  tokenExpiryMs: null,
+                  idToken: '',
+                ),
+              )
+              .email;
 
       // Save to target folder
       final saved = await _localFolderService.saveEmailToFolder(
@@ -2180,21 +2844,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         accountEmail: accountEmail,
         accessToken: accessToken,
       );
-      
+
       if (saved) {
         // Remove from source folder
-        await _localFolderService.removeEmailFromFolder(sourceFolderPath, message.id);
-        
+        await _localFolderService.removeEmailFromFolder(
+            sourceFolderPath, message.id);
+
         // Update provider state if viewing source folder
         if (_isLocalFolder && _selectedFolder == sourceFolderPath) {
           ref.read(emailListProvider.notifier).removeMessage(message.id);
         }
-        
+
         // If viewing target folder, reload
         if (_isLocalFolder && _selectedFolder == targetFolderPath) {
           await _loadFolderEmails(targetFolderPath, true);
         }
-        
+
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text('Email moved to "$targetFolderPath"')),
@@ -2223,7 +2888,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (accountId.isEmpty && messageAccountEmail.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to restore: missing account information')),
+          const SnackBar(
+              content: Text('Unable to restore: missing account information')),
         );
       }
       return;
@@ -2233,29 +2899,34 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (sourceFolderPath.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to restore: source folder unavailable')),
+          const SnackBar(
+              content: Text('Unable to restore: source folder unavailable')),
         );
       }
       return;
     }
 
     final storedAccountEmail = message.accountEmail ??
-        _accounts.firstWhere(
-          (a) => a.id == message.accountId,
-          orElse: () => const GoogleAccount(
-            id: '',
-            email: '',
-            displayName: '',
-            photoUrl: null,
-            accessToken: '',
-            refreshToken: null,
-            tokenExpiryMs: null,
-            idToken: '',
-          ),
-        ).email;
+        _accounts
+            .firstWhere(
+              (a) => a.id == message.accountId,
+              orElse: () => const GoogleAccount(
+                id: '',
+                email: '',
+                displayName: '',
+                photoUrl: null,
+                accessToken: '',
+                refreshToken: null,
+                tokenExpiryMs: null,
+                idToken: '',
+              ),
+            )
+            .email;
 
-    debugPrint('[Restore] requested accountId=$accountId local message account=${message.accountId} email=$storedAccountEmail');
-    debugPrint('[Restore] Signed-in accounts: ${_accounts.map((a) => '${a.id}:${a.email}').join(', ')}');
+    debugPrint(
+        '[Restore] requested accountId=$accountId local message account=${message.accountId} email=$storedAccountEmail');
+    debugPrint(
+        '[Restore] Signed-in accounts: ${_accounts.map((a) => '${a.id}:${a.email}').join(', ')}');
 
     final auth = GoogleAuthService();
     var signedInAccount = _accounts.firstWhere(
@@ -2287,17 +2958,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ),
       );
       if (signedInAccount.id.isNotEmpty) {
-        debugPrint('[Restore] Resolved account via email match: ${signedInAccount.email} -> id ${signedInAccount.id}');
+        debugPrint(
+            '[Restore] Resolved account via email match: ${signedInAccount.email} -> id ${signedInAccount.id}');
         accountId = signedInAccount.id;
       }
     }
 
     if (signedInAccount.id.isEmpty) {
-      debugPrint('[Restore] No matching signed-in account found (wanted id=$accountId email=$storedAccountEmail); aborting restore.');
+      debugPrint(
+          '[Restore] No matching signed-in account found (wanted id=$accountId email=$storedAccountEmail); aborting restore.');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Account not signed in. Add the account in Accounts before restoring.'),
+            content: Text(
+                'Account not signed in. Add the account in Accounts before restoring.'),
           ),
         );
       }
@@ -2306,7 +2980,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     final account = await auth.ensureValidAccessToken(accountId);
     final accessToken = account?.accessToken;
-    debugPrint('[Restore] ensureValidAccessToken -> accountId=$accountId email=${account?.email ?? 'unknown'} hasAccount=${account != null} '
+    debugPrint(
+        '[Restore] ensureValidAccessToken -> accountId=$accountId email=${account?.email ?? 'unknown'} hasAccount=${account != null} '
         'accessToken=${accessToken != null && accessToken.isNotEmpty} '
         'refreshToken=${(account?.refreshToken ?? '').isNotEmpty} '
         'expiryMs=${account?.tokenExpiryMs}');
@@ -2316,7 +2991,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         final messenger = ScaffoldMessenger.of(context);
         messenger.showSnackBar(
           const SnackBar(
-            content: Text('Google session expired. Re-authenticate via the Accounts menu before restoring.'),
+            content: Text(
+                'Google session expired. Re-authenticate via the Accounts menu before restoring.'),
           ),
         );
       }
@@ -2332,13 +3008,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       builder: (dialogContext) {
         Future<void>(() async {
           try {
-            debugPrint('[Restore] Calling Gmail restoreMessageToInbox for message=${message.id} account=$accountId email=${account?.email ?? 'unknown'}');
-            await GmailSyncService().restoreMessageToInbox(accountId, message.id);
-            debugPrint('[Restore] Gmail modify succeeded for message=${message.id} account=$accountId');
+            debugPrint(
+                '[Restore] Calling Gmail restoreMessageToInbox for message=${message.id} account=$accountId email=${account?.email ?? 'unknown'}');
+            await GmailSyncService()
+                .restoreMessageToInbox(accountId, message.id);
+            debugPrint(
+                '[Restore] Gmail modify succeeded for message=${message.id} account=$accountId');
             await MessageRepository().updateFolderNoPrev(message.id, 'INBOX');
 
-            await _localFolderService.removeEmailFromFolder(sourceFolderPath, message.id);
-            debugPrint('[Restore] Removed local copy for message=${message.id}');
+            await _localFolderService.removeEmailFromFolder(
+                sourceFolderPath, message.id);
+            debugPrint(
+                '[Restore] Removed local copy for message=${message.id}');
             if (mounted) {
               ref.read(emailListProvider.notifier).removeMessage(message.id);
             }
@@ -2353,7 +3034,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
             if (mounted) {
               await _saveLastActiveAccount(accountId);
-              await ref.read(emailListProvider.notifier).loadFolder(accountId, folderLabel: 'INBOX');
+              await ref
+                  .read(emailListProvider.notifier)
+                  .loadFolder(accountId, folderLabel: 'INBOX');
               messenger.showSnackBar(
                 const SnackBar(content: Text('Email restored to Inbox')),
               );
@@ -2382,7 +3065,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void _enqueueGmailUpdate(String action, String messageId) {
     if (_selectedAccountId == null) return;
     // Enqueue to DB; processing is triggered by refresh/incremental sync
-    MessageRepository().enqueuePendingOp(_selectedAccountId!, messageId, action);
+    MessageRepository()
+        .enqueuePendingOp(_selectedAccountId!, messageId, action);
     // Trigger background processing after current frame to allow optimistic UI to paint first
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(GmailSyncService().processPendingOps());
@@ -2391,7 +3075,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildTopFilterRow() {
     return Container(
-      padding: const EdgeInsets.only(left: 8.0, right: 8.0, top: 6.0, bottom: 2.0),
+      padding:
+          const EdgeInsets.only(left: 8.0, right: 8.0, top: 6.0, bottom: 2.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -2399,12 +3084,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Builder(
             builder: (context) {
               final emailsValue = ref.read(emailListProvider);
-              int countToday = 0, countUpcoming = 0, countOverdue = 0, countPossible = 0;
+              int countToday = 0,
+                  countUpcoming = 0,
+                  countOverdue = 0,
+                  countPossible = 0;
               emailsValue.whenData((emails) {
                 final now = DateTime.now();
                 final today = DateTime(now.year, now.month, now.day);
                 for (final m in emails) {
-                  if (_selectedLocalState != null && m.localTagPersonal != _selectedLocalState) {
+                  if (_selectedLocalState != null &&
+                      m.localTagPersonal != _selectedLocalState) {
                     continue;
                   }
                   if (m.actionComplete) {
@@ -2432,10 +3121,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               return Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildActionFilterTextButton(context, AppConstants.filterToday, countToday),
-                  _buildActionFilterTextButton(context, AppConstants.filterUpcoming, countUpcoming),
-                  _buildActionFilterTextButton(context, AppConstants.filterOverdue, countOverdue),
-                  _buildActionFilterTextButton(context, AppConstants.filterPossible, countPossible),
+                  _buildActionFilterTextButton(
+                      context, AppConstants.filterToday, countToday),
+                  _buildActionFilterTextButton(
+                      context, AppConstants.filterUpcoming, countUpcoming),
+                  _buildActionFilterTextButton(
+                      context, AppConstants.filterOverdue, countOverdue),
+                  _buildActionFilterTextButton(
+                      context, AppConstants.filterPossible, countPossible),
                 ],
               );
             },
@@ -2444,10 +3137,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // Filter toggle icon (subtle, sophisticated)
           IconButton(
             tooltip: 'Filters',
-            icon: Icon(_showFilterBar ? Icons.filter_list : Icons.filter_list_outlined),
-            color: _showFilterBar 
+            icon: Icon(_showFilterBar
+                ? Icons.filter_list
+                : Icons.filter_list_outlined),
+            color: _showFilterBar
                 ? const Color(0xFF00695C) // Teal when active
-                : Theme.of(context).colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                : Theme.of(context)
+                    .colorScheme
+                    .onSurfaceVariant
+                    .withValues(alpha: 0.7),
             iconSize: 20,
             onPressed: () {
               setState(() {
@@ -2461,7 +3159,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Widget _buildAppBarLocalStateSwitch(BuildContext context) {
-    
     return LayoutBuilder(
       builder: (context, constraints) {
         // Calculate approximate button widths (text only, no icons)
@@ -2473,10 +3170,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         const double personalButtonWidth = 80.0;
         const double personalTextWidth = 60.0;
         const double businessTextWidth = 65.0;
-        
+
         double underlineLeft = 0;
         double underlineWidth = 0;
-        
+
         if (_selectedLocalState == null) {
           // All selected
           underlineLeft = 0;
@@ -2488,7 +3185,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           underlineLeft = allButtonWidth + personalButtonWidth;
           underlineWidth = businessTextWidth;
         }
-        
+
         return Stack(
           clipBehavior: Clip.none,
           children: [
@@ -2556,11 +3253,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     VoidCallback onTap,
   ) {
     final theme = Theme.of(context);
-    
+
     // Color for text - white for better visibility on teal background
-    final Color textColor = Theme.of(context).appBarTheme.foregroundColor
-        ?? Theme.of(context).colorScheme.onPrimary;
-    
+    final Color textColor = Theme.of(context).appBarTheme.foregroundColor ??
+        Theme.of(context).colorScheme.onPrimary;
+
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -2590,7 +3287,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         itemCount: AppConstants.allGmailCategories.length,
         itemBuilder: (context, index) {
           final category = AppConstants.allGmailCategories[index];
-          final displayName = AppConstants.categoryDisplayNames[category] ?? category;
+          final displayName =
+              AppConstants.categoryDisplayNames[category] ?? category;
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4.0),
             child: AppToggleChip(
@@ -2633,7 +3331,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   // ignore: unused_element
-  Widget _buildStateFilterIconButton(BuildContext context, String state, IconData icon) {
+  Widget _buildStateFilterIconButton(
+      BuildContext context, String state, IconData icon) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final selected = _stateFilter == state;
@@ -2672,7 +3371,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   // ignore: unused_element
-  Widget _buildLocalStateIconButton(BuildContext context, String state, IconData icon) {
+  Widget _buildLocalStateIconButton(
+      BuildContext context, String state, IconData icon) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final selected = _selectedLocalState == state;
@@ -2682,7 +3382,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (state == 'Personal') {
       actualIcon = selected ? Icons.person : Icons.person_outline;
     } else if (state == 'Business') {
-      actualIcon = selected ? Icons.business_center : Icons.business_center_outlined;
+      actualIcon =
+          selected ? Icons.business_center : Icons.business_center_outlined;
     }
     return Container(
       decoration: selected
@@ -2695,7 +3396,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         tooltip: state,
         icon: Icon(actualIcon, color: colorFor(selected)),
         onPressed: () {
-              setState(() {
+          setState(() {
             // Toggle: if already selected, deselect; otherwise select
             _selectedLocalState = selected ? null : state;
           });
@@ -2705,7 +3406,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   // ignore: unused_element
-  Widget _buildActionFilterIconButton(BuildContext context, String filter, IconData icon, int? count) {
+  Widget _buildActionFilterIconButton(
+      BuildContext context, String filter, IconData icon, int? count) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final selected = _selectedActionFilter == filter;
@@ -2713,13 +3415,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     String tooltip;
     switch (filter) {
       case AppConstants.filterToday:
-        tooltip = '${AppConstants.actionSummaryToday}${count != null ? ' ($count)' : ''}';
+        tooltip =
+            '${AppConstants.actionSummaryToday}${count != null ? ' ($count)' : ''}';
         break;
       case AppConstants.filterUpcoming:
-        tooltip = '${AppConstants.actionSummaryUpcoming}${count != null ? ' ($count)' : ''}';
+        tooltip =
+            '${AppConstants.actionSummaryUpcoming}${count != null ? ' ($count)' : ''}';
         break;
       case AppConstants.filterOverdue:
-        tooltip = '${AppConstants.actionSummaryOverdue}${count != null ? ' ($count)' : ''}';
+        tooltip =
+            '${AppConstants.actionSummaryOverdue}${count != null ? ' ($count)' : ''}';
         break;
       default:
         tooltip = AppConstants.actionSummaryAll;
@@ -2737,14 +3442,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         onPressed: () {
           setState(() {
             // Toggle: if already selected, deselect (null); otherwise select
-            _selectedActionFilter = _selectedActionFilter == filter ? null : filter;
+            _selectedActionFilter =
+                _selectedActionFilter == filter ? null : filter;
           });
         },
       ),
     );
   }
 
-  Widget _buildActionFilterTextButton(BuildContext context, String filter, int count) {
+  Widget _buildActionFilterTextButton(
+      BuildContext context, String filter, int count) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final selected = _selectedActionFilter == filter;
@@ -2780,7 +3487,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           onTap: () {
             setState(() {
               // Toggle: if already selected, deselect (null); otherwise select
-              _selectedActionFilter = _selectedActionFilter == filter ? null : filter;
+              _selectedActionFilter =
+                  _selectedActionFilter == filter ? null : filter;
             });
           },
           borderRadius: BorderRadius.circular(8),
@@ -2852,76 +3560,76 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ],
                   ),
                 ),
-              PopupMenuItem<String?>(
-                value: 'Starred',
-                child: Row(
-                  children: [
-                    // ignore: deprecated_member_use
-                    Radio<String?>(
-                      value: 'Starred',
+                PopupMenuItem<String?>(
+                  value: 'Starred',
+                  child: Row(
+                    children: [
                       // ignore: deprecated_member_use
-                      groupValue: _stateFilter,
-                      // ignore: deprecated_member_use
-                      onChanged: (_) {},
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      AppConstants.emailStateStarred,
-                      style: TextStyle(
-                        color: cs.onSurface,
-                        fontSize: 13,
+                      Radio<String?>(
+                        value: 'Starred',
+                        // ignore: deprecated_member_use
+                        groupValue: _stateFilter,
+                        // ignore: deprecated_member_use
+                        onChanged: (_) {},
+                        visualDensity: VisualDensity.compact,
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              PopupMenuItem<String?>(
-                value: 'Important',
-                child: Row(
-                  children: [
-                    // ignore: deprecated_member_use
-                    Radio<String?>(
-                      value: 'Important',
-                      // ignore: deprecated_member_use
-                      groupValue: _stateFilter,
-                      // ignore: deprecated_member_use
-                      onChanged: (_) {},
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      AppConstants.emailStateImportant,
-                      style: TextStyle(
-                        color: cs.onSurface,
-                        fontSize: 13,
+                      const SizedBox(width: 4),
+                      Text(
+                        AppConstants.emailStateStarred,
+                        style: TextStyle(
+                          color: cs.onSurface,
+                          fontSize: 13,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuDivider(),
-              PopupMenuItem<String?>(
-                value: 'Clear',
-                child: Row(
-                  children: [
-                    Icon(Icons.clear, size: 16, color: cs.onSurface),
-                    const SizedBox(width: 6),
-                    Text(
-                      'Clear Filters',
-                      style: TextStyle(
-                        color: cs.onSurface,
-                        fontSize: 13,
+                PopupMenuItem<String?>(
+                  value: 'Important',
+                  child: Row(
+                    children: [
+                      // ignore: deprecated_member_use
+                      Radio<String?>(
+                        value: 'Important',
+                        // ignore: deprecated_member_use
+                        groupValue: _stateFilter,
+                        // ignore: deprecated_member_use
+                        onChanged: (_) {},
+                        visualDensity: VisualDensity.compact,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        AppConstants.emailStateImportant,
+                        style: TextStyle(
+                          color: cs.onSurface,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ];
-          },
-        ),
-      ],
-    ),
+                const PopupMenuDivider(),
+                PopupMenuItem<String?>(
+                  value: 'Clear',
+                  child: Row(
+                    children: [
+                      Icon(Icons.clear, size: 16, color: cs.onSurface),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Clear Filters',
+                        style: TextStyle(
+                          color: cs.onSurface,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ];
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -2940,7 +3648,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           }
           // Gmail category filter (AND across selected categories)
           if (_selectedCategories.isNotEmpty) {
-            final hasAny = m.gmailCategories.any((c) => _selectedCategories.contains(c));
+            final hasAny =
+                m.gmailCategories.any((c) => _selectedCategories.contains(c));
             if (!hasAny) return false;
           }
           // Email state single-select filter
@@ -2999,8 +3708,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             final matchesSubject = m.subject.toLowerCase().contains(query);
             final matchesFrom = m.from.toLowerCase().contains(query);
             final matchesTo = m.to.toLowerCase().contains(query);
-            final matchesSnippet = (m.snippet ?? '').toLowerCase().contains(query);
-            if (!matchesSubject && !matchesFrom && !matchesTo && !matchesSnippet) {
+            final matchesSnippet =
+                (m.snippet ?? '').toLowerCase().contains(query);
+            if (!matchesSubject &&
+                !matchesFrom &&
+                !matchesTo &&
+                !matchesSnippet) {
               return false;
             }
           }
@@ -3011,15 +3724,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
         final content = Column(
           children: [
-            if (isLoadingLocal || isSyncing) const LinearProgressIndicator(minHeight: 2),
+            if (isLoadingLocal || isSyncing)
+              const LinearProgressIndicator(minHeight: 2),
             if (filterBanner != null) filterBanner,
             Expanded(
               child: RefreshIndicator(
-          onRefresh: () async {
-            if (_selectedAccountId != null) {
-              await ref.read(emailListProvider.notifier).refresh(_selectedAccountId!, folderLabel: _selectedFolder);
-            }
-          },
+                onRefresh: () async {
+                  if (_selectedAccountId != null) {
+                    await ref.read(emailListProvider.notifier).refresh(
+                        _selectedAccountId!,
+                        folderLabel: _selectedFolder);
+                  }
+                },
                 child: filtered.isEmpty
                     ? ListView(
                         children: [
@@ -3041,209 +3757,280 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           return EmailTile(
                             message: message,
                             isLocalFolder: _isLocalFolder,
-                            onRestoreToInbox: _isLocalFolder ? () => _restoreLocalEmailToInbox(message) : null,
-                onTap: () {
-                  if (_selectedAccountId != null) {
-                    showDialog(
-                      context: context,
-                      barrierDismissible: false,
-                      builder: (ctx) => EmailViewerDialog(
-                        message: message,
-                        accountId: _selectedAccountId!,
-                        localFolderName: _isLocalFolder ? _selectedFolder : null,
-                        onMarkRead: () async {
-                          if (!message.isRead && !_isLocalFolder) {
-                            await MessageRepository().updateRead(message.id, true);
-                            ref.read(emailListProvider.notifier).setRead(message.id, true);
-                            _enqueueGmailUpdate('markRead', message.id);
-                          }
-                        },
-                      ),
-                    );
-                  }
-                },
-                onMarkRead: () async {
-                  if (!message.isRead) {
-                    await MessageRepository().updateRead(message.id, true);
-                    ref.read(emailListProvider.notifier).setRead(message.id, true);
-                    _enqueueGmailUpdate('markRead', message.id);
-                  }
-                },
-                onStarToggle: (newValue) async {
-                  await MessageRepository().updateStarred(message.id, newValue);
-                  ref.read(emailListProvider.notifier).setStarred(message.id, newValue);
-                  _enqueueGmailUpdate(newValue ? 'star' : 'unstar', message.id);
-                },
-                onLocalStateChanged: (state) async {
-                  // Persist local tag for this message
-                  await MessageRepository().updateLocalTag(message.id, state);
-                  
-                  // Sync to Firebase if enabled (only if changed from initial value)
-                  final syncEnabled = await _firebaseSync.isSyncEnabled();
-                  if (syncEnabled) {
-                    // Always sync the localTagPersonal value (even if null, it represents a change)
-                    try {
-                      await _firebaseSync.syncEmailMeta(message.id, localTagPersonal: state);
-                    } catch (e) {
-                      // Log errors but don't crash the UI
-                      debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
-                      if (kReleaseMode) {
-                        debugPrint('[HomeScreen] ERROR in syncEmailMeta (release): $e');
-                      }
-                    }
-                  }
-                  
-                  // Persist a sender preference (future emails rule)
-                  // Note: Sender preferences are NOT synced to Firebase - they are derived
-                  // locally from emailMeta changes on other devices
-                  final senderEmail = _extractEmail(message.from);
-                  if (senderEmail.isNotEmpty) {
-                    await MessageRepository().setSenderDefaultLocalTag(senderEmail, state);
-                  }
-                  
-                  // Silent update: do not trigger a provider loading state
-                  ref.read(emailListProvider.notifier).setLocalTag(message.id, state);
-                },
-                onTrash: () async {
-                  // Optimistic UI update first
-                  if (_selectedFolder != 'TRASH') {
-                    ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  } else {
-                    ref.read(emailListProvider.notifier).setFolder(message.id, 'TRASH');
-                  }
-                  final src = message.folderLabel.toUpperCase();
-                  if (src == 'ARCHIVE') {
-                    unawaited(MessageRepository().updateFolderNoPrev(message.id, 'TRASH'));
-                  } else {
-                    unawaited(MessageRepository().updateFolderWithPrev(
-                      message.id,
-                      'TRASH',
-                      prevFolderLabel: message.folderLabel,
-                    ));
-                  }
-                  _enqueueGmailUpdate('trash:$src', message.id);
+                            onRestoreToInbox: _isLocalFolder
+                                ? () => _restoreLocalEmailToInbox(message)
+                                : null,
+                            onTap: () {
+                              if (_selectedAccountId != null) {
+                                showDialog(
+                                  context: context,
+                                  barrierDismissible: false,
+                                  builder: (ctx) => EmailViewerDialog(
+                                    message: message,
+                                    accountId: _selectedAccountId!,
+                                    localFolderName:
+                                        _isLocalFolder ? _selectedFolder : null,
+                                    onMarkRead: () async {
+                                      if (!message.isRead && !_isLocalFolder) {
+                                        await MessageRepository()
+                                            .updateRead(message.id, true);
+                                        ref
+                                            .read(emailListProvider.notifier)
+                                            .setRead(message.id, true);
+                                        _enqueueGmailUpdate(
+                                            'markRead', message.id);
+                                      }
+                                    },
+                                  ),
+                                );
+                              }
+                            },
+                            onMarkRead: () async {
+                              if (!message.isRead) {
+                                await MessageRepository()
+                                    .updateRead(message.id, true);
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .setRead(message.id, true);
+                                _enqueueGmailUpdate('markRead', message.id);
+                              }
+                            },
+                            onStarToggle: (newValue) async {
+                              await MessageRepository()
+                                  .updateStarred(message.id, newValue);
+                              ref
+                                  .read(emailListProvider.notifier)
+                                  .setStarred(message.id, newValue);
+                              _enqueueGmailUpdate(
+                                  newValue ? 'star' : 'unstar', message.id);
+                            },
+                            onLocalStateChanged: (state) async {
+                              // Persist local tag for this message
+                              await MessageRepository()
+                                  .updateLocalTag(message.id, state);
 
-                  // If viewing a local folder, also remove the saved local copy (additional process)
-                  if (_isLocalFolder) {
-                    final localPath = _selectedFolder;
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      unawaited(_localFolderService.removeEmailFromFolder(localPath, message.id));
-                    });
-                  }
-                },
-                onArchive: () async {
-                  // Optimistic UI update first
-                  if (_selectedFolder != 'ARCHIVE') {
-                    ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  } else {
-                    ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
-                  }
-                  final src = message.folderLabel.toUpperCase();
-                  if (src == 'TRASH') {
-                    unawaited(MessageRepository().updateFolderNoPrev(message.id, 'ARCHIVE'));
-                  } else {
-                    unawaited(MessageRepository().updateFolderWithPrev(
-                      message.id,
-                      'ARCHIVE',
-                      prevFolderLabel: message.folderLabel,
-                    ));
-                  }
-                  _enqueueGmailUpdate('archive:$src', message.id);
-                },
-                onSaveToFolder: (folderName) async {
-                  await _saveEmailToFolder(folderName, message);
-                },
-                onMoveToInbox: () async {
-                  // Optimistic UI update first
-                  if (_selectedFolder != 'INBOX') {
-                    ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  } else {
-                    ref.read(emailListProvider.notifier).setFolder(message.id, 'INBOX');
-                  }
-                  unawaited(MessageRepository().updateFolderWithPrev(
-                    message.id,
-                    'INBOX',
-                    prevFolderLabel: message.folderLabel,
-                  ));
-                  _enqueueGmailUpdate('moveToInbox', message.id);
-                },
-                onRestore: () async {
-                  // Optimistic: remove from current view immediately; background restore will adjust
-                  ref.read(emailListProvider.notifier).removeMessage(message.id);
-                  unawaited(() async {
-                    await MessageRepository().restoreToPrev(message.id);
-                    if (_selectedAccountId != null) {
-                      final updated = await MessageRepository().getByIds(_selectedAccountId!, [message.id]);
-                      final restored = updated[message.id];
-                      if (restored != null) {
-                        final dest = restored.folderLabel;
-                        if (_selectedFolder == dest) {
-                          ref.read(emailListProvider.notifier).setFolder(message.id, dest);
-                        }
-                        _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
-                      }
-                    }
-                  }());
-                },
-                onActionUpdated: (date, text, {bool? actionComplete}) async {
-                  // Capture original detected action for feedback
-                  final originalAction = message.hasAction
-                      ? ActionResult(
-                          actionDate: message.actionDate ?? DateTime.now(),
-                          confidence: message.actionConfidence ?? 0.0,
-                          insightText: message.actionInsightText ?? '',
-                        )
-                      : null;
-                  
-                  await MessageRepository().updateAction(message.id, date, text, null, actionComplete);
-                  ref.read(emailListProvider.notifier).setAction(message.id, date, text, actionComplete: actionComplete);
-                  final hasActionNow = date != null || (text != null && text.isNotEmpty);
-                  
-                  // Record feedback for ML training
-                  final userAction = date != null || text != null
-                      ? ActionResult(
-                          actionDate: date ?? DateTime.now(),
-                          confidence: 1.0, // User-provided actions have max confidence
-                          insightText: text ?? '',
-                        )
-                      : null;
-                  
-                  // Determine feedback type
-                  final feedbackType = _determineFeedbackType(originalAction, userAction);
-                  
-                  if (feedbackType != null) {
-                    await MLActionExtractor.recordFeedback(
-                      messageId: message.id,
-                      subject: message.subject,
-                      snippet: message.snippet ?? '',
-                      detectedResult: originalAction,
-                      userCorrectedResult: userAction,
-                      feedbackType: feedbackType,
-                    );
-                  }
-                  
-                  // Sync to Firebase if enabled (only if changed from initial value)
-                  final syncEnabled = await _firebaseSync.isSyncEnabled();
-                  if (syncEnabled) {
-                    // Get current message to check if action actually changed
-                    final currentDate = message.actionDate;
-                    final currentText = message.actionInsightText;
-                    final currentComplete = message.actionComplete;
-                    if (currentDate != date || currentText != text || currentComplete != actionComplete || !hasActionNow) {
-                      await _firebaseSync.syncEmailMeta(
-                        message.id,
-                        actionDate: hasActionNow ? date : null,
-                        actionInsightText: hasActionNow ? text : null,
-                        actionComplete: hasActionNow ? actionComplete : null,
-                        clearAction: !hasActionNow,
-                      );
-                    }
-                  }
-                },
-                onActionCompleted: () async {
-                  await MessageRepository().updateAction(message.id, null, null);
-                  ref.read(emailListProvider.notifier).setAction(message.id, null, null);
-                },
+                              // Sync to Firebase if enabled (only if changed from initial value)
+                              final syncEnabled =
+                                  await _firebaseSync.isSyncEnabled();
+                              if (syncEnabled) {
+                                // Always sync the localTagPersonal value (even if null, it represents a change)
+                                try {
+                                  await _firebaseSync.syncEmailMeta(message.id,
+                                      localTagPersonal: state);
+                                } catch (e) {
+                                  // Log errors but don't crash the UI
+                                  debugPrint(
+                                      '[HomeScreen] ERROR in syncEmailMeta: $e');
+                                  if (kReleaseMode) {
+                                    debugPrint(
+                                        '[HomeScreen] ERROR in syncEmailMeta (release): $e');
+                                  }
+                                }
+                              }
+
+                              // Persist a sender preference (future emails rule)
+                              // Note: Sender preferences are NOT synced to Firebase - they are derived
+                              // locally from emailMeta changes on other devices
+                              final senderEmail = _extractEmail(message.from);
+                              if (senderEmail.isNotEmpty) {
+                                await MessageRepository()
+                                    .setSenderDefaultLocalTag(
+                                        senderEmail, state);
+                              }
+
+                              // Silent update: do not trigger a provider loading state
+                              ref
+                                  .read(emailListProvider.notifier)
+                                  .setLocalTag(message.id, state);
+                            },
+                            onTrash: () async {
+                              // Optimistic UI update first
+                              if (_selectedFolder != 'TRASH') {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .removeMessage(message.id);
+                              } else {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .setFolder(message.id, 'TRASH');
+                              }
+                              final src = message.folderLabel.toUpperCase();
+                              if (src == 'ARCHIVE') {
+                                unawaited(MessageRepository()
+                                    .updateFolderNoPrev(message.id, 'TRASH'));
+                              } else {
+                                unawaited(
+                                    MessageRepository().updateFolderWithPrev(
+                                  message.id,
+                                  'TRASH',
+                                  prevFolderLabel: message.folderLabel,
+                                ));
+                              }
+                              _enqueueGmailUpdate('trash:$src', message.id);
+
+                              // If viewing a local folder, also remove the saved local copy (additional process)
+                              if (_isLocalFolder) {
+                                final localPath = _selectedFolder;
+                                WidgetsBinding.instance
+                                    .addPostFrameCallback((_) {
+                                  unawaited(
+                                      _localFolderService.removeEmailFromFolder(
+                                          localPath, message.id));
+                                });
+                              }
+                            },
+                            onArchive: () async {
+                              // Optimistic UI update first
+                              if (_selectedFolder != 'ARCHIVE') {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .removeMessage(message.id);
+                              } else {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .setFolder(message.id, 'ARCHIVE');
+                              }
+                              final src = message.folderLabel.toUpperCase();
+                              if (src == 'TRASH') {
+                                unawaited(MessageRepository()
+                                    .updateFolderNoPrev(message.id, 'ARCHIVE'));
+                              } else {
+                                unawaited(
+                                    MessageRepository().updateFolderWithPrev(
+                                  message.id,
+                                  'ARCHIVE',
+                                  prevFolderLabel: message.folderLabel,
+                                ));
+                              }
+                              _enqueueGmailUpdate('archive:$src', message.id);
+                            },
+                            onSaveToFolder: (folderName) async {
+                              await _saveEmailToFolder(folderName, message);
+                            },
+                            onMoveToInbox: () async {
+                              // Optimistic UI update first
+                              if (_selectedFolder != 'INBOX') {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .removeMessage(message.id);
+                              } else {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .setFolder(message.id, 'INBOX');
+                              }
+                              unawaited(
+                                  MessageRepository().updateFolderWithPrev(
+                                message.id,
+                                'INBOX',
+                                prevFolderLabel: message.folderLabel,
+                              ));
+                              _enqueueGmailUpdate('moveToInbox', message.id);
+                            },
+                            onRestore: () async {
+                              // Optimistic: remove from current view immediately; background restore will adjust
+                              ref
+                                  .read(emailListProvider.notifier)
+                                  .removeMessage(message.id);
+                              unawaited(() async {
+                                await MessageRepository()
+                                    .restoreToPrev(message.id);
+                                if (_selectedAccountId != null) {
+                                  final updated = await MessageRepository()
+                                      .getByIds(
+                                          _selectedAccountId!, [message.id]);
+                                  final restored = updated[message.id];
+                                  if (restored != null) {
+                                    final dest = restored.folderLabel;
+                                    if (_selectedFolder == dest) {
+                                      ref
+                                          .read(emailListProvider.notifier)
+                                          .setFolder(message.id, dest);
+                                    }
+                                    _enqueueGmailUpdate(
+                                        'restore:${dest.toUpperCase()}',
+                                        message.id);
+                                  }
+                                }
+                              }());
+                            },
+                            onActionUpdated: (date, text,
+                                {bool? actionComplete}) async {
+                              // Capture original detected action for feedback
+                              final originalAction = message.hasAction
+                                  ? ActionResult(
+                                      actionDate:
+                                          message.actionDate ?? DateTime.now(),
+                                      confidence:
+                                          message.actionConfidence ?? 0.0,
+                                      insightText:
+                                          message.actionInsightText ?? '',
+                                    )
+                                  : null;
+
+                              await MessageRepository().updateAction(
+                                  message.id, date, text, null, actionComplete);
+                              ref.read(emailListProvider.notifier).setAction(
+                                  message.id, date, text,
+                                  actionComplete: actionComplete);
+                              final hasActionNow = date != null ||
+                                  (text != null && text.isNotEmpty);
+
+                              // Record feedback for ML training
+                              final userAction = date != null || text != null
+                                  ? ActionResult(
+                                      actionDate: date ?? DateTime.now(),
+                                      confidence:
+                                          1.0, // User-provided actions have max confidence
+                                      insightText: text ?? '',
+                                    )
+                                  : null;
+
+                              // Determine feedback type
+                              final feedbackType = _determineFeedbackType(
+                                  originalAction, userAction);
+
+                              if (feedbackType != null) {
+                                await MLActionExtractor.recordFeedback(
+                                  messageId: message.id,
+                                  subject: message.subject,
+                                  snippet: message.snippet ?? '',
+                                  detectedResult: originalAction,
+                                  userCorrectedResult: userAction,
+                                  feedbackType: feedbackType,
+                                );
+                              }
+
+                              // Sync to Firebase if enabled (only if changed from initial value)
+                              final syncEnabled =
+                                  await _firebaseSync.isSyncEnabled();
+                              if (syncEnabled) {
+                                // Get current message to check if action actually changed
+                                final currentDate = message.actionDate;
+                                final currentText = message.actionInsightText;
+                                final currentComplete = message.actionComplete;
+                                if (currentDate != date ||
+                                    currentText != text ||
+                                    currentComplete != actionComplete ||
+                                    !hasActionNow) {
+                                  await _firebaseSync.syncEmailMeta(
+                                    message.id,
+                                    actionDate: hasActionNow ? date : null,
+                                    actionInsightText:
+                                        hasActionNow ? text : null,
+                                    actionComplete:
+                                        hasActionNow ? actionComplete : null,
+                                    clearAction: !hasActionNow,
+                                  );
+                                }
+                              }
+                            },
+                            onActionCompleted: () async {
+                              await MessageRepository()
+                                  .updateAction(message.id, null, null);
+                              ref
+                                  .read(emailListProvider.notifier)
+                                  .setAction(message.id, null, null);
+                            },
                           );
                         },
                       ),
@@ -3270,7 +4057,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ElevatedButton(
               onPressed: () {
                 if (_selectedAccountId != null) {
-                  ref.read(emailListProvider.notifier).refresh(_selectedAccountId!);
+                  ref
+                      .read(emailListProvider.notifier)
+                      .refresh(_selectedAccountId!);
                 }
               },
               child: const Text('Retry'),
@@ -3291,23 +4080,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Mark all currently visible unread emails as read
   Future<void> _markAllUnreadAsRead(List<String> messageIds) async {
-    if (messageIds.isEmpty || _selectedAccountId == null || _isLocalFolder) return;
-    
+    if (messageIds.isEmpty || _selectedAccountId == null || _isLocalFolder) {
+      return;
+    }
+
     try {
       // Batch update in database
       await MessageRepository().batchUpdateRead(messageIds, true);
-      
+
       // Update UI state for all messages
       for (final messageId in messageIds) {
         ref.read(emailListProvider.notifier).setRead(messageId, true);
         // Enqueue Gmail API update
         _enqueueGmailUpdate('markRead', messageId);
       }
-      
+
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Marked ${messageIds.length} email${messageIds.length == 1 ? '' : 's'} as read'),
+            content: Text(
+                'Marked ${messageIds.length} email${messageIds.length == 1 ? '' : 's'} as read'),
             duration: const Duration(seconds: 2),
           ),
         );
@@ -3330,7 +4122,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     });
   }
 
-    /// Refresh unread counts for all accounts
+  /// Refresh unread counts for all accounts
   /// Active account: uses local data only (no API calls) - but switching happens AFTER incremental sync
   /// Inactive accounts: uses local data first, then refreshes from API in background
   Future<void> _refreshAccountUnreadCounts() async {
@@ -3340,7 +4132,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final localCounts = <String, int>{};
     for (final account in _accounts) {
       try {
-        final localCount = await MessageRepository().getUnreadCountByFolder(account.id, 'INBOX');
+        final localCount = await MessageRepository()
+            .getUnreadCountByFolder(account.id, 'INBOX');
         localCounts[account.id] = localCount;
       } catch (_) {
         localCounts[account.id] = 0;
@@ -3373,7 +4166,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (account.id == _selectedAccountId) {
         continue;
       }
-      
+
       // Fire off background refresh for inactive accounts (non-blocking)
       unawaited(() async {
         try {
@@ -3396,7 +4189,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Future<void> _switchUnreadCountToLocal(String accountId) async {
     int? localCount;
     try {
-      localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      localCount =
+          await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
     } catch (_) {
       // Keep existing count if refresh fails
     }
@@ -3427,7 +4221,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return;
     }
     try {
-      final localCount = await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      final localCount =
+          await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
       if (mounted) {
         setState(() {
           _accountUnreadCounts[accountId] = localCount;
@@ -3452,18 +4247,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// Update app icon badge with total unread count across all accounts
+  /// TEMPORARILY DISABLED - re-enable by setting _badgeUpdatesEnabled = true
+  static const bool _badgeUpdatesEnabled = false; // Set to true to re-enable badge updates
+  
   Future<void> _updateAppIconBadge() async {
+    // TEMPORARILY DISABLED - return early if badge updates are disabled
+    if (!_badgeUpdatesEnabled) {
+      return;
+    }
     try {
       final totalUnread = _calculateTotalUnreadCount();
-      debugPrint('[Badge] Attempting to update badge. Platform: ${Platform.operatingSystem}, Total unread: $totalUnread, Account counts: $_accountUnreadCounts');
-      
+      debugPrint(
+          '[Badge] Attempting to update badge. Platform: ${Platform.operatingSystem}, Total unread: $totalUnread, Account counts: $_accountUnreadCounts');
+
       // Check if app badge is supported on this platform
       // ensemble_app_badger maintains the FlutterAppBadger class name for compatibility
       final isSupported = await FlutterAppBadger.isAppBadgeSupported();
       debugPrint('[Badge] Badge supported: $isSupported');
-      
+
       if (!isSupported) {
-        debugPrint('[Badge] App badge not supported on ${Platform.operatingSystem}. '
+        debugPrint(
+            '[Badge] App badge not supported on ${Platform.operatingSystem}. '
             'Badges are supported on iOS, macOS, and some Android devices/launchers (Samsung, HTC, etc.).');
         return;
       }
@@ -3471,7 +4275,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (totalUnread > 0) {
         // Update badge with total unread count
         await FlutterAppBadger.updateBadgeCount(totalUnread);
-        debugPrint('[Badge] Successfully updated app icon badge: $totalUnread unread messages');
+        debugPrint(
+            '[Badge] Successfully updated app icon badge: $totalUnread unread messages');
       } else {
         // Remove badge if no unread messages
         await FlutterAppBadger.removeBadge();
@@ -3486,13 +4291,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// Get unread count for an account using Gmail API /users/me/labels/INBOX endpoint
   Future<int> _getGmailUnreadCount(String accountId) async {
-    final authAccount = await GoogleAuthService().ensureValidAccessToken(accountId);
+    final authAccount =
+        await GoogleAuthService().ensureValidAccessToken(accountId);
     if (authAccount == null || authAccount.accessToken.isEmpty) {
       // Fallback to local DB if no token
-      return await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      return await MessageRepository()
+          .getUnreadCountByFolder(accountId, 'INBOX');
     }
 
-    final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX');
+    final uri = Uri.parse(
+        'https://gmail.googleapis.com/gmail/v1/users/me/labels/INBOX');
     final response = await http.get(
       uri,
       headers: {'Authorization': 'Bearer ${authAccount.accessToken}'},
@@ -3503,16 +4311,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       return data['messagesUnread'] as int? ?? 0;
     } else {
       // Fallback to local DB on API error
-      return await MessageRepository().getUnreadCountByFolder(accountId, 'INBOX');
+      return await MessageRepository()
+          .getUnreadCountByFolder(accountId, 'INBOX');
     }
   }
 
-  @override
-  void dispose() {
-    _unreadCountRefreshTimer?.cancel();
-    _searchController.dispose();
-    super.dispose();
-  }
 
   List<String> _activeFilterLabels() {
     final labels = <String>[];
@@ -3590,7 +4393,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               children: labels
                   .map(
                     (label) => Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
                         color: textColor.withValues(alpha: 0.15),
                         borderRadius: BorderRadius.circular(999),
@@ -3652,53 +4456,51 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
       case 'Refresh':
         if (_selectedAccountId != null) {
-          // Check if account needs re-authentication before refreshing
-          final auth = GoogleAuthService();
-          final account = await auth.ensureValidAccessToken(_selectedAccountId!);
-          if (account == null || account.accessToken.isEmpty) {
-            // Show re-auth prompt
-            final accountInfo = _accounts.firstWhere(
-              (acc) => acc.id == _selectedAccountId,
-              orElse: () => GoogleAccount(
-                id: _selectedAccountId!,
-                email: 'Unknown',
-                displayName: '',
-                photoUrl: null,
-                accessToken: '',
-                refreshToken: null,
-                tokenExpiryMs: null,
-                idToken: '',
-              ),
-            );
-            if (!mounted) return;
-            final shouldReauth = await ReauthPromptDialog.show(
-              context: context,
-              accountId: _selectedAccountId!,
-              accountEmail: accountInfo.email,
-            );
-            if (!mounted) return;
-            if (shouldReauth) {
-              // Attempt re-authentication
-              final reauthAccount = await auth.reauthenticateAccount(_selectedAccountId!);
-              if (!mounted) return;
-              if (reauthAccount != null && reauthAccount.accessToken.isNotEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Re-authentication successful')),
-                );
-                // Retry refresh after re-auth
-                ref.read(emailListProvider.notifier)
-                    .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Re-authentication failed or cancelled')),
+          final accountInfo = _accounts.firstWhere(
+            (acc) => acc.id == _selectedAccountId,
+            orElse: () => GoogleAccount(
+              id: _selectedAccountId!,
+              email: 'Unknown',
+              displayName: '',
+              photoUrl: null,
+              accessToken: '',
+              refreshToken: null,
+              tokenExpiryMs: null,
+              idToken: '',
+            ),
+          );
+          final authenticated = await _ensureAccountAuthenticated(
+            _selectedAccountId!,
+            accountEmail: accountInfo.email,
+          );
+          if (!authenticated) {
+            // Check if it's a network error
+            final auth = GoogleAuthService();
+            final isNetworkError = auth.isLastErrorNetworkError(_selectedAccountId!) == true;
+            if (isNetworkError) {
+              // Show network error dialog
+              if (mounted) {
+                showDialog(
+                  context: context,
+                  barrierDismissible: true,
+                  builder: (ctx) => AlertDialog(
+                    title: const Text('Network Issue'),
+                    content: const Text('There\'s a network issue. Please try again later.'),
+                    actions: [
+                      FilledButton(
+                        onPressed: () => Navigator.of(ctx).pop(),
+                        child: const Text('OK'),
+                      ),
+                    ],
+                  ),
                 );
               }
             }
-          } else {
-            // Account is valid, proceed with refresh
-            ref.read(emailListProvider.notifier)
-                .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
+            break;
           }
+          ref
+              .read(emailListProvider.notifier)
+              .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
         }
         break;
 
@@ -3751,7 +4553,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             Icon(Icons.edit_outlined, size: 18, color: cs.onSurface),
             const SizedBox(width: 12),
-            Text('Compose', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+            Text('Compose',
+                style: TextStyle(color: cs.onSurface, fontSize: 13)),
           ],
         ),
       ),
@@ -3761,7 +4564,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             Icon(Icons.refresh, size: 18, color: cs.onSurface),
             const SizedBox(width: 12),
-            Text('Refresh', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+            Text('Refresh',
+                style: TextStyle(color: cs.onSurface, fontSize: 13)),
           ],
         ),
       ),
@@ -3771,7 +4575,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             Icon(Icons.settings_outlined, size: 18, color: cs.onSurface),
             const SizedBox(width: 12),
-            Text('Settings', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+            Text('Settings',
+                style: TextStyle(color: cs.onSurface, fontSize: 13)),
           ],
         ),
       ),
@@ -3782,7 +4587,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           children: [
             Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
             const SizedBox(width: 12),
-            Text('Actions', style: TextStyle(color: cs.onSurface, fontSize: 13)),
+            Text('Actions',
+                style: TextStyle(color: cs.onSurface, fontSize: 13)),
           ],
         ),
       ),
@@ -3792,8 +4598,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     items.addAll(
       AppConstants.allFunctionWindows
           .where((window) =>
-      window != AppConstants.windowActions &&
-          window != AppConstants.windowActionsSummary)
+              window != AppConstants.windowActions &&
+              window != AppConstants.windowActionsSummary)
           .map((window) {
         IconData icon;
 
@@ -3817,8 +4623,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             children: [
               Icon(icon, size: 18, color: cs.onSurface),
               const SizedBox(width: 12),
-              Text(window,
-                  style: TextStyle(color: cs.onSurface, fontSize: 13)),
+              Text(window, style: TextStyle(color: cs.onSurface, fontSize: 13)),
             ],
           ),
         );
@@ -3828,4 +4633,3 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return items;
   }
 }
-

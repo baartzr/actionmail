@@ -27,6 +27,8 @@ class GoogleAuthService {
   final Map<String, Future<GoogleAccount?>> _refreshTokenCache = {};
   // Prevent parallel/duplicate interactive sign-ins
   Future<GoogleAccount?>? _signInInProgress;
+  // Track last error type per account (true = network error, false = auth error, null = no error)
+  final Map<String, bool?> _lastErrorType = {};
 
   Future<List<GoogleAccount>> loadAccounts() async {
     final prefs = await SharedPreferences.getInstance();
@@ -54,10 +56,14 @@ class GoogleAuthService {
       );
       list[idx] = updated;
       await saveAccounts(list);
+      // Clear token check cache since tokens were updated
+      clearTokenCheckCache(updated.id);
       return updated;
     } else {
       final updated = account;
       await saveAccounts([...list, updated]);
+      // Clear token check cache for new account
+      clearTokenCheckCache(updated.id);
       return updated;
     }
   }
@@ -491,6 +497,15 @@ class GoogleAuthService {
     return filtered.length != list.length;
   }
 
+  /// Clear the token check cache for a specific account.
+  /// Call this when tokens are updated to ensure the next ensureValidAccessToken
+  /// call validates the new tokens instead of returning cached invalid ones.
+  void clearTokenCheckCache(String accountId) {
+    _tokenCheckCache.remove(accountId);
+    // ignore: avoid_print
+    print('[auth] cleared token check cache for account=$accountId');
+  }
+
   /// Ensure the account has a valid (non-expired) access token.
   /// If near expiry or invalid per tokeninfo, refresh using refresh_token.
   /// Uses a cache to prevent duplicate simultaneous calls for the same account.
@@ -518,7 +533,7 @@ class GoogleAuthService {
     final isNearExpiry = (account.tokenExpiryMs != null) && (account.tokenExpiryMs! <= nowMs + 60000);
     bool valid = false;
     if (!isNearExpiry && account.accessToken.isNotEmpty) {
-      valid = await _isAccessTokenValid(account.accessToken);
+      valid = await _isAccessTokenValid(account.accessToken, accountId);
     }
     // Debug current token state
     final remainingMs = account.tokenExpiryMs != null ? (account.tokenExpiryMs! - nowMs) : null;
@@ -530,7 +545,7 @@ class GoogleAuthService {
         // ignore: avoid_print
         print('[auth] no refreshToken available, account needs re-authentication account=$accountId');
         // Return null to indicate authentication is required
-        // The caller should handle this by prompting for re-authentication
+        // Caller is responsible for showing dialog (only during incremental sync for active account)
         return null;
       }
       
@@ -540,23 +555,52 @@ class GoogleAuthService {
         final rem2 = account.tokenExpiryMs != null ? (account.tokenExpiryMs! - DateTime.now().millisecondsSinceEpoch) : null;
         // ignore: avoid_print
         print('[auth] refreshed access token account=$accountId ok remainingMs=${rem2 ?? -1}');
+        // Clear network error on successful refresh
+        _lastErrorType[accountId] = null;
       } else {
         // ignore: avoid_print
-        print('[auth] refresh failed account=$accountId - token refresh request failed');
-        // Refresh failed - return null to indicate re-authentication needed
+        print('[auth] refresh failed account=$accountId - token refresh request failed, lastErrorType=${_lastErrorType[accountId]}');
+        // Return null to indicate re-authentication needed
+        // Caller is responsible for showing dialog (only during incremental sync for active account)
+        // Note: _lastErrorType is already set by refreshAccessToken, so we preserve it here
         return null;
+      }
+    }
+    // Clear error on successful token validation (no refresh needed)
+    // But don't clear if we just had a network error during refresh
+    if (account.accessToken.isNotEmpty) {
+      // Only clear if there wasn't a network error
+      if (_lastErrorType[accountId] != true) {
+        _lastErrorType[accountId] = null;
       }
     }
     return account;
   }
 
-  Future<bool> _isAccessTokenValid(String accessToken) async {
+  Future<bool> _isAccessTokenValid(String accessToken, String accountId) async {
     try {
       final resp = await http.get(
         Uri.parse('https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=$accessToken'),
       );
       return resp.statusCode == 200;
-    } catch (_) {
+    } catch (e) {
+      // Track network errors for this account
+      // Note: http package throws ClientException for network errors, which may wrap SocketException
+      final errorString = e.toString();
+      final isNetworkError = e is SocketException || 
+                            e is TimeoutException || 
+                            e is HttpException ||
+                            errorString.contains('ClientException') ||
+                            errorString.contains('Failed host lookup') ||
+                            errorString.contains('No such host is known') ||
+                            errorString.contains('Connection refused') ||
+                            errorString.contains('Connection timed out') ||
+                            errorString.contains('Network is unreachable');
+      if (isNetworkError) {
+        _lastErrorType[accountId] = true;
+        // ignore: avoid_print
+        print('[auth] _isAccessTokenValid: detected network error, setting _lastErrorType[$accountId]=true');
+      }
       return false;
     }
   }
@@ -565,6 +609,51 @@ class GoogleAuthService {
   Future<GoogleAccount?> reauthenticateAccount(String accountId) async {
     // ignore: avoid_print
     print('[auth] reauthenticateAccount called for account=$accountId');
+    
+    // Android: Use same browser + App Links flow as initial sign-in
+    if (Platform.isAndroid) {
+      try {
+        final redirectUri = AppConstants.oauthRedirectUriForMobile;
+        final verifier = _randomString(64);
+        final challenge = _codeChallenge(verifier);
+        
+        final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+          'client_id': OAuthConfig.clientId,
+          'redirect_uri': redirectUri,
+          'response_type': 'code',
+          'scope': AppConstants.oauthScopes.join(' '),
+          'prompt': 'consent',
+          'access_type': 'offline',
+          'include_granted_scopes': 'true',
+          'code_challenge': challenge,
+          'code_challenge_method': 'S256',
+        });
+        
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: Android - storing OAuth state and launching browser...');
+        
+        // Store OAuth state with accountId marker for re-auth
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('oauth_pkce_verifier', verifier);
+        await prefs.setString('oauth_redirect_uri', redirectUri);
+        await prefs.setString('oauth_client_id', OAuthConfig.clientId);
+        await prefs.setString('oauth_client_secret', OAuthConfig.clientSecret);
+        await prefs.setString('oauth_reauth_account_id', accountId); // Mark as re-auth
+        
+        // Launch browser - app will restart when Google redirects
+        final launched = await launchUrl(authUrl, mode: LaunchMode.externalApplication);
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: Android - browser launched: $launched');
+        
+        // Return null - splash screen will detect App Link on restart and complete re-auth
+        return null;
+      } catch (e) {
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: Android exception=$e');
+        return null;
+      }
+    }
+    
     // Desktop flow similar to signIn, but force consent to obtain refresh_token
     if (Platform.isWindows || Platform.isLinux) {
       try {
@@ -650,6 +739,8 @@ class GoogleAuthService {
         );
         list[idx] = updated;
         await saveAccounts(list);
+        // Clear token check cache since tokens were updated
+        clearTokenCheckCache(accountId);
         // ignore: avoid_print
         print('[auth] reauthenticateAccount: success, tokens updated for account=$accountId');
         return updated;
@@ -659,44 +750,102 @@ class GoogleAuthService {
         return null;
       }
     }
-    // Mobile/appauth: force consent to ensure refresh_token
-    try {
-      final appAuth = const FlutterAppAuth();
-      // Use mobile-specific redirect URI for Android/iOS
-      final redirectUri = Platform.isAndroid || Platform.isIOS 
-          ? AppConstants.oauthRedirectUriForMobile
-          : AppConstants.oauthRedirectUri;
-      final result = await appAuth.authorizeAndExchangeCode(
-        AuthorizationTokenRequest(
-          OAuthConfig.clientId,
-          redirectUri,
-          scopes: AppConstants.oauthScopes,
-          serviceConfiguration: const AuthorizationServiceConfiguration(
-            authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
-            tokenEndpoint: 'https://oauth2.googleapis.com/token',
-          ),
-          promptValues: ['consent', 'select_account'],
-          additionalParameters: {
-            'access_type': 'offline',
-            'include_granted_scopes': 'true',
+    
+    // iOS: Use flutter_web_auth_2 (similar to initial sign-in)
+    if (Platform.isIOS) {
+      try {
+        final redirectUri = AppConstants.oauthRedirectUriForMobile;
+        final callbackUrlScheme = redirectUri.split(':/').first;
+        
+        final authUrl = Uri.https('accounts.google.com', '/o/oauth2/v2/auth', {
+          'client_id': OAuthConfig.clientId,
+          'redirect_uri': redirectUri,
+          'response_type': 'code',
+          'scope': AppConstants.oauthScopes.join(' '),
+          'prompt': 'consent',
+          'access_type': 'offline',
+          'include_granted_scopes': 'true',
+        });
+        
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: iOS - launching browser...');
+        final callbackUrl = await FlutterWebAuth2.authenticate(
+          url: authUrl.toString(),
+          callbackUrlScheme: callbackUrlScheme,
+        );
+        
+        final callbackUri = Uri.parse(callbackUrl);
+        final code = callbackUri.queryParameters['code'];
+        if (code == null) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: iOS - no code received');
+          return null;
+        }
+        
+        // Exchange code for tokens
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: iOS - exchanging code for tokens...');
+        final resp = await http.post(
+          Uri.parse('https://oauth2.googleapis.com/token'),
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: {
+            'client_id': OAuthConfig.clientId,
+            'redirect_uri': redirectUri,
+            'grant_type': 'authorization_code',
+            'code': code,
+            'client_secret': OAuthConfig.clientSecret,
           },
-        ),
-      );
-      if (result == null) return null;
-      final list = await loadAccounts();
-      final idx = list.indexWhere((a) => a.id == accountId);
-      if (idx == -1) return null;
-      final updated = list[idx].copyWith(
-        accessToken: result.accessToken ?? list[idx].accessToken,
-        refreshToken: result.refreshToken ?? list[idx].refreshToken,
-        tokenExpiryMs: result.accessTokenExpirationDateTime?.millisecondsSinceEpoch ?? list[idx].tokenExpiryMs,
-      );
-      list[idx] = updated;
-      await saveAccounts(list);
-      return updated;
-    } catch (_) {
-      return null;
+        );
+        
+        if (resp.statusCode != 200) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: iOS - token exchange failed status=${resp.statusCode} body=${resp.body}');
+          return null;
+        }
+        
+        final tok = jsonDecode(resp.body) as Map<String, dynamic>;
+        final accessToken = tok['access_token'] as String? ?? '';
+        final refreshToken = tok['refresh_token'] as String?;
+        final expiresIn = (tok['expires_in'] as num?)?.toInt();
+        
+        if (accessToken.isEmpty) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: iOS - empty access token');
+          return null;
+        }
+        
+        // Update existing account
+        final list = await loadAccounts();
+        final idx = list.indexWhere((a) => a.id == accountId);
+        if (idx == -1) {
+          // ignore: avoid_print
+          print('[auth] reauthenticateAccount: iOS - account not found accountId=$accountId');
+          return null;
+        }
+        
+        final updated = list[idx].copyWith(
+          accessToken: accessToken,
+          refreshToken: refreshToken ?? list[idx].refreshToken,
+          tokenExpiryMs: expiresIn != null ? DateTime.now().add(Duration(seconds: expiresIn)).millisecondsSinceEpoch : list[idx].tokenExpiryMs,
+        );
+        list[idx] = updated;
+        await saveAccounts(list);
+        // Clear token check cache since tokens were updated
+        clearTokenCheckCache(accountId);
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: iOS - success, tokens updated for account=$accountId');
+        return updated;
+      } catch (e) {
+        // ignore: avoid_print
+        print('[auth] reauthenticateAccount: iOS exception=$e');
+        return null;
+      }
     }
+    
+    // Fallback: return null if platform not handled
+    // ignore: avoid_print
+    print('[auth] reauthenticateAccount: unsupported platform');
+    return null;
   }
 
   /// Complete OAuth flow by exchanging code for tokens and fetching user info
@@ -733,6 +882,10 @@ class GoogleAuthService {
     final refreshToken = tok['refresh_token'] as String?;
     final expiresIn = (tok['expires_in'] as num?)?.toInt();
     final idToken = tok['id_token'] as String? ?? '';
+    
+    // Debug: Log received tokens
+    // ignore: avoid_print
+    print('[auth] completeOAuthFlow: received tokens - accessToken=${accessToken.isNotEmpty ? '${accessToken.substring(0, 20)}...' : 'EMPTY'} refreshToken=${refreshToken != null && refreshToken.isNotEmpty ? '${refreshToken.substring(0, 20)}...' : 'null/empty'} expiresIn=$expiresIn');
     
     // Fetch user info
     String displayName = 'Google Account';
@@ -781,7 +934,10 @@ class GoogleAuthService {
 
   Future<GoogleAccount?> _performTokenRefresh(String accountId) async {
     final account = await getAccountById(accountId);
-    if (account == null || account.refreshToken == null || account.refreshToken!.isEmpty) return null;
+    if (account == null || account.refreshToken == null || account.refreshToken!.isEmpty) {
+      _lastErrorType[accountId] = false; // Auth error - no refresh token
+      return null;
+    }
     try {
       final resp = await http.post(
         Uri.parse('https://oauth2.googleapis.com/token'),
@@ -822,6 +978,7 @@ class GoogleAuthService {
           // If we can't parse the error, just continue
         }
         
+        _lastErrorType[accountId] = false; // Auth error - invalid token
         return null;
       }
       final tok = jsonDecode(resp.body) as Map<String, dynamic>;
@@ -830,6 +987,7 @@ class GoogleAuthService {
       if (accessToken == null || accessToken.isEmpty) {
         // ignore: avoid_print
         print('[auth] refresh token response missing access_token: $tok');
+        _lastErrorType[accountId] = false; // Auth error - missing token in response
         return null;
       }
       final updated = account.copyWith(
@@ -842,14 +1000,47 @@ class GoogleAuthService {
         list[idx] = updated;
         await saveAccounts(list);
       }
+      _lastErrorType[accountId] = null; // Clear error on success
       return updated;
     } catch (e) {
       // Handle network errors (DNS failures, connection timeouts, etc.)
       // ignore: avoid_print
       print('[auth] refresh token network error: $e');
+      // Check if it's a network error
+      // Note: http package throws ClientException for network errors, which may wrap SocketException
+      // Check the error type and string representation
+      final errorString = e.toString();
+      final isNetworkError = e is SocketException || 
+                            e is TimeoutException || 
+                            e is HttpException ||
+                            errorString.contains('ClientException') ||
+                            errorString.contains('Failed host lookup') ||
+                            errorString.contains('No such host is known') ||
+                            errorString.contains('Connection refused') ||
+                            errorString.contains('Connection timed out') ||
+                            errorString.contains('Network is unreachable');
+      if (isNetworkError) {
+        _lastErrorType[accountId] = true; // Network error
+        // ignore: avoid_print
+        print('[auth] refresh token: detected network error, setting _lastErrorType[$accountId]=true');
+      } else {
+        _lastErrorType[accountId] = false; // Auth error
+        // ignore: avoid_print
+        print('[auth] refresh token: detected auth error, setting _lastErrorType[$accountId]=false');
+      }
       // Return null to indicate refresh failed - caller should handle re-authentication
       return null;
     }
+  }
+
+  /// Check if the last token refresh failure for an account was due to a network error
+  bool? isLastErrorNetworkError(String accountId) {
+    return _lastErrorType[accountId];
+  }
+
+  /// Clear the last error type for an account (e.g., after successful re-auth)
+  void clearLastError(String accountId) {
+    _lastErrorType.remove(accountId);
   }
 }
 

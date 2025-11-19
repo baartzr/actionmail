@@ -425,10 +425,15 @@ class GmailSyncService {
     var account = await auth.ensureValidAccessToken(accountId);
     var accessToken = account?.accessToken;
     
-    // If token check failed, skip sync (don't attempt re-auth during background sync)
-    // Re-authentication requires user interaction and should be done manually via Accounts menu
+    // If token check failed, check if it's a network error
     if (accessToken == null || accessToken.isEmpty) {
-      debugPrint('[Gmail] incrementalSync: no access token, skipping sync account=$accountId (account needs re-authentication)');
+      final isNetworkError = auth.isLastErrorNetworkError(accountId) == true;
+      if (isNetworkError) {
+        // ignore: avoid_print
+        print('[Gmail] incrementalSync: network error detected, will be handled by caller');
+      } else {
+        debugPrint('[Gmail] incrementalSync: no access token, skipping sync account=$accountId (account needs re-authentication)');
+      }
       return [];
     }
     final lastHistoryId = await _repo.getLastHistoryId(accountId);
@@ -587,12 +592,12 @@ class GmailSyncService {
       var account = await auth.ensureValidAccessToken(accountId);
       var accessToken = account?.accessToken;
       
-      // If token check failed, attempt re-auth once
+      // If token check failed, don't attempt re-auth here - let the sync layer handle it
+      // processPendingOps is called from sync operations which will set authFailureProvider
       if (accessToken == null || accessToken.isEmpty) {
         // ignore: avoid_print
-        print('[gmail] attempting reauth for account=$accountId');
-        account = await auth.reauthenticateAccount(accountId) ?? account;
-        accessToken = account?.accessToken;
+        print('[gmail] processPendingOps: token check failed for account=$accountId, skipping batch (sync layer will handle auth failure)');
+        continue; // Skip this account's batch, sync layer will trigger dialog
       }
 
       // Process all operations for this account using the same token
