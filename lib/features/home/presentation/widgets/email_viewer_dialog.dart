@@ -2174,7 +2174,6 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                           )
                                         : const Icon(Icons.send, size: 18, color: Colors.grey))
                                     : const Icon(Icons.send, size: 18),
-                                focusNode: FocusNode(skipTraversal: true), // Prevent button from getting focus
                                 label: Text(_isSendingInlineReply ? 'Sending...' : 'Send'),
                                 style: TextButton.styleFrom(
                                   foregroundColor: textColor,

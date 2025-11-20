@@ -1,3 +1,4 @@
+import 'package:domail/constants/app_constants.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:domail/data/models/message_index.dart';
@@ -428,7 +429,7 @@ class _GridEmailListState extends State<GridEmailList> {
                 _buildFilterChipIconOnly(
                   context,
                   Icons.today,
-                  'Today',
+                  AppConstants.filterToday,
                   'action_today',
                   widget.activeFilters.contains('action_today'),
                   Colors.cyan,
@@ -436,7 +437,7 @@ class _GridEmailListState extends State<GridEmailList> {
                 _buildFilterChipIconOnly(
                   context,
                   Icons.schedule,
-                  'Upcoming',
+                  AppConstants.filterUpcoming,
                   'action_upcoming',
                   widget.activeFilters.contains('action_upcoming'),
                   Colors.indigo,
@@ -444,7 +445,7 @@ class _GridEmailListState extends State<GridEmailList> {
                 _buildFilterChipIconOnly(
                   context,
                   Icons.warning,
-                  'Overdue',
+                  AppConstants.filterOverdue,
                   'action_overdue',
                   widget.activeFilters.contains('action_overdue'),
                   Colors.red,
@@ -452,7 +453,7 @@ class _GridEmailListState extends State<GridEmailList> {
                 _buildFilterChipIconOnly(
                   context,
                   Icons.help_outline,
-                  'Possible',
+                  AppConstants.filterPossible,
                   'action_possible',
                   widget.activeFilters.contains('action_possible'),
                   Colors.deepPurple,
@@ -757,12 +758,17 @@ class _GridEmailListState extends State<GridEmailList> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        // Detect small screen for compact layout
+        final isSmallScreen = MediaQuery.of(context).size.width < 1200;
+        
         // Calculate column widths - use fixed widths for better control
-        final checkboxWidth = 50.0;
-        final dateWidth = 100.0;
+        final checkboxWidth = 30.0;
+        final dateWidth = 70.0;
         final senderWidth = 200.0;
         final actionDetailsWidth = 250.0;
-        final statusWidth = 170.0; // Width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
+        // Adjust status width for small screens (smaller buttons = less space needed)
+        // Personal/Business buttons (~50px) + 4 icon buttons (20px each) + spacing (2px * 5) ≈ 150px for small, 170px for normal
+        final statusWidth = isSmallScreen ? 150.0 : 170.0; // Width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
         // Subject & Snippet - minimum width, but can expand
         final subjectMinWidth = 300.0;
         final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth + statusWidth;
@@ -785,11 +791,20 @@ class _GridEmailListState extends State<GridEmailList> {
             ? availableForSubject 
             : subjectMinWidth;
         
+        // Calculate actual table width from all column widths to ensure proper scrolling
+        // This must match the sum of all column widths exactly
+        final actualTableWidth = checkboxWidth + 
+            dateWidth + 
+            senderWidth + 
+            subjectWidth + 
+            actionDetailsWidth + 
+            statusWidth;
+        
         // Final table width - ensure it's always at least totalMinWidth for proper scrolling
-        // If available width is smaller, use minimum width to enable scrolling
+        // When screen is small, use actual table width (which is at least totalMinWidth) to enable full scrolling
         final finalTableWidth = availableWidth >= totalMinWidth 
-            ? availableWidth 
-            : minTableWidth;
+            ? actualTableWidth  // Use actual table width when screen is large (may expand with subject)
+            : actualTableWidth; // Use actual table width when screen is small (ensures full scroll extent)
         
         return Padding(
           padding: const EdgeInsets.only(bottom: 8.0), // Add padding at bottom for scrollbar
@@ -801,13 +816,13 @@ class _GridEmailListState extends State<GridEmailList> {
             child: SingleChildScrollView(
               controller: _horizontalScrollController,
               scrollDirection: Axis.horizontal,
-              physics: const ClampingScrollPhysics(),
+              physics: const AlwaysScrollableScrollPhysics(), // Always allow scrolling even when content is slightly wider
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  minWidth: totalMinWidth,
+                  minWidth: actualTableWidth, // Ensure minimum width matches actual table width
                 ),
                 child: SizedBox(
-                  width: finalTableWidth < totalMinWidth ? totalMinWidth : finalTableWidth,
+                  width: actualTableWidth, // Use actual table width to ensure proper scroll extent
                   child: SingleChildScrollView(
                     scrollDirection: Axis.vertical,
                     child: Table(
@@ -1012,7 +1027,7 @@ class _GridEmailListState extends State<GridEmailList> {
                   border: Border.all(
                     color: isSelected
                         ? theme.colorScheme.primary
-                        : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.6),
+                        : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.2),
                     width: isSelected ? 0 : 2.0, // Border width when unselected
                   ),
                   color: isSelected
@@ -1516,6 +1531,13 @@ class _GridEmailListState extends State<GridEmailList> {
     final isPersonal = email.localTagPersonal == 'Personal';
     final isBusiness = email.localTagPersonal == 'Business';
     final config = _getStatusButtonConfig(widget.selectedFolder);
+    final isSmallScreen = MediaQuery.of(context).size.width < 1200;
+    final buttonPadding = isSmallScreen ? 1.0 : 2.0;
+    final buttonConstraints = isSmallScreen 
+        ? const BoxConstraints(minWidth: 20, minHeight: 20)
+        : const BoxConstraints(minWidth: 24, minHeight: 24);
+    final iconSize = isSmallScreen ? 14.0 : 16.0;
+    final spacing = isSmallScreen ? 2.0 : 2.0; // Consistent spacing
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -1722,7 +1744,7 @@ class _GridEmailListState extends State<GridEmailList> {
               ],
             ),
           ),
-        const SizedBox(width: 4),
+        SizedBox(width: spacing),
         
         // Star toggle
         Tooltip(
@@ -1730,17 +1752,17 @@ class _GridEmailListState extends State<GridEmailList> {
           child: IconButton(
             icon: Icon(
               email.isStarred ? Icons.star : Icons.star_border,
-              size: 16,
+              size: iconSize,
               color: email.isStarred
                   ? Colors.amber.shade700
                   : theme.colorScheme.onSurfaceVariant.withValues(alpha: config.showStar ? 1.0 : 0.3),
             ),
             onPressed: config.showStar ? () => widget.onStarToggle?.call(email) : null,
-            padding: const EdgeInsets.all(2),
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            padding: EdgeInsets.all(buttonPadding),
+            constraints: buttonConstraints,
           ),
         ),
-        const SizedBox(width: 2),
+        SizedBox(width: spacing),
         
         // Move/Restore button
         Tooltip(
@@ -1748,7 +1770,7 @@ class _GridEmailListState extends State<GridEmailList> {
           child: IconButton(
             icon: Icon(
               Icons.folder_outlined,
-              size: 16,
+              size: iconSize,
               color: theme.colorScheme.primary.withValues(alpha: config.showMove ? 1.0 : 0.3),
             ),
             onPressed: config.showMove
@@ -1767,11 +1789,11 @@ class _GridEmailListState extends State<GridEmailList> {
                     }
                   }
                 : null,
-            padding: const EdgeInsets.all(2),
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            padding: EdgeInsets.all(buttonPadding),
+            constraints: buttonConstraints,
           ),
         ),
-        const SizedBox(width: 2),
+        SizedBox(width: spacing),
         
         // Archive
         Tooltip(
@@ -1779,15 +1801,15 @@ class _GridEmailListState extends State<GridEmailList> {
           child: IconButton(
             icon: Icon(
               Icons.archive_outlined,
-              size: 16,
+              size: iconSize,
               color: theme.colorScheme.onSurfaceVariant.withValues(alpha: config.showArchive ? 1.0 : 0.3),
             ),
             onPressed: config.showArchive ? () => widget.onArchive?.call(email) : null,
-            padding: const EdgeInsets.all(2),
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            padding: EdgeInsets.all(buttonPadding),
+            constraints: buttonConstraints,
           ),
         ),
-        const SizedBox(width: 2),
+        SizedBox(width: spacing),
         
         // Trash
         Tooltip(
@@ -1795,12 +1817,12 @@ class _GridEmailListState extends State<GridEmailList> {
           child: IconButton(
             icon: Icon(
               Icons.delete_outline,
-              size: 16,
+              size: iconSize,
               color: theme.colorScheme.error.withValues(alpha: config.showTrash ? 1.0 : 0.3),
             ),
             onPressed: config.showTrash ? () => widget.onTrash?.call(email) : null,
-            padding: const EdgeInsets.all(2),
-            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+            padding: EdgeInsets.all(buttonPadding),
+            constraints: buttonConstraints,
           ),
         ),
       ],

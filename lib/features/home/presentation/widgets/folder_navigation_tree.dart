@@ -46,49 +46,53 @@ class _FolderNavigationTreeState extends State<FolderNavigationTree> {
 
   Future<void> _createNewFolder() async {
     final controller = TextEditingController();
-    final messenger = ScaffoldMessenger.of(context);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Create New Folder'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Folder Name',
-            hintText: 'Enter folder name',
+    try {
+      final messenger = ScaffoldMessenger.of(context);
+      final result = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Create New Folder'),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Folder Name',
+              hintText: 'Enter folder name',
+            ),
+            onSubmitted: (value) => Navigator.of(ctx).pop(value),
           ),
-          onSubmitted: (value) => Navigator.of(ctx).pop(value),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
+              child: const Text('Create'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(controller.text.trim()),
-            child: const Text('Create'),
-          ),
-        ],
-      ),
-    );
+      );
 
-    if (result != null && result.isNotEmpty) {
-      final created = await _folderService.createFolder(result);
-      if (created) {
-        if (!context.mounted) return;
-        await _loadLocalFolders();
-        // Select the newly created folder
-        widget.onLocalFolderToggled(true);
-        widget.onFolderSelected(result);
-        messenger.showSnackBar(
-          SnackBar(content: Text('Folder "$result" created')),
-        );
-      } else if (context.mounted) {
-        messenger.showSnackBar(
-          const SnackBar(content: Text('Failed to create folder')),
-        );
+      if (result != null && result.isNotEmpty) {
+        final created = await _folderService.createFolder(result);
+        if (created) {
+          if (!context.mounted) return;
+          await _loadLocalFolders();
+          // Select the newly created folder
+          widget.onLocalFolderToggled(true);
+          widget.onFolderSelected(result);
+          messenger.showSnackBar(
+            SnackBar(content: Text('Folder "$result" created')),
+          );
+        } else if (context.mounted) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Failed to create folder')),
+          );
+        }
       }
+    } finally {
+      controller.dispose();
     }
   }
 

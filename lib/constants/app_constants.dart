@@ -91,7 +91,7 @@ class AppConstants {
   static const String filterToday = 'Today';
   static const String filterUpcoming = 'Upcoming';
   static const String filterOverdue = 'Overdue';
-  static const String filterPossible = 'Possible';
+  static const String filterPossible = 'Notes';
 
   // Action summary labels
   static const String actionSummaryToday = 'Today';

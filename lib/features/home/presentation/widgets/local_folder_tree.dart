@@ -71,64 +71,68 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
 
   Future<void> _renameFolder(String folderPath, String currentName) async {
     final controller = TextEditingController(text: currentName);
-    final messenger = ScaffoldMessenger.of(context);
-    final newName = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Rename Folder'),
-        content: TextField(
-          autofocus: true,
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: 'Folder name',
-            hintText: 'Enter new folder name',
-          ),
-          onSubmitted: (value) {
-            if (value.trim().isNotEmpty) {
-              Navigator.of(ctx).pop(value.trim());
-            }
-          },
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final value = controller.text.trim();
-              if (value.isNotEmpty) {
-                Navigator.of(ctx).pop(value);
+    try {
+      final messenger = ScaffoldMessenger.of(context);
+      final newName = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Rename Folder'),
+          content: TextField(
+            autofocus: true,
+            controller: controller,
+            decoration: const InputDecoration(
+              labelText: 'Folder name',
+              hintText: 'Enter new folder name',
+            ),
+            onSubmitted: (value) {
+              if (value.trim().isNotEmpty) {
+                Navigator.of(ctx).pop(value.trim());
               }
             },
-            child: const Text('Rename'),
           ),
-        ],
-      ),
-    );
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = controller.text.trim();
+                if (value.isNotEmpty) {
+                  Navigator.of(ctx).pop(value);
+                }
+              },
+              child: const Text('Rename'),
+            ),
+          ],
+        ),
+      );
 
-    if (newName != null && newName.isNotEmpty && newName != currentName) {
-      final renamed = await _folderService.renameFolder(folderPath, newName);
-      if (renamed) {
-        if (!context.mounted) return;
-        await _loadFolders();
-        // Select the renamed folder if it was selected
-        if (widget.selectedFolder == folderPath) {
-          // Calculate new path
-          final oldParent = folderPath.contains('/') 
-              ? folderPath.substring(0, folderPath.lastIndexOf('/'))
-              : '';
-          final newPath = oldParent.isEmpty ? newName : '$oldParent/$newName';
-          widget.onFolderSelected(newPath);
+      if (newName != null && newName.isNotEmpty && newName != currentName) {
+        final renamed = await _folderService.renameFolder(folderPath, newName);
+        if (renamed) {
+          if (!context.mounted) return;
+          await _loadFolders();
+          // Select the renamed folder if it was selected
+          if (widget.selectedFolder == folderPath) {
+            // Calculate new path
+            final oldParent = folderPath.contains('/') 
+                ? folderPath.substring(0, folderPath.lastIndexOf('/'))
+                : '';
+            final newPath = oldParent.isEmpty ? newName : '$oldParent/$newName';
+            widget.onFolderSelected(newPath);
+          }
+          messenger.showSnackBar(
+            SnackBar(content: Text('Folder renamed to "$newName"')),
+          );
+        } else if (context.mounted) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Failed to rename folder')),
+          );
         }
-        messenger.showSnackBar(
-          SnackBar(content: Text('Folder renamed to "$newName"')),
-        );
-      } else if (context.mounted) {
-        messenger.showSnackBar(
-          const SnackBar(content: Text('Failed to rename folder')),
-        );
       }
+    } finally {
+      controller.dispose();
     }
   }
 

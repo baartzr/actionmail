@@ -28,6 +28,13 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
   MessageIndex? _pendingTapMessage;
 
   @override
+  void dispose() {
+    _tapTimer?.cancel();
+    _tapTimer = null;
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final messagesAsync = ref.watch(emailListProvider);
     return AppWindowDialog(
