@@ -932,6 +932,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
       });
     });
+
+    // Listen for view mode changes and adjust panels accordingly
+    ref.listen<ViewMode>(viewModeProvider, (previous, next) {
+      if (!mounted) return;
+      // When switching to table view, collapse both panels
+      if (next == ViewMode.table && previous != ViewMode.table) {
+        setState(() {
+          _leftPanelCollapsed = true;
+          _rightPanelCollapsed = true;
+        });
+      }
+      // When switching to tile view, expand both panels
+      else if (next == ViewMode.tile && previous != ViewMode.tile) {
+        setState(() {
+          _leftPanelCollapsed = false;
+          _rightPanelCollapsed = false;
+        });
+      }
+    });
     
     // Initialize selected account from route args if provided (e.g., new account sign-in)
     if (!_initializedFromRoute) {
@@ -940,6 +959,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           args is String && args.isNotEmpty ? args : null;
 
       WidgetsBinding.instance.addPostFrameCallback((_) async {
+        // Check view mode on startup and set panel state accordingly
+        final viewMode = ref.read(viewModeProvider);
+        if (mounted) {
+          setState(() {
+            if (viewMode == ViewMode.table) {
+              // Collapse panels for table view
+              _leftPanelCollapsed = true;
+              _rightPanelCollapsed = true;
+            } else {
+              // Expand panels for tile view
+              _leftPanelCollapsed = false;
+              _rightPanelCollapsed = false;
+            }
+          });
+        }
+        
         await _loadAccounts();
 
         // If account ID was provided in route args (new sign-in), always use it and make it active
@@ -1412,13 +1447,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     if (!_isLocalFolder)
                       AppDropdown<String>(
                         value: _selectedFolder,
-                        items: const [
-                          'INBOX',
-                          'SENT',
-                          'TRASH',
-                          'SPAM',
-                          'ARCHIVE'
-                        ],
+                        items: AppConstants.folderDisplayNames.keys.toList(),
                         itemBuilder: (folder) =>
                             AppConstants.folderDisplayNames[folder] ?? folder,
                         textColor:

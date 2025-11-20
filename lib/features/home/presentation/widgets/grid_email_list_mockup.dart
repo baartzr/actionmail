@@ -113,6 +113,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   PreferredSizeWidget _buildAppBar(BuildContext context, ThemeData theme) {
     return AppBar(
       automaticallyImplyLeading: false,
@@ -192,6 +193,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildFilterBar(BuildContext context, ThemeData theme) {
     return Container(
       width: double.infinity,
@@ -1032,6 +1034,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   DataRow _buildEmailRow(BuildContext context, ThemeData theme, MessageIndex email) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);

@@ -26,10 +26,10 @@ class AppDropdown<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-
+    
     // Use provided textColor or default gray color for dropdown text
     final selectedTextColor = textColor ?? cs.onSurface.withValues(alpha: 0.8);
-
+    
     // Build the button that looks like a dropdown
     Widget buttonChild;
     if (value != null) {
@@ -38,7 +38,7 @@ class AppDropdown<T> extends StatelessWidget {
         children: [
           Text(
             itemBuilder(value as T),
-            style: TextStyle(color: selectedTextColor, fontSize: 12, fontWeight: FontWeight.bold),
+            style: TextStyle(color: selectedTextColor, fontSize: 12),
           ),
           Icon(Icons.arrow_drop_down, color: selectedTextColor, size: 24),
         ],
@@ -57,7 +57,7 @@ class AppDropdown<T> extends StatelessWidget {
     } else {
       buttonChild = Icon(Icons.arrow_drop_down, color: selectedTextColor, size: 24);
     }
-
+    
     return PopupMenuButton<T>(
       itemBuilder: (context) {
         return items.map((item) {
@@ -90,3 +90,4 @@ class AppDropdown<T> extends StatelessWidget {
     );
   }
 }
+

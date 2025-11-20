@@ -189,6 +189,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   PreferredSizeWidget _buildAppBar(BuildContext context, ThemeData theme) {
     return AppBar(
       automaticallyImplyLeading: false,
@@ -268,6 +269,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildFilterBar(BuildContext context, ThemeData theme) {
     return Container(
       width: double.infinity,
@@ -1144,6 +1146,7 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  // ignore: unused_element
   DataRow _buildEmailRow(BuildContext context, ThemeData theme, MessageIndex email) {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -1840,7 +1843,7 @@ class _GridEmailListState extends State<GridEmailList> {
       return DateFormat('MMM d').format(localDate);
     } else if (daysDiff > 1 && daysDiff < 7) {
       // Past dates within a week - show "X days ago"
-      return '${daysDiff} days ago';
+      return '$daysDiff days ago';
     } else {
       // Dates beyond a week - show formatted date
       return DateFormat('MMM d, yyyy').format(localDate);
