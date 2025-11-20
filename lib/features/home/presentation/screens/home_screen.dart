@@ -36,7 +36,7 @@ import 'package:ensemble_app_badger/ensemble_app_badger.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
-import 'package:domail/features/home/presentation/widgets/grid_email_list_mockup.dart';
+import 'package:domail/features/home/presentation/widgets/grid_email_list.dart';
 import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
 
 /// Main home screen for ActionMail
@@ -3898,7 +3898,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             return true;
           }).toList();
 
-          // Build active filters set for GridEmailListMockup
+          // Build active filters set for GridEmailList
           final activeFilters = <String>{};
           if (_stateFilter == 'Unread') activeFilters.add('unread');
           if (_stateFilter == 'Starred') activeFilters.add('starred');
@@ -3920,7 +3920,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             builder: (context, snapshot) {
               final localFoldersList = snapshot.data ?? [];
 
-              return GridEmailListMockup(
+              return GridEmailList(
                 emails: filtered,
                 selectedFolder: _selectedFolder,
                 selectedAccountEmail: _selectedAccountId != null && _accounts.isNotEmpty

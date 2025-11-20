@@ -669,19 +669,24 @@ class _GridEmailListState extends State<GridEmailList> {
         final hasValidConstraints = constraints.maxWidth.isFinite && 
                                     constraints.maxWidth > 0;
         
-        // Calculate subject column width based on available space
-        // If available space is less than minimum, use minimum and enable scrolling
-        // Otherwise, use available space (but at least minimum)
+        // Calculate available width from constraints
         final availableWidth = hasValidConstraints ? constraints.maxWidth : totalMinWidth;
-        final availableForSubject = availableWidth - fixedColumnsWidth;
+        
+        // Calculate subject column width based on available space
+        // Always use at least totalMinWidth to ensure proper scrolling when needed
+        // If available width is larger, expand the subject column
+        final minTableWidth = totalMinWidth;
+        final tableWidth = availableWidth > totalMinWidth ? availableWidth : totalMinWidth;
+        final availableForSubject = tableWidth - fixedColumnsWidth;
         final subjectWidth = availableForSubject >= subjectMinWidth 
             ? availableForSubject 
             : subjectMinWidth;
         
-        // Final table width - use available width if it fits, otherwise use minimum for scrolling
+        // Final table width - ensure it's always at least totalMinWidth for proper scrolling
+        // If available width is smaller, use minimum width to enable scrolling
         final finalTableWidth = availableWidth >= totalMinWidth 
             ? availableWidth 
-            : totalMinWidth;
+            : minTableWidth;
         
         return Padding(
           padding: const EdgeInsets.only(bottom: 8.0), // Add padding at bottom for scrollbar
@@ -693,11 +698,16 @@ class _GridEmailListState extends State<GridEmailList> {
             child: SingleChildScrollView(
               controller: _horizontalScrollController,
               scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: finalTableWidth,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.vertical,
-                  child: Table(
+              physics: const ClampingScrollPhysics(),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minWidth: totalMinWidth,
+                ),
+                child: SizedBox(
+                  width: finalTableWidth < totalMinWidth ? totalMinWidth : finalTableWidth,
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.vertical,
+                    child: Table(
                     columnWidths: {
                       0: FixedColumnWidth(checkboxWidth),
                       1: FixedColumnWidth(dateWidth),
@@ -783,6 +793,7 @@ class _GridEmailListState extends State<GridEmailList> {
                   ),
                 ),
               ),
+                ),
             ),
           ),
         );
@@ -1600,3 +1611,4 @@ class _GridEmailListState extends State<GridEmailList> {
     }
   }
 }
+
