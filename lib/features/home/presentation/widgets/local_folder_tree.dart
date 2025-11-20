@@ -220,7 +220,7 @@ class _LocalFolderTreeState extends State<LocalFolderTree> {
     final cs = theme.colorScheme;
 
     return Container(
-      width: 240,
+      // Removed fixed width: 240 - let parent constrain the width
       decoration: BoxDecoration(
         color: Colors.transparent,
         border: Border(

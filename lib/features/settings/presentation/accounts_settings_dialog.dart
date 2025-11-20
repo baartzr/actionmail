@@ -10,6 +10,7 @@ import 'package:domail/data/repositories/action_feedback_repository.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
 import 'package:domail/constants/app_brand.dart';
+import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
 // import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
@@ -569,6 +570,71 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                           content: Text(value 
                                             ? 'PDFs will open in internal viewer' 
                                             : 'PDFs will open with system file opener'),
+                                          duration: const Duration(seconds: 2),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    elevation: 0,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Default View',
+                                  style: theme.textTheme.titleMedium,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Choose your default email list view (desktop only)',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Consumer(
+                            builder: (context, ref, child) {
+                              return FutureBuilder<ViewMode>(
+                                future: ref.read(viewModeProvider.notifier).getDefaultView(),
+                                builder: (context, snapshot) {
+                                  final defaultView = snapshot.data ?? ViewMode.tile;
+                                  return Switch(
+                                    value: defaultView == ViewMode.table,
+                                    onChanged: (value) async {
+                                      final newMode = value ? ViewMode.table : ViewMode.tile;
+                                      await ref.read(viewModeProvider.notifier).setDefaultView(newMode);
+                                      // Also update current view if it matches the old default
+                                      final currentView = ref.read(viewModeProvider);
+                                      if (currentView == (value ? ViewMode.tile : ViewMode.table)) {
+                                        ref.read(viewModeProvider.notifier).setViewMode(newMode);
+                                      }
+                                      if (!context.mounted) return;
+                                      setState(() {});
+                                      final messenger = ScaffoldMessenger.of(context);
+                                      messenger.showSnackBar(
+                                        SnackBar(
+                                          content: Text(value 
+                                            ? 'Default view set to Table View' 
+                                            : 'Default view set to Tile View'),
                                           duration: const Duration(seconds: 2),
                                         ),
                                       );

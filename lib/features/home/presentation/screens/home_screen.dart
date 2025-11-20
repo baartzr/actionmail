@@ -35,6 +35,9 @@ import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:ensemble_app_badger/ensemble_app_badger.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
+import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
+import 'package:domail/features/home/presentation/widgets/grid_email_list_mockup.dart';
+import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -507,6 +510,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   final FirebaseSyncService _firebaseSync = FirebaseSyncService();
   final LocalFolderService _localFolderService = LocalFolderService();
+
+  // Table view selected emails
+  int _tableSelectedCount = 0;
+  Set<String> _tableSelectedEmailIds = {};
+
+  // Panel collapse state
+  bool _leftPanelCollapsed = false;
+  bool _rightPanelCollapsed = false;
 
   // Lightweight accounts load that does NOT touch Firebase sync
   Future<void> _loadAccountsLight() async {
@@ -1418,6 +1429,61 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             ),
                       ),
                     const Spacer(),
+                    // Bulk actions (table view only, when emails are selected)
+                    Builder(
+                      builder: (context) {
+                        final isDesktop = MediaQuery.of(context).size.width >= 900;
+                        if (isDesktop) {
+                          return Consumer(
+                            builder: (context, ref, child) {
+                              final viewMode = ref.watch(viewModeProvider);
+                              if (viewMode == ViewMode.table && _tableSelectedCount > 0) {
+                                return Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    _buildBulkActionButtonsAppBar(context, ref),
+                                    const SizedBox(width: 8),
+                                  ],
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            },
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                    // View mode toggle (desktop only)
+                    Builder(
+                      builder: (context) {
+                        final isDesktop = MediaQuery.of(context).size.width >= 900;
+                        if (isDesktop) {
+                          return Consumer(
+                            builder: (context, ref, child) {
+                              final viewMode = ref.watch(viewModeProvider);
+                              return IconButton(
+                                icon: Icon(
+                                  viewMode == ViewMode.table ? Icons.view_list : Icons.table_chart,
+                                  size: 18,
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
+                                ),
+                                onPressed: () {
+                                  final newMode = viewMode == ViewMode.table 
+                                      ? ViewMode.tile 
+                                      : ViewMode.table;
+                                  ref.read(viewModeProvider.notifier).setViewMode(newMode);
+                                },
+                                tooltip: viewMode == ViewMode.table 
+                                    ? 'Switch to Tile View' 
+                                    : 'Switch to Table View',
+                              );
+                            },
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      },
+                    ),
+                    const SizedBox(width: 8),
                     _buildAppBarLocalStateSwitch(context),
                     const SizedBox(width: 8),
                     PopupMenuButton<String>(
@@ -1445,24 +1511,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           final isDesktop = constraints.maxWidth >= 900;
           final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
           final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
+          final collapsedWidth = 40.0;
 
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (isDesktop)
-                ClipRect(
-                  child: SizedBox(
-                    width: leftWidth,
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  width: _leftPanelCollapsed ? collapsedWidth : leftWidth,
+                  child: ClipRect(
                     child: _buildLeftPanel(context),
                   ),
                 ),
-              Expanded(
+              Flexible(
                 child: ClipRect(child: _buildMainColumn()),
               ),
               if (isDesktop)
-                ClipRect(
-                  child: SizedBox(
-                    width: rightWidth,
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                  width: _rightPanelCollapsed ? collapsedWidth : rightWidth,
+                  child: ClipRect(
                     child: _buildRightPanel(context),
                   ),
                 ),
@@ -1482,8 +1553,53 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ActionMailTheme.alertColor.withValues(alpha: 1);
     const accountSelectedBorderColor = Color(0xFF00695C);
 
+    if (_leftPanelCollapsed) {
+      return Container(
+        color: cs.surface,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: IconButton(
+            icon: Icon(
+              Icons.chevron_right,
+              color: cs.onSurfaceVariant,
+            ),
+            onPressed: () {
+              setState(() {
+                _leftPanelCollapsed = false;
+              });
+            },
+            tooltip: 'Expand left panel',
+          ),
+        ),
+      );
+    }
+
     final column = Column(
       children: [
+        // Collapse button
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              IconButton(
+                icon: Icon(
+                  Icons.chevron_left,
+                  size: 18,
+                  color: cs.onSurfaceVariant,
+                ),
+                onPressed: () {
+                  setState(() {
+                    _leftPanelCollapsed = true;
+                  });
+                },
+                tooltip: 'Collapse left panel',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(),
+              ),
+            ],
+          ),
+        ),
         // Accounts section
         if (_accounts.isNotEmpty)
           Container(
@@ -1657,153 +1773,161 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
         // Gmail folder tree
         Expanded(
-          child: GmailFolderTree(
-            selectedFolder: _selectedFolder,
-            isViewingLocalFolder: _isLocalFolder,
-            accountId: _selectedAccountId,
-            selectedBackgroundColor: highlightColor,
-            onFolderSelected: (folderId) async {
-              setState(() {
-                _selectedFolder = folderId;
-                _isLocalFolder = false; // Reset to Gmail folder
-              });
-              if (_selectedAccountId != null) {
-                await ref.read(emailListProvider.notifier).loadFolder(
-                    _selectedAccountId!,
-                    folderLabel: _selectedFolder);
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Only render folder tree when panel is wide enough
+              if (constraints.maxWidth < 100) {
+                return const SizedBox.shrink();
               }
-            },
-            onEmailDropped: (folderId, message) async {
-              if (_isLocalFolder) {
-                if (folderId.toUpperCase() != 'INBOX') {
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text(
-                              'Local emails can only be restored to Inbox')),
-                    );
+              return GmailFolderTree(
+                selectedFolder: _selectedFolder,
+                isViewingLocalFolder: _isLocalFolder,
+                accountId: _selectedAccountId,
+                selectedBackgroundColor: highlightColor,
+                onFolderSelected: (folderId) async {
+                  setState(() {
+                    _selectedFolder = folderId;
+                    _isLocalFolder = false; // Reset to Gmail folder
+                  });
+                  if (_selectedAccountId != null) {
+                    await ref.read(emailListProvider.notifier).loadFolder(
+                        _selectedAccountId!,
+                        folderLabel: _selectedFolder);
                   }
-                  return;
-                }
-                await _restoreLocalEmailToInbox(message);
-                return;
-              }
-
-              if (_selectedAccountId == null) return;
-              try {
-                // Optimistic UI update first
-                if (folderId == 'TRASH') {
-                  if (_selectedFolder != 'TRASH') {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .removeMessage(message.id);
-                  } else {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .setFolder(message.id, 'TRASH');
-                  }
-                  final prev = message.folderLabel;
-                  if (prev.toUpperCase() == 'ARCHIVE') {
-                    // ARCHIVE -> TRASH: do not change prevFolderLabel
-                    unawaited(MessageRepository()
-                        .updateFolderNoPrev(message.id, 'TRASH'));
-                  } else {
-                    unawaited(MessageRepository().updateFolderWithPrev(
-                      message.id,
-                      'TRASH',
-                      prevFolderLabel: prev,
-                    ));
-                  }
-                  _enqueueGmailUpdate(
-                      'trash:${prev.toUpperCase()}', message.id);
-                } else if (folderId == 'ARCHIVE') {
-                  if (_selectedFolder != 'ARCHIVE') {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .removeMessage(message.id);
-                  } else {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .setFolder(message.id, 'ARCHIVE');
-                  }
-                  final prev = message.folderLabel;
-                  if (prev.toUpperCase() == 'TRASH') {
-                    // TRASH -> ARCHIVE: do not change prevFolderLabel
-                    unawaited(MessageRepository()
-                        .updateFolderNoPrev(message.id, 'ARCHIVE'));
-                  } else {
-                    unawaited(MessageRepository().updateFolderWithPrev(
-                      message.id,
-                      'ARCHIVE',
-                      prevFolderLabel: prev,
-                    ));
-                  }
-                  _enqueueGmailUpdate(
-                      'archive:${prev.toUpperCase()}', message.id);
-                } else if (folderId == 'INBOX') {
-                  if (_selectedFolder != 'INBOX') {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .removeMessage(message.id);
-                  } else {
-                    ref
-                        .read(emailListProvider.notifier)
-                        .setFolder(message.id, 'INBOX');
-                  }
-                  final prev = message.folderLabel;
-                  unawaited(MessageRepository().updateFolderWithPrev(
-                    message.id,
-                    'INBOX',
-                    prevFolderLabel: prev,
-                  ));
-                  _enqueueGmailUpdate('moveToInbox', message.id);
-                } else {
-                  // Restore to previous folder (if prevFolderLabel matches target)
-                  final prevFolder = message.prevFolderLabel;
-                  if (prevFolder != null &&
-                      prevFolder.toUpperCase() == folderId.toUpperCase()) {
-                    // Optimistic: assume restore succeeded; we'll adjust based on refreshed value
-                    // Remove from current view if destination differs, else update folder
-                    unawaited(() async {
-                      await MessageRepository().restoreToPrev(message.id);
-                      if (_selectedAccountId != null) {
-                        final updated = await MessageRepository()
-                            .getByIds(_selectedAccountId!, [message.id]);
-                        final restored = updated[message.id];
-                        if (restored != null) {
-                          final dest = restored.folderLabel;
-                          if (_selectedFolder != dest) {
-                            ref
-                                .read(emailListProvider.notifier)
-                                .removeMessage(message.id);
-                          } else {
-                            ref
-                                .read(emailListProvider.notifier)
-                                .setFolder(message.id, dest);
-                          }
-                          _enqueueGmailUpdate(
-                              'restore:${dest.toUpperCase()}', message.id);
-                        }
+                },
+                onEmailDropped: (folderId, message) async {
+                  if (_isLocalFolder) {
+                    if (folderId.toUpperCase() != 'INBOX') {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'Local emails can only be restored to Inbox')),
+                        );
                       }
-                    }());
+                      return;
+                    }
+                    await _restoreLocalEmailToInbox(message);
+                    return;
                   }
-                }
-                if (!context.mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                      content: Text(
-                          'Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
-                );
-              } catch (e) {
-                debugPrint(
-                    '[HomeScreen] Error moving email to Gmail folder: $e');
-                if (!context.mounted) return;
-                {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error: $e')),
-                  );
-                }
-              }
+
+                  if (_selectedAccountId == null) return;
+                  try {
+                    // Optimistic UI update first
+                    if (folderId == 'TRASH') {
+                      if (_selectedFolder != 'TRASH') {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .removeMessage(message.id);
+                      } else {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .setFolder(message.id, 'TRASH');
+                      }
+                      final prev = message.folderLabel;
+                      if (prev.toUpperCase() == 'ARCHIVE') {
+                        // ARCHIVE -> TRASH: do not change prevFolderLabel
+                        unawaited(MessageRepository()
+                            .updateFolderNoPrev(message.id, 'TRASH'));
+                      } else {
+                        unawaited(MessageRepository().updateFolderWithPrev(
+                          message.id,
+                          'TRASH',
+                          prevFolderLabel: prev,
+                        ));
+                      }
+                      _enqueueGmailUpdate(
+                          'trash:${prev.toUpperCase()}', message.id);
+                    } else if (folderId == 'ARCHIVE') {
+                      if (_selectedFolder != 'ARCHIVE') {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .removeMessage(message.id);
+                      } else {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .setFolder(message.id, 'ARCHIVE');
+                      }
+                      final prev = message.folderLabel;
+                      if (prev.toUpperCase() == 'TRASH') {
+                        // TRASH -> ARCHIVE: do not change prevFolderLabel
+                        unawaited(MessageRepository()
+                            .updateFolderNoPrev(message.id, 'ARCHIVE'));
+                      } else {
+                        unawaited(MessageRepository().updateFolderWithPrev(
+                          message.id,
+                          'ARCHIVE',
+                          prevFolderLabel: prev,
+                        ));
+                      }
+                      _enqueueGmailUpdate(
+                          'archive:${prev.toUpperCase()}', message.id);
+                    } else if (folderId == 'INBOX') {
+                      if (_selectedFolder != 'INBOX') {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .removeMessage(message.id);
+                      } else {
+                        ref
+                            .read(emailListProvider.notifier)
+                            .setFolder(message.id, 'INBOX');
+                      }
+                      final prev = message.folderLabel;
+                      unawaited(MessageRepository().updateFolderWithPrev(
+                        message.id,
+                        'INBOX',
+                        prevFolderLabel: prev,
+                      ));
+                      _enqueueGmailUpdate('moveToInbox', message.id);
+                    } else {
+                      // Restore to previous folder (if prevFolderLabel matches target)
+                      final prevFolder = message.prevFolderLabel;
+                      if (prevFolder != null &&
+                          prevFolder.toUpperCase() == folderId.toUpperCase()) {
+                        // Optimistic: assume restore succeeded; we'll adjust based on refreshed value
+                        // Remove from current view if destination differs, else update folder
+                        unawaited(() async {
+                          await MessageRepository().restoreToPrev(message.id);
+                          if (_selectedAccountId != null) {
+                            final updated = await MessageRepository()
+                                .getByIds(_selectedAccountId!, [message.id]);
+                            final restored = updated[message.id];
+                            if (restored != null) {
+                              final dest = restored.folderLabel;
+                              if (_selectedFolder != dest) {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .removeMessage(message.id);
+                              } else {
+                                ref
+                                    .read(emailListProvider.notifier)
+                                    .setFolder(message.id, dest);
+                              }
+                              _enqueueGmailUpdate(
+                                  'restore:${dest.toUpperCase()}', message.id);
+                            }
+                          }
+                        }());
+                      }
+                    }
+                    if (!context.mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                          content: Text(
+                              'Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
+                    );
+                  } catch (e) {
+                    debugPrint(
+                        '[HomeScreen] Error moving email to Gmail folder: $e');
+                    if (!context.mounted) return;
+                    {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Error: $e')),
+                      );
+                    }
+                  }
+                },
+              );
             },
           ),
         ),
@@ -1817,42 +1941,104 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   // Right panel for desktop - local folder tree
   Widget _buildRightPanel(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+
+    if (_rightPanelCollapsed) {
+      return Container(
+        color: cs.surface,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: IconButton(
+            icon: Icon(
+              Icons.chevron_left,
+              color: cs.onSurfaceVariant,
+            ),
+            onPressed: () {
+              setState(() {
+                _rightPanelCollapsed = false;
+              });
+            },
+            tooltip: 'Expand right panel',
+          ),
+        ),
+      );
+    }
+
     return Container(
-      color: Theme.of(context).colorScheme.surface,
-      child: LocalFolderTree(
-        selectedFolder: _isLocalFolder ? _selectedFolder : null,
-        selectedBackgroundColor: highlightColor,
-        onFolderSelected: (folderPath) async {
-          setState(() {
-            _selectedFolder = folderPath;
-            _isLocalFolder = true;
-          });
-          await _loadFolderEmails(folderPath, true);
-        },
-        onEmailDropped: (folderPath, message) async {
-          // Determine if this is a local-to-local move or Gmail-to-local save
-          // If we're currently viewing a local folder, the email is from a local folder
-          if (_isLocalFolder) {
-            // Local email -> Local folder: move within local storage
-            await _moveLocalEmailToFolder(folderPath, message);
-          } else {
-            // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
-            final src = (message.folderLabel).toUpperCase();
-            if (src == 'TRASH' || src == 'ARCHIVE') {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                      content: Text(
-                          'Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+      color: cs.surface,
+      child: Column(
+        children: [
+          // Collapse button
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.start,
+              children: [
+                IconButton(
+                  icon: Icon(
+                    Icons.chevron_right,
+                    size: 18,
+                    color: cs.onSurfaceVariant,
+                  ),
+                  onPressed: () {
+                    setState(() {
+                      _rightPanelCollapsed = true;
+                    });
+                  },
+                  tooltip: 'Collapse right panel',
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Only render folder tree when panel is wide enough
+                if (constraints.maxWidth < 100) {
+                  return const SizedBox.shrink();
+                }
+                return LocalFolderTree(
+                  selectedFolder: _isLocalFolder ? _selectedFolder : null,
+                  selectedBackgroundColor: highlightColor,
+                  onFolderSelected: (folderPath) async {
+                    setState(() {
+                      _selectedFolder = folderPath;
+                      _isLocalFolder = true;
+                    });
+                    await _loadFolderEmails(folderPath, true);
+                  },
+                  onEmailDropped: (folderPath, message) async {
+                    // Determine if this is a local-to-local move or Gmail-to-local save
+                    // If we're currently viewing a local folder, the email is from a local folder
+                    if (_isLocalFolder) {
+                      // Local email -> Local folder: move within local storage
+                      await _moveLocalEmailToFolder(folderPath, message);
+                    } else {
+                      // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
+                      final src = (message.folderLabel).toUpperCase();
+                      if (src == 'TRASH' || src == 'ARCHIVE') {
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text(
+                                    'Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
+                          );
+                        }
+                        return;
+                      }
+                      // Proceed: save and archive
+                      await _saveEmailToFolder(folderPath, message);
+                    }
+                  },
                 );
-              }
-              return;
-            }
-            // Proceed: save and archive
-            await _saveEmailToFolder(folderPath, message);
-          }
-        },
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -3637,7 +3823,336 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final emailListAsync = ref.watch(emailListProvider);
     final isSyncing = ref.watch(emailSyncingProvider);
     final isLoadingLocal = ref.watch(emailLoadingLocalProvider);
+    final viewMode = ref.watch(viewModeProvider);
+    final isDesktop = MediaQuery.of(context).size.width >= 900;
 
+    // Check if we should show table view
+    if (isDesktop && viewMode == ViewMode.table) {
+      return emailListAsync.when(
+        data: (emails) {
+          // Apply filters (same as tile view)
+          final filtered = emails.where((m) {
+            if (_selectedLocalState != null) {
+              if (m.localTagPersonal != _selectedLocalState) return false;
+            }
+            if (_selectedCategories.isNotEmpty) {
+              final hasAny = m.gmailCategories.any((c) => _selectedCategories.contains(c));
+              if (!hasAny) return false;
+            }
+            if (_stateFilter != null) {
+              switch (_stateFilter) {
+                case 'Unread':
+                  if (m.isRead) return false;
+                  break;
+                case 'Starred':
+                  if (!m.isStarred) return false;
+                  break;
+                case 'Important':
+                  if (!m.isImportant) return false;
+                  break;
+              }
+            }
+            if (_selectedActionFilter != null) {
+              if (!m.hasAction) return false;
+              if (m.actionComplete) return false;
+              switch (_selectedActionFilter) {
+                case AppConstants.filterToday:
+                  if (m.actionDate == null) return false;
+                  final now = DateTime.now();
+                  final today = DateTime(now.year, now.month, now.day);
+                  final local = m.actionDate!.toLocal();
+                  final d = DateTime(local.year, local.month, local.day);
+                  if (d != today) return false;
+                  break;
+                case AppConstants.filterUpcoming:
+                  if (m.actionDate == null) return false;
+                  final now = DateTime.now();
+                  final today = DateTime(now.year, now.month, now.day);
+                  final local = m.actionDate!.toLocal();
+                  final d = DateTime(local.year, local.month, local.day);
+                  if (!d.isAfter(today)) return false;
+                  break;
+                case AppConstants.filterOverdue:
+                  if (m.actionDate == null) return false;
+                  final now = DateTime.now();
+                  final today = DateTime(now.year, now.month, now.day);
+                  final local = m.actionDate!.toLocal();
+                  final d = DateTime(local.year, local.month, local.day);
+                  if (!d.isBefore(today)) return false;
+                  break;
+                case AppConstants.filterPossible:
+                  if (m.actionDate != null) return false;
+                  break;
+              }
+            }
+            if (_searchQuery.isNotEmpty) {
+              final query = _searchQuery.toLowerCase();
+              final matchesSubject = m.subject.toLowerCase().contains(query);
+              final matchesFrom = m.from.toLowerCase().contains(query);
+              final matchesTo = m.to.toLowerCase().contains(query);
+              final matchesSnippet = (m.snippet ?? '').toLowerCase().contains(query);
+              if (!matchesSubject && !matchesFrom && !matchesTo && !matchesSnippet) {
+                return false;
+              }
+            }
+            return true;
+          }).toList();
+
+          // Build active filters set for GridEmailListMockup
+          final activeFilters = <String>{};
+          if (_stateFilter == 'Unread') activeFilters.add('unread');
+          if (_stateFilter == 'Starred') activeFilters.add('starred');
+          if (_selectedLocalState == 'Personal') activeFilters.add('personal');
+          if (_selectedLocalState == 'Business') activeFilters.add('business');
+          if (_selectedActionFilter == AppConstants.filterToday) activeFilters.add('action_today');
+          if (_selectedActionFilter == AppConstants.filterUpcoming) activeFilters.add('action_upcoming');
+          if (_selectedActionFilter == AppConstants.filterOverdue) activeFilters.add('action_overdue');
+          if (_selectedActionFilter == AppConstants.filterPossible) activeFilters.add('action_possible');
+
+          // Get account emails for dropdown
+          final accountEmails = _accounts.map((a) => a.email).toList();
+
+          // Get local folders
+          final localFolders = _localFolderService.listFolders();
+
+          return FutureBuilder<List<String>>(
+            future: localFolders,
+            builder: (context, snapshot) {
+              final localFoldersList = snapshot.data ?? [];
+
+              return GridEmailListMockup(
+                emails: filtered,
+                selectedFolder: _selectedFolder,
+                selectedAccountEmail: _selectedAccountId != null && _accounts.isNotEmpty
+                    ? _accounts.firstWhere(
+                        (acc) => acc.id == _selectedAccountId,
+                        orElse: () => _accounts.first,
+                      ).email
+                    : null,
+                availableAccounts: accountEmails,
+                localFolders: localFoldersList,
+                isLocalFolder: _isLocalFolder,
+                activeFilters: activeFilters,
+                onSelectionChanged: (count) {
+                  setState(() {
+                    _tableSelectedCount = count;
+                  });
+                },
+                onSelectedIdsChanged: (ids) {
+                  setState(() {
+                    _tableSelectedEmailIds = ids;
+                  });
+                },
+                onFolderChanged: (folder) async {
+                  if (folder != null) {
+                    setState(() {
+                      _selectedFolder = folder;
+                      _isLocalFolder = false;
+                    });
+                    await _loadFolderEmails(folder, false);
+                  }
+                },
+                onAccountChanged: (account) async {
+                  if (account != null) {
+                    final accountId = _accounts.firstWhere(
+                      (a) => a.email == account,
+                      orElse: () => _accounts.first,
+                    ).id;
+                    setState(() {
+                      _selectedAccountId = accountId;
+                    });
+                    await _saveLastActiveAccount(accountId);
+                    await _loadAccounts();
+                  }
+                },
+                onToggleLocalFolderView: () async {
+                  setState(() {
+                    _isLocalFolder = !_isLocalFolder;
+                    if (_isLocalFolder && localFoldersList.isNotEmpty) {
+                      _selectedFolder = localFoldersList.first;
+                    } else {
+                      _selectedFolder = AppConstants.folderInbox;
+                    }
+                  });
+                  await _loadFolderEmails(_selectedFolder, _isLocalFolder);
+                },
+                onEmailTap: (email) {
+                  if (_selectedAccountId != null) {
+                    showDialog(
+                      context: context,
+                      barrierDismissible: false,
+                      builder: (ctx) => EmailViewerDialog(
+                        message: email,
+                        accountId: _selectedAccountId!,
+                        localFolderName: _isLocalFolder ? _selectedFolder : null,
+                        onMarkRead: () async {
+                          if (!email.isRead && !_isLocalFolder) {
+                            await MessageRepository().updateRead(email.id, true);
+                            ref.read(emailListProvider.notifier).setRead(email.id, true);
+                            _enqueueGmailUpdate('markRead', email.id);
+                          }
+                        },
+                      ),
+                    );
+                  }
+                },
+                onPersonalBusinessToggle: (email) async {
+                  final newState = email.localTagPersonal;
+                  await MessageRepository().updateLocalTag(email.id, newState);
+                  ref.read(emailListProvider.notifier).setLocalTag(email.id, newState);
+                  
+                  final syncEnabled = await _firebaseSync.isSyncEnabled();
+                  if (syncEnabled) {
+                    try {
+                      await _firebaseSync.syncEmailMeta(email.id, localTagPersonal: newState);
+                    } catch (e) {
+                      debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
+                    }
+                  }
+                  
+                  final senderEmail = _extractEmail(email.from);
+                  if (senderEmail.isNotEmpty) {
+                    await MessageRepository().setSenderDefaultLocalTag(senderEmail, newState);
+                  }
+                },
+                onStarToggle: (email) async {
+                  await MessageRepository().updateStarred(email.id, !email.isStarred);
+                  ref.read(emailListProvider.notifier).setStarred(email.id, !email.isStarred);
+                  _enqueueGmailUpdate(!email.isStarred ? 'star' : 'unstar', email.id);
+                },
+                onTrash: (email) async {
+                  if (!_isLocalFolder && _selectedAccountId != null) {
+                    final prev = email.folderLabel;
+                    await MessageRepository().updateFolderNoPrev(email.id, 'TRASH');
+                    ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+                    _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
+                  }
+                },
+                onArchive: (email) async {
+                  if (!_isLocalFolder && _selectedAccountId != null) {
+                    final prev = email.folderLabel;
+                    await MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE');
+                    ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+                    _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
+                  }
+                },
+                onMoveToLocalFolder: (email) async {
+                  final folder = await showDialog<String>(
+                    context: context,
+                    builder: (context) => Dialog(
+                      child: Container(
+                        width: 400,
+                        height: 500,
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Row(
+                              children: [
+                                const Text(
+                                  'Move to Folder',
+                                  style: TextStyle(
+                                    fontSize: 20,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                IconButton(
+                                  icon: const Icon(Icons.close),
+                                  onPressed: () => Navigator.of(context).pop(),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            Expanded(
+                              child: LocalFolderTree(
+                                selectedFolder: null,
+                                selectedBackgroundColor: ActionMailTheme.alertColor.withValues(alpha: 0.2),
+                                onFolderSelected: (folderPath) {
+                                  Navigator.of(context).pop(folderPath);
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                  if (folder != null) {
+                    await _saveEmailToFolder(folder, email);
+                  }
+                },
+                onFiltersChanged: (filters) {
+                  setState(() {
+                    _stateFilter = filters.contains('unread') ? 'Unread' 
+                        : filters.contains('starred') ? 'Starred' 
+                        : null;
+                    _selectedLocalState = filters.contains('personal') ? 'Personal'
+                        : filters.contains('business') ? 'Business'
+                        : null;
+                    _selectedActionFilter = filters.contains('action_today') ? AppConstants.filterToday
+                        : filters.contains('action_upcoming') ? AppConstants.filterUpcoming
+                        : filters.contains('action_overdue') ? AppConstants.filterOverdue
+                        : filters.contains('action_possible') ? AppConstants.filterPossible
+                        : null;
+                  });
+                },
+                onEmailAction: (email) async {
+                  final result = await ActionEditDialog.show(
+                    context,
+                    initialDate: email.actionDate,
+                    initialText: email.actionInsightText,
+                    allowRemove: email.hasAction,
+                  );
+
+                  if (result != null) {
+                    final removed = result.removed;
+                    final actionDate = removed ? null : result.actionDate;
+                    final actionText = removed
+                        ? null
+                        : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
+                    final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+                    final bool? markedComplete = result.actionComplete;
+
+                    final currentComplete = hasActionNow
+                        ? (markedComplete ?? email.actionComplete)
+                        : false;
+
+                    await MessageRepository().updateAction(email.id, actionDate, actionText, null, currentComplete);
+                    ref.read(emailListProvider.notifier).setAction(
+                      email.id,
+                      actionDate,
+                      actionText,
+                      actionComplete: currentComplete,
+                    );
+
+                    final syncEnabled = await _firebaseSync.isSyncEnabled();
+                    if (syncEnabled && _selectedAccountId != null) {
+                      try {
+                        await _firebaseSync.syncEmailMeta(email.id,
+                          actionDate: actionDate,
+                          actionInsightText: actionText,
+                          actionComplete: currentComplete);
+                      } catch (e) {
+                        debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
+                      }
+                    }
+                  }
+                },
+              );
+            },
+          );
+        },
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, stack) => Center(
+          child: Text('Error: $error'),
+        ),
+      );
+    }
+
+    // Tile view (original implementation)
     return emailListAsync.when(
       data: (emails) {
         // Apply filters in-memory for current folder result set
@@ -4631,5 +5146,242 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     );
 
     return items;
+  }
+
+  Widget _buildBulkActionButtonsAppBar(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final emailListAsync = ref.watch(emailListProvider);
+    
+    // Get selected emails
+    final selectedEmails = emailListAsync.when(
+      data: (emails) => emails.where((e) => _tableSelectedEmailIds.contains(e.id)).toList(),
+      loading: () => <MessageIndex>[],
+      error: (_, __) => <MessageIndex>[],
+    );
+
+    if (selectedEmails.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: cs.primaryContainer.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Text(
+            '$_tableSelectedCount',
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+              fontSize: 11,
+              color: cs.onPrimaryContainer,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        // Personal/Business Switch - show as two buttons
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.person_outline,
+          'Personal',
+          () => _applyBulkPersonalBusiness(selectedEmails, 'Personal', ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.business_center,
+          'Business',
+          () => _applyBulkPersonalBusiness(selectedEmails, 'Business', ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.star_outline,
+          'Star',
+          () => _applyBulkStar(selectedEmails, ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.folder_outlined,
+          'Move',
+          () => _applyBulkMove(selectedEmails, ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.archive_outlined,
+          'Archive',
+          () => _applyBulkArchive(selectedEmails, ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.delete_outline,
+          'Trash',
+          () => _applyBulkTrash(selectedEmails, ref),
+        ),
+        const SizedBox(width: 4),
+        _buildBulkActionButtonAppBar(
+          context,
+          Icons.undo,
+          'Undo',
+          () => _undoBulkAction(ref),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBulkActionButtonAppBar(
+    BuildContext context,
+    IconData icon,
+    String tooltip,
+    VoidCallback onPressed,
+  ) {
+    final theme = Theme.of(context);
+    return Tooltip(
+      message: tooltip,
+      child: IconButton(
+        icon: Icon(icon, size: 18),
+        onPressed: onPressed,
+        color: theme.appBarTheme.foregroundColor,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        tooltip: tooltip,
+      ),
+    );
+  }
+
+  Future<void> _applyBulkPersonalBusiness(List<MessageIndex> emails, String tag, WidgetRef ref) async {
+    for (final email in emails) {
+      await MessageRepository().updateLocalTag(email.id, tag);
+      ref.read(emailListProvider.notifier).setLocalTag(email.id, tag);
+      
+      final syncEnabled = await _firebaseSync.isSyncEnabled();
+      if (syncEnabled) {
+        try {
+          await _firebaseSync.syncEmailMeta(email.id, localTagPersonal: tag);
+        } catch (e) {
+          debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
+        }
+      }
+      
+      final senderEmail = _extractEmail(email.from);
+      if (senderEmail.isNotEmpty) {
+        await MessageRepository().setSenderDefaultLocalTag(senderEmail, tag);
+      }
+    }
+    // Clear selection after bulk action
+    _clearBulkSelection();
+  }
+
+  Future<void> _applyBulkStar(List<MessageIndex> emails, WidgetRef ref) async {
+    for (final email in emails) {
+      await MessageRepository().updateStarred(email.id, !email.isStarred);
+      ref.read(emailListProvider.notifier).setStarred(email.id, !email.isStarred);
+      _enqueueGmailUpdate(!email.isStarred ? 'star' : 'unstar', email.id);
+    }
+    // Clear selection after bulk action
+    _clearBulkSelection();
+  }
+
+  Future<void> _applyBulkMove(List<MessageIndex> emails, WidgetRef ref) async {
+    // Show folder selection dialog
+    final folder = await showDialog<String>(
+      context: context,
+      builder: (context) => Dialog(
+        child: Container(
+          width: 400,
+          height: 500,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Text(
+                    'Move to Folder',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: LocalFolderTree(
+                  selectedFolder: null,
+                  selectedBackgroundColor: ActionMailTheme.alertColor.withValues(alpha: 0.2),
+                  onFolderSelected: (folderPath) {
+                    Navigator.of(context).pop(folderPath);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    
+    if (folder != null) {
+      for (final email in emails) {
+        await _saveEmailToFolder(folder, email);
+      }
+    }
+    setState(() {
+      _tableSelectedEmailIds.clear();
+      _tableSelectedCount = 0;
+    });
+  }
+
+  Future<void> _applyBulkArchive(List<MessageIndex> emails, WidgetRef ref) async {
+    if (_isLocalFolder || _selectedAccountId == null) return;
+    
+    for (final email in emails) {
+      final prev = email.folderLabel;
+      await MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE');
+      ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+      _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
+    }
+    // Clear selection after bulk action
+    _clearBulkSelection();
+  }
+
+  Future<void> _applyBulkTrash(List<MessageIndex> emails, WidgetRef ref) async {
+    if (_isLocalFolder || _selectedAccountId == null) return;
+    
+    for (final email in emails) {
+      final prev = email.folderLabel;
+      await MessageRepository().updateFolderNoPrev(email.id, 'TRASH');
+      ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+      _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
+    }
+    // Clear selection after bulk action
+    _clearBulkSelection();
+  }
+
+  void _undoBulkAction(WidgetRef ref) {
+    // TODO: Implement undo functionality
+    // For now, just clear selection
+    _clearBulkSelection();
+  }
+
+  void _clearBulkSelection() {
+    setState(() {
+      _tableSelectedEmailIds.clear();
+      _tableSelectedCount = 0;
+    });
   }
 }
