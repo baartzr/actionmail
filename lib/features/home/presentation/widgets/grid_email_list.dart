@@ -29,10 +29,13 @@ class GridEmailList extends StatefulWidget {
   final ValueChanged<MessageIndex>? onTrash;
   final ValueChanged<MessageIndex>? onArchive;
   final ValueChanged<MessageIndex>? onMoveToLocalFolder;
+  final ValueChanged<MessageIndex>? onRestore;
+  final ValueChanged<MessageIndex>? onMoveToInbox;
   final ValueChanged<String?>? onAccountChanged;
   final VoidCallback? onToggleLocalFolderView;
   final ValueChanged<int>? onSelectionChanged;
   final ValueChanged<Set<String>>? onSelectedIdsChanged;
+  final Set<String>? selectedEmailIds; // External control of selection - if provided, overrides internal state
 
   const GridEmailList({
     super.key,
@@ -52,23 +55,96 @@ class GridEmailList extends StatefulWidget {
     this.onTrash,
     this.onArchive,
     this.onMoveToLocalFolder,
+    this.onRestore,
+    this.onMoveToInbox,
     this.onAccountChanged,
     this.onToggleLocalFolderView,
     this.onSelectionChanged,
     this.onSelectedIdsChanged,
+    this.selectedEmailIds,
   });
 
   @override
   State<GridEmailList> createState() => _GridEmailListState();
 }
 
+/// Configuration for status buttons based on folder
+class _StatusButtonConfig {
+  final bool showPersonalBusiness;
+  final bool showStar;
+  final bool showMove;
+  final bool showArchive;
+  final bool showTrash;
+  final String moveLabel;
+  final String moveTooltip;
+
+  const _StatusButtonConfig({
+    required this.showPersonalBusiness,
+    required this.showStar,
+    required this.showMove,
+    required this.showArchive,
+    required this.showTrash,
+    required this.moveLabel,
+    required this.moveTooltip,
+  });
+}
+
 class _GridEmailListState extends State<GridEmailList> {
   final Set<String> _selectedEmailIds = {};
-  final List<Map<String, dynamic>> _undoStack = [];
   bool _isCtrlPressed = false;
   bool _showSearchField = false;
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _horizontalScrollController = ScrollController();
+
+  // Get current selection - use external if provided, otherwise use internal
+  Set<String> get _currentSelectedIds {
+    if (widget.selectedEmailIds != null) {
+      return widget.selectedEmailIds!;
+    }
+    return _selectedEmailIds;
+  }
+
+  @override
+  void didUpdateWidget(GridEmailList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Sync internal selection with external when external selection changes
+    if (widget.selectedEmailIds != null) {
+      final oldSet = oldWidget.selectedEmailIds;
+      final newSet = widget.selectedEmailIds!;
+      
+      // Check if sets are different by comparing contents
+      final setsAreDifferent = oldSet == null || 
+          oldSet.length != newSet.length ||
+          !oldSet.every((id) => newSet.contains(id));
+      
+      if (setsAreDifferent) {
+        // Check if external selection was cleared (was non-empty, now empty)
+        final wasNonEmpty = oldSet != null && oldSet.isNotEmpty;
+        final isNowEmpty = newSet.isEmpty;
+        
+        if (wasNonEmpty && isNowEmpty) {
+          // External selection was cleared after bulk action - clear internal selection
+          setState(() {
+            _selectedEmailIds.clear();
+          });
+        } else if (newSet.isNotEmpty) {
+          // External selection was set or changed - sync with it
+          if (_selectedEmailIds.length != newSet.length || 
+              !_selectedEmailIds.every((id) => newSet.contains(id))) {
+            setState(() {
+              _selectedEmailIds.clear();
+              _selectedEmailIds.addAll(newSet);
+            });
+          }
+        } else if (isNowEmpty && _selectedEmailIds.isNotEmpty) {
+          // External selection is empty and we have internal selection - clear it
+          setState(() {
+            _selectedEmailIds.clear();
+          });
+        }
+      }
+    }
+  }
 
   @override
   void dispose() {
@@ -384,7 +460,7 @@ class _GridEmailListState extends State<GridEmailList> {
           ),
           
           // Bulk action buttons on the right
-          if (_selectedEmailIds.isNotEmpty)
+          if (_currentSelectedIds.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(left: 8),
               child: _buildBulkActionButtons(context, theme),
@@ -479,6 +555,7 @@ class _GridEmailListState extends State<GridEmailList> {
 
 
   Widget _buildBulkActionButtons(BuildContext context, ThemeData theme) {
+    final config = _getStatusButtonConfig(widget.selectedFolder);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -489,7 +566,7 @@ class _GridEmailListState extends State<GridEmailList> {
             borderRadius: BorderRadius.circular(12),
           ),
           child: Text(
-            '${_selectedEmailIds.length}',
+            '${_currentSelectedIds.length}',
             style: theme.textTheme.labelSmall?.copyWith(
               fontWeight: FontWeight.w700,
               fontSize: 11,
@@ -503,53 +580,49 @@ class _GridEmailListState extends State<GridEmailList> {
           theme,
           Icons.person,
           'Personal',
-          () => _applyBulkAction('personal'),
+          config.showPersonalBusiness ? () => _applyBulkAction('personal') : null,
+          enabled: config.showPersonalBusiness,
         ),
         _buildBulkActionButton(
           context,
           theme,
           Icons.business_center,
           'Business',
-          () => _applyBulkAction('business'),
+          config.showPersonalBusiness ? () => _applyBulkAction('business') : null,
+          enabled: config.showPersonalBusiness,
         ),
         _buildBulkActionButton(
           context,
           theme,
           Icons.star,
           'Star',
-          () => _applyBulkAction('star'),
+          config.showStar ? () => _applyBulkAction('star') : null,
+          enabled: config.showStar,
         ),
         _buildBulkActionButton(
           context,
           theme,
           Icons.folder_outlined,
-          'Move',
-          () => _applyBulkAction('move'),
+          config.moveTooltip,
+          config.showMove ? () => _applyBulkAction('move') : null,
+          enabled: config.showMove,
         ),
         _buildBulkActionButton(
           context,
           theme,
           Icons.archive_outlined,
           'Archive',
-          () => _applyBulkAction('archive'),
+          config.showArchive ? () => _applyBulkAction('archive') : null,
+          enabled: config.showArchive,
         ),
         _buildBulkActionButton(
           context,
           theme,
           Icons.delete_outline,
           'Trash',
-          () => _applyBulkAction('trash'),
+          config.showTrash ? () => _applyBulkAction('trash') : null,
+          enabled: config.showTrash,
         ),
-        if (_undoStack.isNotEmpty) ...[
-          const SizedBox(width: 4),
-          _buildBulkActionButton(
-            context,
-            theme,
-            Icons.undo,
-            'Undo',
-            _undoLastBulkAction,
-          ),
-        ],
       ],
     );
   }
@@ -559,8 +632,9 @@ class _GridEmailListState extends State<GridEmailList> {
     ThemeData theme,
     IconData icon,
     String tooltip,
-    VoidCallback onPressed,
-  ) {
+    VoidCallback? onPressed, {
+    bool enabled = true,
+  }) {
     return Tooltip(
       message: tooltip,
       child: IconButton(
@@ -568,22 +642,50 @@ class _GridEmailListState extends State<GridEmailList> {
         onPressed: onPressed,
         padding: const EdgeInsets.all(4),
         constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-        color: theme.colorScheme.primary,
+        color: enabled
+            ? theme.colorScheme.primary
+            : theme.colorScheme.primary.withValues(alpha: 0.3),
       ),
     );
   }
 
-  void _applyBulkAction(String action) {
-    // Save current state for undo
+  Future<void> _applyBulkAction(String action) async {
     final selectedEmails = widget.emails
-        .where((e) => _selectedEmailIds.contains(e.id))
+        .where((e) => _currentSelectedIds.contains(e.id))
         .toList();
-    
-    _undoStack.add({
-      'action': action,
-      'emailIds': _selectedEmailIds.toList(),
-      'emails': selectedEmails.map((e) => e.id).toList(),
-    });
+
+    // Show confirmation dialog for archive and trash
+    if (action == 'archive' || action == 'trash') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Text(action == 'archive' ? 'Archive Emails' : 'Trash Emails'),
+          content: Text(
+            action == 'archive'
+                ? 'Are you sure you want to archive ${selectedEmails.length} email${selectedEmails.length == 1 ? '' : 's'}?'
+                : 'Are you sure you want to move ${selectedEmails.length} email${selectedEmails.length == 1 ? '' : 's'} to trash?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              style: action == 'trash'
+                  ? FilledButton.styleFrom(
+                      backgroundColor: Theme.of(ctx).colorScheme.error,
+                      foregroundColor: Theme.of(ctx).colorScheme.onError,
+                    )
+                  : null,
+              child: Text(action == 'archive' ? 'Archive' : 'Trash'),
+            ),
+          ],
+        ),
+      );
+
+      if (confirmed != true) return;
+    }
 
     // Apply action to selected emails
     for (final email in selectedEmails) {
@@ -604,7 +706,18 @@ class _GridEmailListState extends State<GridEmailList> {
           widget.onArchive?.call(email);
           break;
         case 'move':
-          widget.onMoveToLocalFolder?.call(email);
+          // Determine which callback to use based on folder
+          final upperFolder = widget.selectedFolder.toUpperCase();
+          if (upperFolder == 'SPAM') {
+            // Spam: Move to Inbox
+            widget.onMoveToInbox?.call(email);
+          } else if (upperFolder == 'TRASH' || upperFolder == 'ARCHIVE') {
+            // Trash/Archive: Restore
+            widget.onRestore?.call(email);
+          } else {
+            // Default: Move to local folder
+            widget.onMoveToLocalFolder?.call(email);
+          }
           break;
       }
     }
@@ -616,18 +729,6 @@ class _GridEmailListState extends State<GridEmailList> {
     });
   }
 
-  void _undoLastBulkAction() {
-    if (_undoStack.isEmpty) return;
-    
-    _undoStack.removeLast();
-    // In a real implementation, you would restore the previous state
-    // For now, we'll just clear the selection
-    setState(() {
-      _selectedEmailIds.clear();
-      widget.onSelectionChanged?.call(0);
-      widget.onSelectedIdsChanged?.call({});
-    });
-  }
 
   Widget _buildEmailTable(BuildContext context, ThemeData theme) {
     if (widget.emails.isEmpty) {
@@ -803,8 +904,8 @@ class _GridEmailListState extends State<GridEmailList> {
 
   Widget _buildSelectAllCheckbox(BuildContext context, ThemeData theme) {
     final allSelected = widget.emails.isNotEmpty && 
-        _selectedEmailIds.length == widget.emails.length;
-    final someSelected = _selectedEmailIds.isNotEmpty && !allSelected;
+        _currentSelectedIds.length == widget.emails.length;
+    final someSelected = _currentSelectedIds.isNotEmpty && !allSelected;
 
     return GestureDetector(
       onTap: () {
@@ -868,7 +969,7 @@ class _GridEmailListState extends State<GridEmailList> {
         ? theme.colorScheme.surfaceContainerLow.withValues(alpha: 0.3)
         : theme.colorScheme.surface;
 
-    final isSelected = _selectedEmailIds.contains(email.id);
+    final isSelected = _currentSelectedIds.contains(email.id);
     final bgColor = isSelected
         ? theme.colorScheme.primaryContainer.withValues(alpha: 0.3)
         : rowColor;
@@ -1058,7 +1159,7 @@ class _GridEmailListState extends State<GridEmailList> {
         ? theme.colorScheme.surfaceContainerLow.withValues(alpha: 0.3)
         : theme.colorScheme.surface;
 
-    final isSelected = _selectedEmailIds.contains(email.id);
+    final isSelected = _currentSelectedIds.contains(email.id);
 
     return DataRow(
       selected: isSelected,
@@ -1340,15 +1441,85 @@ class _GridEmailListState extends State<GridEmailList> {
     );
   }
 
+  /// Configuration for status buttons based on folder
+  _StatusButtonConfig _getStatusButtonConfig(String folder) {
+    final upperFolder = folder.toUpperCase();
+    switch (upperFolder) {
+      case 'INBOX':
+        return _StatusButtonConfig(
+          showPersonalBusiness: true,
+          showStar: true,
+          showMove: true,
+          showArchive: true,
+          showTrash: true,
+          moveLabel: 'Move to local folder',
+          moveTooltip: 'Move to local folder',
+        );
+      case 'SENT':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: false,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Move',
+          moveTooltip: 'Move',
+        );
+      case 'SPAM':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Move to Inbox',
+          moveTooltip: 'Move to Inbox',
+        );
+      case 'TRASH':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: false,
+          moveLabel: 'Restore',
+          moveTooltip: 'Restore',
+        );
+      case 'ARCHIVE':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Restore',
+          moveTooltip: 'Restore',
+        );
+      default:
+        // Default to all enabled (for unknown folders)
+        return _StatusButtonConfig(
+          showPersonalBusiness: true,
+          showStar: true,
+          showMove: true,
+          showArchive: true,
+          showTrash: true,
+          moveLabel: 'Move to local folder',
+          moveTooltip: 'Move to local folder',
+        );
+    }
+  }
+
   Widget _buildStatusButtons(BuildContext context, ThemeData theme, MessageIndex email) {
     final isPersonal = email.localTagPersonal == 'Personal';
     final isBusiness = email.localTagPersonal == 'Business';
+    final config = _getStatusButtonConfig(widget.selectedFolder);
 
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         // Personal/Business switch
-        Container(
+        if (config.showPersonalBusiness)
+          Container(
           decoration: BoxDecoration(
             color: theme.colorScheme.surfaceContainerHighest,
             borderRadius: BorderRadius.circular(16),
@@ -1500,7 +1671,54 @@ class _GridEmailListState extends State<GridEmailList> {
               ),
             ],
           ),
-        ),
+        )
+        else
+          Container(
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.4),
+                width: 1,
+              ),
+            ),
+            padding: const EdgeInsets.all(1),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Tooltip(
+                  message: 'Personal',
+                  child: InkWell(
+                    onTap: null,
+                    borderRadius: BorderRadius.circular(15),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.person,
+                        size: 14,
+                        color: Colors.blue.withValues(alpha: 0.3),
+                      ),
+                    ),
+                  ),
+                ),
+                Tooltip(
+                  message: 'Business',
+                  child: InkWell(
+                    onTap: null,
+                    borderRadius: BorderRadius.circular(15),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.business_center,
+                        size: 14,
+                        color: Colors.purple.withValues(alpha: 0.3),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         const SizedBox(width: 4),
         
         // Star toggle
@@ -1512,25 +1730,40 @@ class _GridEmailListState extends State<GridEmailList> {
               size: 16,
               color: email.isStarred
                   ? Colors.amber.shade700
-                  : theme.colorScheme.onSurfaceVariant,
+                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: config.showStar ? 1.0 : 0.3),
             ),
-            onPressed: () => widget.onStarToggle?.call(email),
+            onPressed: config.showStar ? () => widget.onStarToggle?.call(email) : null,
             padding: const EdgeInsets.all(2),
             constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
           ),
         ),
         const SizedBox(width: 2),
         
-        // Move to local folder
+        // Move/Restore button
         Tooltip(
-          message: 'Move to local folder',
+          message: config.moveTooltip,
           child: IconButton(
             icon: Icon(
               Icons.folder_outlined,
               size: 16,
-              color: theme.colorScheme.primary,
+              color: theme.colorScheme.primary.withValues(alpha: config.showMove ? 1.0 : 0.3),
             ),
-            onPressed: () => widget.onMoveToLocalFolder?.call(email),
+            onPressed: config.showMove
+                ? () {
+                    // Determine which callback to use based on folder
+                    final upperFolder = widget.selectedFolder.toUpperCase();
+                    if (upperFolder == 'SPAM') {
+                      // Spam: Move to Inbox
+                      widget.onMoveToInbox?.call(email);
+                    } else if (upperFolder == 'TRASH' || upperFolder == 'ARCHIVE') {
+                      // Trash/Archive: Restore
+                      widget.onRestore?.call(email);
+                    } else {
+                      // Default: Move to local folder
+                      widget.onMoveToLocalFolder?.call(email);
+                    }
+                  }
+                : null,
             padding: const EdgeInsets.all(2),
             constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
           ),
@@ -1544,9 +1777,9 @@ class _GridEmailListState extends State<GridEmailList> {
             icon: Icon(
               Icons.archive_outlined,
               size: 16,
-              color: theme.colorScheme.onSurfaceVariant,
+              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: config.showArchive ? 1.0 : 0.3),
             ),
-            onPressed: () => widget.onArchive?.call(email),
+            onPressed: config.showArchive ? () => widget.onArchive?.call(email) : null,
             padding: const EdgeInsets.all(2),
             constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
           ),
@@ -1560,9 +1793,9 @@ class _GridEmailListState extends State<GridEmailList> {
             icon: Icon(
               Icons.delete_outline,
               size: 16,
-              color: theme.colorScheme.error,
+              color: theme.colorScheme.error.withValues(alpha: config.showTrash ? 1.0 : 0.3),
             ),
-            onPressed: () => widget.onTrash?.call(email),
+            onPressed: config.showTrash ? () => widget.onTrash?.call(email) : null,
             padding: const EdgeInsets.all(2),
             constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
           ),
@@ -1598,15 +1831,18 @@ class _GridEmailListState extends State<GridEmailList> {
 
     if (daysDiff == 0) {
       return 'Today';
-    } else if (daysDiff == 1) {
-      return 'Tomorrow';
     } else if (daysDiff == -1) {
+      return 'Tomorrow';
+    } else if (daysDiff == 1) {
       return 'Yesterday';
-    } else if (daysDiff > 0 && daysDiff < 7) {
-      return 'In $daysDiff days';
-    } else if (daysDiff < 0 && daysDiff > -7) {
-      return '${-daysDiff} days ago';
+    } else if (daysDiff < -1 && daysDiff > -7) {
+      // Future dates within a week - show actual date
+      return DateFormat('MMM d').format(localDate);
+    } else if (daysDiff > 1 && daysDiff < 7) {
+      // Past dates within a week - show "X days ago"
+      return '${daysDiff} days ago';
     } else {
+      // Dates beyond a week - show formatted date
       return DateFormat('MMM d, yyyy').format(localDate);
     }
   }

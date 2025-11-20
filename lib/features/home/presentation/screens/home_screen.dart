@@ -85,6 +85,27 @@ class _ProcessingDialog extends StatelessWidget {
   }
 }
 
+/// Configuration for status buttons based on folder
+class _StatusButtonConfig {
+  final bool showPersonalBusiness;
+  final bool showStar;
+  final bool showMove;
+  final bool showArchive;
+  final bool showTrash;
+  final String moveLabel;
+  final String moveTooltip;
+
+  const _StatusButtonConfig({
+    required this.showPersonalBusiness,
+    required this.showStar,
+    required this.showMove,
+    required this.showArchive,
+    required this.showTrash,
+    required this.moveLabel,
+    required this.moveTooltip,
+  });
+}
+
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   // Selected folder (default to Inbox)
   String _selectedFolder = AppConstants.folderInbox;
@@ -2339,7 +2360,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       ),
       padding: const EdgeInsets.all(2),
       child: Material(
-        color: hasCategories ? cs.primaryContainer : Colors.transparent,
+        color: hasCategories ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
@@ -2359,7 +2380,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           : Icons.filter_alt_outlined,
                       size: 18,
                       color: hasCategories
-                          ? cs.onPrimaryContainer
+                          ? ActionMailTheme.alertColor
                           : const Color(0xFF00897B), // Teal for categories
                     ),
                     if (hasCategories)
@@ -2370,10 +2391,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                           width: 6,
                           height: 6,
                           decoration: BoxDecoration(
-                            color: cs.primary,
+                            color: ActionMailTheme.alertColor,
                             shape: BoxShape.circle,
                             border: Border.all(
-                                color: cs.primaryContainer, width: 1),
+                                color: ActionMailTheme.alertColor.withValues(alpha: 0.3), width: 1),
                           ),
                         ),
                       ),
@@ -2385,7 +2406,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     'Categories',
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: hasCategories
-                          ? cs.onPrimaryContainer
+                          ? ActionMailTheme.alertColor
                           : cs.onSurfaceVariant,
                       fontWeight:
                           hasCategories ? FontWeight.w600 : FontWeight.w500,
@@ -2464,7 +2485,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       ),
       padding: const EdgeInsets.all(2),
       child: Material(
-        color: isSearchActive ? cs.primaryContainer : Colors.transparent,
+        color: isSearchActive ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
@@ -2488,7 +2509,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   isSearchActive ? Icons.search_off : Icons.search,
                   size: 18,
                   color: isSearchActive
-                      ? cs.onPrimaryContainer
+                      ? ActionMailTheme.alertColor
                       : const Color(0xFF42A5F5), // Blue for search
                 ),
                 if (isDesktop) ...[
@@ -2497,7 +2518,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     'Search',
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: isSearchActive
-                          ? cs.onPrimaryContainer
+                          ? ActionMailTheme.alertColor
                           : cs.onSurfaceVariant,
                       fontWeight:
                           isSearchActive ? FontWeight.w600 : FontWeight.w500,
@@ -2528,7 +2549,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // Assign colors based on filter type
     Color iconColor;
     if (selected) {
-      iconColor = cs.onPrimaryContainer;
+      iconColor = ActionMailTheme.alertColor;
     } else {
       switch (label) {
         case 'Unread':
@@ -2564,7 +2585,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return Tooltip(
       message: tooltipText,
       child: Material(
-        color: selected ? cs.primaryContainer : Colors.transparent,
+        color: selected ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
         borderRadius: BorderRadius.circular(10),
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
@@ -2587,7 +2608,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     label,
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: selected
-                          ? cs.onPrimaryContainer
+                          ? ActionMailTheme.alertColor
                           : cs.onSurfaceVariant,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
@@ -2598,7 +2619,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       padding: const EdgeInsets.symmetric(
                           horizontal: 5, vertical: 1),
                       decoration: BoxDecoration(
-                        color: selected ? cs.primary : iconColor,
+                        color: selected ? ActionMailTheme.alertColor : iconColor,
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
@@ -2617,7 +2638,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     padding:
                         const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                     decoration: BoxDecoration(
-                      color: selected ? cs.primary : iconColor,
+                      color: selected ? ActionMailTheme.alertColor : iconColor,
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
@@ -3335,6 +3356,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             iconSize: 20,
             onPressed: () {
               setState(() {
+                if (_showFilterBar) {
+                  // Closing FilterBar - reset all filters
+                  _stateFilter = null;
+                  _selectedCategories.clear();
+                  _searchQuery = '';
+                  _searchController.clear();
+                  _showSearch = false;
+                }
                 _showFilterBar = !_showFilterBar;
               });
             },
@@ -3682,14 +3711,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
             decoration: selected
                 ? BoxDecoration(
-                    color: cs.primary.withValues(alpha: 0.12),
+                    color: ActionMailTheme.alertColor.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(8),
                   )
                 : null,
             child: Text(
               displayText,
               style: theme.textTheme.labelMedium?.copyWith(
-                color: selected ? cs.primary : cs.onSurfaceVariant,
+                color: selected ? ActionMailTheme.alertColor : cs.onSurfaceVariant,
                 fontWeight: FontWeight.w700,
                 fontSize: 12,
               ),
@@ -3933,6 +3962,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 localFolders: localFoldersList,
                 isLocalFolder: _isLocalFolder,
                 activeFilters: activeFilters,
+                selectedEmailIds: _tableSelectedEmailIds,
                 onSelectionChanged: (count) {
                   setState(() {
                     _tableSelectedCount = count;
@@ -4023,16 +4053,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 onTrash: (email) async {
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     final prev = email.folderLabel;
-                    await MessageRepository().updateFolderNoPrev(email.id, 'TRASH');
-                    ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+                    // Optimistic UI update first
+                    if (_selectedFolder != 'TRASH') {
+                      ref.read(emailListProvider.notifier).removeMessage(email.id);
+                    } else {
+                      ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+                    }
+                    // Database update in background
+                    unawaited(MessageRepository().updateFolderNoPrev(email.id, 'TRASH'));
                     _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
                   }
                 },
                 onArchive: (email) async {
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     final prev = email.folderLabel;
-                    await MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE');
-                    ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+                    // Optimistic UI update first
+                    if (_selectedFolder != 'ARCHIVE') {
+                      ref.read(emailListProvider.notifier).removeMessage(email.id);
+                    } else {
+                      ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+                    }
+                    // Database update in background
+                    unawaited(MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE'));
                     _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
                   }
                 },
@@ -4082,6 +4124,40 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   );
                   if (folder != null) {
                     await _saveEmailToFolder(folder, email);
+                  }
+                },
+                onRestore: (email) async {
+                  if (!_isLocalFolder && _selectedAccountId != null) {
+                    // Optimistic: remove from current view immediately; background restore will adjust
+                    ref.read(emailListProvider.notifier).removeMessage(email.id);
+                    unawaited(() async {
+                      await MessageRepository().restoreToPrev(email.id);
+                      if (_selectedAccountId != null) {
+                        final updated = await MessageRepository()
+                            .getByIds(_selectedAccountId!, [email.id]);
+                        final restored = updated[email.id];
+                        if (restored != null) {
+                          final dest = restored.folderLabel;
+                          _enqueueGmailUpdate('restore:${dest.toUpperCase()}', email.id);
+                        }
+                      }
+                    }());
+                  }
+                },
+                onMoveToInbox: (email) async {
+                  if (!_isLocalFolder && _selectedAccountId != null) {
+                    // Optimistic UI update first
+                    if (_selectedFolder != 'INBOX') {
+                      ref.read(emailListProvider.notifier).removeMessage(email.id);
+                    } else {
+                      ref.read(emailListProvider.notifier).setFolder(email.id, 'INBOX');
+                    }
+                    unawaited(MessageRepository().updateFolderWithPrev(
+                      email.id,
+                      'INBOX',
+                      prevFolderLabel: email.folderLabel,
+                    ));
+                    _enqueueGmailUpdate('moveToInbox', email.id);
                   }
                 },
                 onFiltersChanged: (filters) {
@@ -5148,10 +5224,79 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     return items;
   }
 
+  /// Configuration for status buttons based on folder (same as GridEmailList)
+  _StatusButtonConfig _getStatusButtonConfig(String folder) {
+    final upperFolder = folder.toUpperCase();
+    switch (upperFolder) {
+      case 'INBOX':
+        return _StatusButtonConfig(
+          showPersonalBusiness: true,
+          showStar: true,
+          showMove: true,
+          showArchive: true,
+          showTrash: true,
+          moveLabel: 'Move',
+          moveTooltip: 'Move',
+        );
+      case 'SENT':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: false,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Move',
+          moveTooltip: 'Move',
+        );
+      case 'SPAM':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Move to Inbox',
+          moveTooltip: 'Move to Inbox',
+        );
+      case 'TRASH':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: false,
+          moveLabel: 'Restore',
+          moveTooltip: 'Restore',
+        );
+      case 'ARCHIVE':
+        return _StatusButtonConfig(
+          showPersonalBusiness: false,
+          showStar: false,
+          showMove: true,
+          showArchive: false,
+          showTrash: true,
+          moveLabel: 'Restore',
+          moveTooltip: 'Restore',
+        );
+      default:
+        // Default to all enabled (for unknown folders)
+        return _StatusButtonConfig(
+          showPersonalBusiness: true,
+          showStar: true,
+          showMove: true,
+          showArchive: true,
+          showTrash: true,
+          moveLabel: 'Move',
+          moveTooltip: 'Move',
+        );
+    }
+  }
+
   Widget _buildBulkActionButtonsAppBar(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final emailListAsync = ref.watch(emailListProvider);
+    final config = _getStatusButtonConfig(_selectedFolder);
     
     // Get selected emails
     final selectedEmails = emailListAsync.when(
@@ -5188,49 +5333,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           context,
           Icons.person_outline,
           'Personal',
-          () => _applyBulkPersonalBusiness(selectedEmails, 'Personal', ref),
+          config.showPersonalBusiness ? () => _applyBulkPersonalBusiness(selectedEmails, 'Personal', ref) : null,
+          enabled: config.showPersonalBusiness,
         ),
         const SizedBox(width: 4),
         _buildBulkActionButtonAppBar(
           context,
           Icons.business_center,
           'Business',
-          () => _applyBulkPersonalBusiness(selectedEmails, 'Business', ref),
+          config.showPersonalBusiness ? () => _applyBulkPersonalBusiness(selectedEmails, 'Business', ref) : null,
+          enabled: config.showPersonalBusiness,
         ),
         const SizedBox(width: 4),
         _buildBulkActionButtonAppBar(
           context,
           Icons.star_outline,
           'Star',
-          () => _applyBulkStar(selectedEmails, ref),
+          config.showStar ? () => _applyBulkStar(selectedEmails, ref) : null,
+          enabled: config.showStar,
         ),
         const SizedBox(width: 4),
         _buildBulkActionButtonAppBar(
           context,
           Icons.folder_outlined,
-          'Move',
-          () => _applyBulkMove(selectedEmails, ref),
+          config.moveTooltip,
+          config.showMove ? () => _applyBulkMove(selectedEmails, ref) : null,
+          enabled: config.showMove,
         ),
         const SizedBox(width: 4),
         _buildBulkActionButtonAppBar(
           context,
           Icons.archive_outlined,
           'Archive',
-          () => _applyBulkArchive(selectedEmails, ref),
+          config.showArchive ? () => _applyBulkArchive(selectedEmails, ref) : null,
+          enabled: config.showArchive,
         ),
         const SizedBox(width: 4),
         _buildBulkActionButtonAppBar(
           context,
           Icons.delete_outline,
           'Trash',
-          () => _applyBulkTrash(selectedEmails, ref),
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.undo,
-          'Undo',
-          () => _undoBulkAction(ref),
+          config.showTrash ? () => _applyBulkTrash(selectedEmails, ref) : null,
+          enabled: config.showTrash,
         ),
       ],
     );
@@ -5240,15 +5384,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     BuildContext context,
     IconData icon,
     String tooltip,
-    VoidCallback onPressed,
-  ) {
+    VoidCallback? onPressed, {
+    bool enabled = true,
+  }) {
     final theme = Theme.of(context);
     return Tooltip(
       message: tooltip,
       child: IconButton(
         icon: Icon(icon, size: 18),
         onPressed: onPressed,
-        color: theme.appBarTheme.foregroundColor,
+        color: enabled
+            ? theme.appBarTheme.foregroundColor
+            : theme.appBarTheme.foregroundColor?.withValues(alpha: 0.3),
         padding: EdgeInsets.zero,
         constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
         tooltip: tooltip,
@@ -5290,7 +5437,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   Future<void> _applyBulkMove(List<MessageIndex> emails, WidgetRef ref) async {
-    // Show folder selection dialog
+    final upperFolder = _selectedFolder.toUpperCase();
+    
+    // Handle folder-specific move actions
+    if (upperFolder == 'SPAM') {
+      // Spam: Move to Inbox
+      for (final email in emails) {
+        if (_selectedAccountId != null) {
+          // Optimistic UI update first
+          if (_selectedFolder != 'INBOX') {
+            ref.read(emailListProvider.notifier).removeMessage(email.id);
+          } else {
+            ref.read(emailListProvider.notifier).setFolder(email.id, 'INBOX');
+          }
+          unawaited(MessageRepository().updateFolderWithPrev(
+            email.id,
+            'INBOX',
+            prevFolderLabel: email.folderLabel,
+          ));
+          _enqueueGmailUpdate('moveToInbox', email.id);
+        }
+      }
+      _clearBulkSelection();
+      return;
+    } else if (upperFolder == 'TRASH' || upperFolder == 'ARCHIVE') {
+      // Trash/Archive: Restore to previous folder
+      for (final email in emails) {
+        if (!_isLocalFolder && _selectedAccountId != null) {
+          // Optimistic: remove from current view immediately; background restore will adjust
+          ref.read(emailListProvider.notifier).removeMessage(email.id);
+          unawaited(() async {
+            await MessageRepository().restoreToPrev(email.id);
+            if (_selectedAccountId != null) {
+              final updated = await MessageRepository()
+                  .getByIds(_selectedAccountId!, [email.id]);
+              final restored = updated[email.id];
+              if (restored != null) {
+                final dest = restored.folderLabel;
+                _enqueueGmailUpdate('restore:${dest.toUpperCase()}', email.id);
+              }
+            }
+          }());
+        }
+      }
+      _clearBulkSelection();
+      return;
+    }
+    
+    // Default: Move to local folder (show folder selection dialog)
     final folder = await showDialog<String>(
       context: context,
       builder: (context) => Dialog(
@@ -5349,38 +5543,96 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   Future<void> _applyBulkArchive(List<MessageIndex> emails, WidgetRef ref) async {
     if (_isLocalFolder || _selectedAccountId == null) return;
     
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Archive Emails'),
+        content: Text('Are you sure you want to archive ${emails.length} email${emails.length == 1 ? '' : 's'}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    
+    // Optimistic UI updates first
+    for (final email in emails) {
+      if (_selectedFolder != 'ARCHIVE') {
+        ref.read(emailListProvider.notifier).removeMessage(email.id);
+      } else {
+        ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+      }
+    }
+    // Clear selection immediately after optimistic update
+    _clearBulkSelection();
+    
+    // Database updates in background
     for (final email in emails) {
       final prev = email.folderLabel;
-      await MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE');
-      ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
+      unawaited(MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE'));
       _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
     }
-    // Clear selection after bulk action
-    _clearBulkSelection();
   }
 
   Future<void> _applyBulkTrash(List<MessageIndex> emails, WidgetRef ref) async {
     if (_isLocalFolder || _selectedAccountId == null) return;
     
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Trash Emails'),
+        content: Text('Are you sure you want to move ${emails.length} email${emails.length == 1 ? '' : 's'} to trash?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+              foregroundColor: Theme.of(ctx).colorScheme.onError,
+            ),
+            child: const Text('Trash'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    
+    // Optimistic UI updates first
+    for (final email in emails) {
+      if (_selectedFolder != 'TRASH') {
+        ref.read(emailListProvider.notifier).removeMessage(email.id);
+      } else {
+        ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+      }
+    }
+    // Clear selection immediately after optimistic update
+    _clearBulkSelection();
+    
+    // Database updates in background
     for (final email in emails) {
       final prev = email.folderLabel;
-      await MessageRepository().updateFolderNoPrev(email.id, 'TRASH');
-      ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
+      unawaited(MessageRepository().updateFolderNoPrev(email.id, 'TRASH'));
       _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
     }
-    // Clear selection after bulk action
-    _clearBulkSelection();
-  }
-
-  void _undoBulkAction(WidgetRef ref) {
-    // TODO: Implement undo functionality
-    // For now, just clear selection
-    _clearBulkSelection();
   }
 
   void _clearBulkSelection() {
     setState(() {
-      _tableSelectedEmailIds.clear();
+      _tableSelectedEmailIds = {}; // Create new empty set to trigger didUpdateWidget
       _tableSelectedCount = 0;
     });
   }

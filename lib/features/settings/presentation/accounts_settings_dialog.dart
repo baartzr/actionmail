@@ -11,6 +11,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'dart:io';
 import 'package:domail/constants/app_brand.dart';
 import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
+import 'package:domail/app/theme/actionmail_theme.dart';
 // import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
@@ -21,6 +22,14 @@ class AccountsSettingsDialog extends ConsumerStatefulWidget {
 }
 
 class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -362,12 +371,18 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: maxWidth),
-          child: SingleChildScrollView(
-            child: Padding(
-              padding: isDesktop
-                  ? const EdgeInsets.symmetric(horizontal: 16, vertical: 12)
-                  : const EdgeInsets.all(12),
-              child: Column(
+          child: Scrollbar(
+            controller: _scrollController,
+            thumbVisibility: true,
+            thickness: 12.0,
+            radius: const Radius.circular(6.0),
+            child: SingleChildScrollView(
+              controller: _scrollController,
+              child: Padding(
+                padding: isDesktop
+                    ? const EdgeInsets.symmetric(horizontal: 16, vertical: 12)
+                    : const EdgeInsets.all(12),
+                child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   // App info card
@@ -611,20 +626,34 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                               ],
                             ),
                           ),
+                          const SizedBox(width: 16),
                           Consumer(
                             builder: (context, ref, child) {
                               return FutureBuilder<ViewMode>(
                                 future: ref.read(viewModeProvider.notifier).getDefaultView(),
                                 builder: (context, snapshot) {
                                   final defaultView = snapshot.data ?? ViewMode.tile;
-                                  return Switch(
-                                    value: defaultView == ViewMode.table,
-                                    onChanged: (value) async {
-                                      final newMode = value ? ViewMode.table : ViewMode.tile;
+                                  return SegmentedButton<ViewMode>(
+                                    segments: const [
+                                      ButtonSegment<ViewMode>(
+                                        value: ViewMode.tile,
+                                        label: Text('Tile'),
+                                        icon: Icon(Icons.view_module, size: 16),
+                                      ),
+                                      ButtonSegment<ViewMode>(
+                                        value: ViewMode.table,
+                                        label: Text('Table'),
+                                        icon: Icon(Icons.table_chart, size: 16),
+                                      ),
+                                    ],
+                                    selected: {defaultView},
+                                    onSelectionChanged: (Set<ViewMode> newSelection) async {
+                                      if (newSelection.isEmpty) return;
+                                      final newMode = newSelection.first;
                                       await ref.read(viewModeProvider.notifier).setDefaultView(newMode);
                                       // Also update current view if it matches the old default
                                       final currentView = ref.read(viewModeProvider);
-                                      if (currentView == (value ? ViewMode.tile : ViewMode.table)) {
+                                      if (currentView == (newMode == ViewMode.table ? ViewMode.tile : ViewMode.table)) {
                                         ref.read(viewModeProvider.notifier).setViewMode(newMode);
                                       }
                                       if (!context.mounted) return;
@@ -632,13 +661,19 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                       final messenger = ScaffoldMessenger.of(context);
                                       messenger.showSnackBar(
                                         SnackBar(
-                                          content: Text(value 
+                                          content: Text(newMode == ViewMode.table
                                             ? 'Default view set to Table View' 
                                             : 'Default view set to Tile View'),
                                           duration: const Duration(seconds: 2),
                                         ),
                                       );
                                     },
+                                    style: SegmentedButton.styleFrom(
+                                      selectedBackgroundColor: ActionMailTheme.alertColor.withValues(alpha: 0.2),
+                                      selectedForegroundColor: ActionMailTheme.alertColor,
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
                                   );
                                 },
                               );
@@ -814,6 +849,7 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
             ),
           ),
         ),
+      ),
       ),
     );
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:domail/app/theme/actionmail_theme.dart';
 
 /// Reusable dropdown widget with consistent styling
 class AppDropdown<T> extends StatelessWidget {
@@ -29,40 +30,60 @@ class AppDropdown<T> extends StatelessWidget {
     // Use provided textColor or default gray color for dropdown text
     final selectedTextColor = textColor ?? cs.onSurface.withValues(alpha: 0.8);
     
-    return DropdownButton<T>(
-      value: value,
-      hint: hint != null ? Text(
-        hint!,
-        style: TextStyle(color: selectedTextColor, fontSize: 14),
-      ) : null,
-      icon: Icon(Icons.arrow_drop_down, color: selectedTextColor),
-      selectedItemBuilder: (context) {
-        return items.map((item) {
-          return Align(
-            alignment: Alignment.centerLeft,
-            child: Text(
-              itemBuilder(item),
-              style: TextStyle(color: selectedTextColor, fontSize: 14),
+    return Theme(
+      data: theme.copyWith(
+        highlightColor: Colors.transparent,
+        splashColor: Colors.transparent,
+        listTileTheme: ListTileThemeData(
+          selectedTileColor: ActionMailTheme.darkTealLight, // Try lighter variant
+          selectedColor: cs.onSurface,
+        ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: cs.surface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+        ),
+      ),
+      child: DropdownButton<T>(
+        value: value,
+        hint: hint != null ? Text(
+          hint!,
+          style: TextStyle(color: selectedTextColor, fontSize: 14),
+        ) : null,
+        icon: Icon(Icons.arrow_drop_down, color: selectedTextColor),
+        selectedItemBuilder: (context) {
+          return items.map((item) {
+            return Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                itemBuilder(item),
+                style: TextStyle(color: selectedTextColor, fontSize: 14),
+              ),
+            );
+          }).toList();
+        },
+        items: items.map((item) {
+          return DropdownMenuItem<T>(
+            value: item,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              child: Text(
+                itemBuilder(item),
+                style: TextStyle(color: cs.onSurface, fontSize: 14),
+              ),
             ),
           );
-        }).toList();
-      },
-      items: items.map((item) {
-        return DropdownMenuItem<T>(
-          value: item,
-          child: Text(
-            itemBuilder(item),
-            style: TextStyle(color: cs.onSurface, fontSize: 14),
-          ),
-        );
-      }).toList(),
-      onChanged: onChanged,
-      underline: const SizedBox.shrink(),
-      isDense: isDense,
-      style: TextStyle(color: selectedTextColor, fontSize: 14),
-      dropdownColor: cs.surface,
-      menuMaxHeight: 300,
-      iconSize: 24,
+        }).toList(),
+        onChanged: onChanged,
+        underline: const SizedBox.shrink(),
+        isDense: isDense,
+        style: TextStyle(color: selectedTextColor, fontSize: 14),
+        dropdownColor: cs.surface,
+        menuMaxHeight: 300,
+        iconSize: 24,
+      ),
     );
   }
 }
