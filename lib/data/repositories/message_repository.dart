@@ -81,7 +81,11 @@ class MessageRepository {
       limit: 1,
     );
     if (rows.isEmpty) return null;
-    return _fromRow(rows.first);
+    final result = _fromRow(rows.first);
+    if (kDebugMode) {
+      debugPrint('[DB_READ] getById messageId=$messageId, actionInsightText=${result.actionInsightText}, hasAction=${result.hasAction}');
+    }
+    return result;
   }
 
   Future<void> clearAll() async {
@@ -324,24 +328,61 @@ class MessageRepository {
     return rows.first['lastUpdated'] as int?;
   }
 
+  /// Update action for a message
+  /// actionInsightText is the source of truth: if null or empty, no action exists
   Future<void> updateAction(String messageId, DateTime? actionDate, String? actionText, [double? confidence, bool? actionComplete, bool updateTimestamp = true]) async {
     final db = await _dbProvider.database;
-    // Determine if action exists (has date or text)
-    final hasAction = actionDate != null || (actionText != null && actionText.isNotEmpty);
+    
+    // Source of truth: actionInsightText determines if action exists
+    final hasAction = actionText != null && actionText.isNotEmpty;
+    
+    if (kDebugMode) {
+      debugPrint('[DB_UPDATE_ACTION] START messageId=$messageId, actionText=$actionText, hasAction=$hasAction');
+    }
+    
     final data = <String, Object?>{
       'actionDate': actionDate?.millisecondsSinceEpoch,
-      'actionInsightText': actionText,
+      'actionInsightText': actionText, // null when removing action
       'hasAction': hasAction ? 1 : 0,
       if (updateTimestamp) 'lastUpdated': DateTime.now().millisecondsSinceEpoch,
-      if (confidence != null) 'actionConfidence': confidence,
-      if (actionComplete != null) 'actionComplete': actionComplete ? 1 : 0,
+      // Clear actionConfidence when removing action, otherwise use provided confidence
+      if (!hasAction) 
+        'actionConfidence': null
+      else if (confidence != null)
+        'actionConfidence': confidence,
+      // Set actionComplete - clear to false when removing action, otherwise use provided value
+      if (!hasAction)
+        'actionComplete': 0
+      else if (actionComplete != null)
+        'actionComplete': actionComplete ? 1 : 0,
     };
-    await db.update(
+    
+    if (kDebugMode) {
+      debugPrint('[DB_UPDATE_ACTION] DATA messageId=$messageId, data=$data');
+    }
+    
+    final rowsAffected = await db.update(
       'messages',
       data,
       where: 'id=?',
       whereArgs: [messageId],
     );
+    
+    if (kDebugMode) {
+      debugPrint('[DB_UPDATE_ACTION] ROWS_AFFECTED messageId=$messageId, rowsAffected=$rowsAffected');
+      
+      // Verify the update by reading back from DB
+      final verify = await db.query(
+        'messages',
+        columns: ['actionInsightText', 'hasAction'],
+        where: 'id=?',
+        whereArgs: [messageId],
+        limit: 1,
+      );
+      if (verify.isNotEmpty) {
+        debugPrint('[DB_UPDATE_ACTION] VERIFY DB actionText=${verify.first['actionInsightText']}, hasAction=${verify.first['hasAction']}');
+      }
+    }
   }
 
   Future<Map<String, MessageIndex>> getByIds(String accountId, List<String> ids) async {
@@ -510,10 +551,8 @@ class MessageRepository {
       actionConfidence: (row['actionConfidence'] as num?)?.toDouble(),
       actionInsightText: row['actionInsightText'] as String?,
       actionComplete: (row['actionComplete'] as int? ?? 0) == 1,
-      // hasAction: derive from actionDate/actionInsightText if column doesn't exist (for backwards compatibility)
-      hasAction: row.containsKey('hasAction') 
-          ? (row['hasAction'] as int? ?? 0) == 1
-          : (row['actionDate'] != null || (row['actionInsightText'] != null && (row['actionInsightText'] as String).isNotEmpty)),
+      // hasAction: ALWAYS derive from actionInsightText (source of truth)
+      hasAction: (row['actionInsightText'] != null && (row['actionInsightText'] as String).isNotEmpty),
       isRead: (row['isRead'] as int) == 1,
       isStarred: (row['isStarred'] as int) == 1,
       isImportant: (row['isImportant'] as int) == 1,

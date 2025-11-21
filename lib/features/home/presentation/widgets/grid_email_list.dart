@@ -37,6 +37,7 @@ class GridEmailList extends StatefulWidget {
   final ValueChanged<int>? onSelectionChanged;
   final ValueChanged<Set<String>>? onSelectedIdsChanged;
   final Set<String>? selectedEmailIds; // External control of selection - if provided, overrides internal state
+  final Future<void> Function(String folderPath)? onLocalFolderSelected; // Callback for local folder selection
 
   const GridEmailList({
     super.key,
@@ -63,6 +64,7 @@ class GridEmailList extends StatefulWidget {
     this.onSelectionChanged,
     this.onSelectedIdsChanged,
     this.selectedEmailIds,
+    this.onLocalFolderSelected,
   });
 
   @override
@@ -767,31 +769,31 @@ class _GridEmailListState extends State<GridEmailList> {
         final senderWidth = 200.0;
         final actionDetailsWidth = 250.0;
         // Adjust status width for small screens (smaller buttons = less space needed)
-        // Personal/Business buttons (~50px) + 4 icon buttons (20px each) + spacing (2px * 5) ≈ 150px for small, 170px for normal
-        final statusWidth = isSmallScreen ? 150.0 : 170.0; // Width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
+        // Personal/Business buttons (~50px) + 4 icon buttons (20px each) + spacing (2px * 5) ≈ 152px for small, 172px for normal
+        final statusWidth = isSmallScreen ? 152.0 : 172.0; // Width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
         // Subject & Snippet - minimum width, but can expand
         final subjectMinWidth = 300.0;
         final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth + statusWidth;
         final totalMinWidth = fixedColumnsWidth + subjectMinWidth;
         
-        // Calculate available width - use constraints if valid, otherwise use minimum width
+        // Calculate available width - account for horizontal padding (16 * 2 = 32)
         final hasValidConstraints = constraints.maxWidth.isFinite && 
                                     constraints.maxWidth > 0;
         
-        // Calculate available width from constraints
-        final availableWidth = hasValidConstraints ? constraints.maxWidth : totalMinWidth;
+        // Calculate available width from constraints, accounting for padding
+        final availableWidth = hasValidConstraints 
+            ? constraints.maxWidth - 32.0  // Account for horizontal padding
+            : totalMinWidth;
         
         // Calculate subject column width based on available space
-        // Always use at least totalMinWidth to ensure proper scrolling when needed
-        // If available width is larger, expand the subject column
-        final minTableWidth = totalMinWidth;
-        final tableWidth = availableWidth > totalMinWidth ? availableWidth : totalMinWidth;
-        final availableForSubject = tableWidth - fixedColumnsWidth;
+        // Allow subject width to use minimum or expand to fit available space
+        // When screen is large, use available space; when small, use minimum and allow scrolling
+        final availableForSubject = availableWidth - fixedColumnsWidth;
         final subjectWidth = availableForSubject >= subjectMinWidth 
             ? availableForSubject 
             : subjectMinWidth;
         
-        // Calculate actual table width from all column widths to ensure proper scrolling
+        // Calculate actual table width from all column widths
         // This must match the sum of all column widths exactly
         final actualTableWidth = checkboxWidth + 
             dateWidth + 
@@ -800,118 +802,119 @@ class _GridEmailListState extends State<GridEmailList> {
             actionDetailsWidth + 
             statusWidth;
         
-        // Final table width - ensure it's always at least totalMinWidth for proper scrolling
-        // When screen is small, use actual table width (which is at least totalMinWidth) to enable full scrolling
-        final finalTableWidth = availableWidth >= totalMinWidth 
-            ? actualTableWidth  // Use actual table width when screen is large (may expand with subject)
-            : actualTableWidth; // Use actual table width when screen is small (ensures full scroll extent)
+        // Determine if table exceeds available width and needs scrolling
+        // Compare with small tolerance for floating point precision
+        final needsScrolling = (actualTableWidth - availableWidth) > 0.5;
         
         return Padding(
-          padding: const EdgeInsets.only(bottom: 8.0), // Add padding at bottom for scrollbar
-          child: Scrollbar(
-            controller: _horizontalScrollController,
-            thumbVisibility: true, // Always show scrollbar when scrollable
-            thickness: 12.0, // Make scrollbar thicker for easier clicking
-            radius: const Radius.circular(6.0), // Rounded corners
-            child: SingleChildScrollView(
-              controller: _horizontalScrollController,
-              scrollDirection: Axis.horizontal,
-              physics: const AlwaysScrollableScrollPhysics(), // Always allow scrolling even when content is slightly wider
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minWidth: actualTableWidth, // Ensure minimum width matches actual table width
-                ),
-                child: SizedBox(
-                  width: actualTableWidth, // Use actual table width to ensure proper scroll extent
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.vertical,
-                    child: Table(
-                    columnWidths: {
-                      0: FixedColumnWidth(checkboxWidth),
-                      1: FixedColumnWidth(dateWidth),
-                      2: FixedColumnWidth(senderWidth),
-                      3: FixedColumnWidth(subjectWidth), // Subject & Snippet - expands with available space
-                      4: FixedColumnWidth(actionDetailsWidth),
-                      5: FixedColumnWidth(statusWidth),
-                    },
-                    defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-                    children: [
-                      // Header row
-                      TableRow(
-                        decoration: BoxDecoration(
-                          color: ActionMailTheme.alertColor,
-                        ),
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0), // Add horizontal and bottom padding
+          child: ClipRect(
+            child: SizedBox(
+              width: availableWidth,
+              child: Scrollbar(
+                controller: _horizontalScrollController,
+                thumbVisibility: needsScrolling, // Show scrollbar only when content overflows
+                thickness: 12.0, // Make scrollbar thicker for easier clicking
+                radius: const Radius.circular(6.0), // Rounded corners
+                child: SingleChildScrollView(
+                  controller: _horizontalScrollController,
+                  scrollDirection: Axis.horizontal,
+                  physics: needsScrolling
+                      ? const ClampingScrollPhysics() // Allow scrolling when content overflows
+                      : const NeverScrollableScrollPhysics(), // Disable scrolling when table fits
+                  clipBehavior: Clip.hardEdge, // Clip content to prevent overflow indicator
+                  child: SizedBox(
+                    width: actualTableWidth, // Use actual table width - will exceed available width when screen is small
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.vertical,
+                      child: Table(
+                        columnWidths: {
+                          0: FixedColumnWidth(checkboxWidth),
+                          1: FixedColumnWidth(dateWidth),
+                          2: FixedColumnWidth(senderWidth),
+                          3: FixedColumnWidth(subjectWidth), // Subject & Snippet - expands with available space
+                          4: FixedColumnWidth(actionDetailsWidth),
+                          5: FixedColumnWidth(statusWidth),
+                        },
+                        defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                         children: [
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: _buildSelectAllCheckbox(context, theme),
+                          // Header row
+                          TableRow(
+                            decoration: BoxDecoration(
+                              color: ActionMailTheme.alertColor,
                             ),
-                          ),
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: Text(
-                                'Date',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
+                            children: [
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: _buildSelectAllCheckbox(context, theme),
                                 ),
                               ),
-                            ),
-                          ),
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: Text(
-                                'Sender',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: Text(
+                                    'Date',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: Text(
-                                'Subject & Snippet',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: Text(
+                                    'Sender',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: Text(
-                                'Action Details',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: Text(
+                                    'Subject & Snippet',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
-                          ),
-                          TableCell(
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                              child: Text(
-                                'Status',
-                                style: theme.textTheme.labelMedium?.copyWith(
-                                  fontWeight: FontWeight.w600,
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: Text(
+                                    'Action Details',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
+                              TableCell(
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                  child: Text(
+                                    'Status',
+                                    style: theme.textTheme.labelMedium?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
+                          // Data rows
+                          ...widget.emails.map((email) => _buildEmailTableRow(context, theme, email, constraints.maxWidth)),
                         ],
                       ),
-                      // Data rows
-                      ...widget.emails.map((email) => _buildEmailTableRow(context, theme, email, constraints.maxWidth)),
-                    ],
+                    ),
                   ),
                 ),
               ),
-                ),
             ),
           ),
         );

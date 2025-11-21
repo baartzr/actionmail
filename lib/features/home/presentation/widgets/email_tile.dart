@@ -925,6 +925,7 @@ class _EmailTileState extends State<EmailTile> {
       context,
       initialDate: _actionDate,
       initialText: _actionText,
+      initialComplete: _actionComplete,
       allowRemove: hasExistingAction,
     );
 
@@ -935,7 +936,8 @@ class _EmailTileState extends State<EmailTile> {
     final newText = removed
         ? null
         : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
-    final hasActionNow = !removed && (newDate != null || (newText != null && newText.isNotEmpty));
+    // Use actionInsightText only as source of truth
+    final hasActionNow = !removed && (newText != null && newText.isNotEmpty);
     final bool? markedComplete = result.actionComplete;
  
     setState(() {

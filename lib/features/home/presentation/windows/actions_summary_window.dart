@@ -530,6 +530,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       context,
       initialDate: message.actionDate,
       initialText: message.actionInsightText,
+      initialComplete: message.actionComplete,
       allowRemove: message.hasAction,
     );
 
@@ -539,7 +540,8 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
       final actionText = removed
           ? null
           : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
-      final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+      // Use actionInsightText only as source of truth
+      final hasActionNow = !removed && (actionText != null && actionText.isNotEmpty);
       final bool? markedComplete = result.actionComplete;
  
       // Capture original detected action for feedback

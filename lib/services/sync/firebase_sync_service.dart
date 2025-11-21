@@ -44,11 +44,9 @@ class FirebaseSyncService {
   Timer? _initRetryTimer;
   int _initRetryCount = 0;
   static const int _maxInitRetries = 5;
-  // No longer need to track last processed emailMeta - each document change is independent
-  // Sender preferences are no longer synced, so no tracking needed
   
   // Callback to notify UI when updates are applied from Firebase
-  void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText, bool? actionComplete)? onUpdateApplied;
+  void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText, bool? actionComplete, {bool preserveExisting})? onUpdateApplied;
 
   /// Initialize Firebase (call this early in app lifecycle)
   /// Returns false if Firebase is not configured
@@ -266,16 +264,16 @@ class FirebaseSyncService {
               continue;
             }
             // Firebase is newer or equal - pull Firebase → local
-            await _handleSingleEmailMetaUpdate(messageId, current);
+            await _handleSingleEmailMetaUpdate(messageId, current, parentData: data);
           } else if (firebaseTimestamp != null) {
             // Only Firebase has timestamp - pull Firebase → local
-            await _handleSingleEmailMetaUpdate(messageId, current);
+            await _handleSingleEmailMetaUpdate(messageId, current, parentData: data);
           } else if (localTimestamp != null && localMessage != null) {
             // Only local has timestamp - push local → Firebase
             await _pushLocalToFirebase(messageId, localMessage);
           } else {
             // Neither has timestamp - just apply Firebase values
-            await _handleSingleEmailMetaUpdate(messageId, current);
+            await _handleSingleEmailMetaUpdate(messageId, current, parentData: data);
           }
         }
         
@@ -310,25 +308,42 @@ class FirebaseSyncService {
         // Push all local fields to Firebase
         updateData['current.localTagPersonal'] = localMessage.localTagPersonal;
         
-        if (localMessage.actionDate != null) {
-          updateData['current.actionDate'] = localMessage.actionDate!.toIso8601String();
+        // Use actionInsightText only as source of truth
+        // Use null to represent "no action" - Firebase omits null values in sync pings
+        if (localMessage.hasAction && localMessage.actionInsightText != null && localMessage.actionInsightText!.isNotEmpty) {
+          // Action exists - push actionInsightText and optionally actionDate
           updateData['current.actionInsightText'] = localMessage.actionInsightText;
+          if (localMessage.actionDate != null) {
+            updateData['current.actionDate'] = localMessage.actionDate!.toIso8601String();
+          }
+          updateData['current.actionComplete'] = localMessage.actionComplete;
         } else {
-          updateData['current.actionDate'] = null;
-          updateData['current.actionInsightText'] = localMessage.actionInsightText;
+          // Action removed - delete fields in Firebase (use FieldValue.delete() to actually remove)
+          updateData['current.actionInsightText'] = FieldValue.delete();
+          updateData['current.actionDate'] = FieldValue.delete();
+          updateData['current.actionComplete'] = FieldValue.delete();
+          if (kDebugMode) {
+            _logFirebaseSync('Removing action in Firebase (_pushLocalToFirebase): messageId=$messageId (using FieldValue.delete())');
+          }
         }
-        
-        updateData['current.actionComplete'] = localMessage.actionComplete;
         
         final existingDoc = await emailDoc.get();
         
         if (!existingDoc.exists) {
           final current = <String, dynamic>{
             'localTagPersonal': localMessage.localTagPersonal,
-            'actionDate': localMessage.actionDate?.toIso8601String(),
-            'actionInsightText': localMessage.actionInsightText,
-            'actionComplete': localMessage.actionComplete,
           };
+          // Use actionInsightText only as source of truth
+          // Use null to represent "no action" - don't include fields for new documents
+          if (localMessage.hasAction && localMessage.actionInsightText != null && localMessage.actionInsightText!.isNotEmpty) {
+            current['actionInsightText'] = localMessage.actionInsightText;
+            if (localMessage.actionDate != null) {
+              current['actionDate'] = localMessage.actionDate?.toIso8601String();
+            }
+            current['actionComplete'] = localMessage.actionComplete;
+          } else {
+            // Action removed - don't include fields for new documents
+          }
           await emailDoc.set({
             'current': current,
             'lastModified': FieldValue.serverTimestamp(),
@@ -338,7 +353,7 @@ class FirebaseSyncService {
         }
         
         if (kDebugMode) {
-          _logFirebaseSync('Pushed local changes to Firebase for $messageId (local was newer)');
+          _logFirebaseSync('[FIREBASE_PUSH] messageId=$messageId (from _pushLocalToFirebase), actionInsightText=${localMessage.actionInsightText}');
         }
       });
     } catch (e) {
@@ -374,7 +389,7 @@ class FirebaseSyncService {
                 final data = docChange.doc.data() as Map<String, dynamic>?;
                 
                 if (kDebugMode) {
-                  _logFirebaseSync('Processing change: messageId=$messageId, type=$changeType, hasData=${data != null}');
+                  _logFirebaseSync('[LISTENER] messageId=$messageId, changeType=$changeType, hasMetadata=${docChange.doc.metadata.hasPendingWrites}, isFromCache=${docChange.doc.metadata.isFromCache}');
                 }
                 
                 if (data == null) continue;
@@ -382,20 +397,34 @@ class FirebaseSyncService {
                 final current = data['current'] as Map<String, dynamic>?;
                 if (current == null) {
                   if (kDebugMode) {
-                    _logFirebaseSync('Skipping $messageId: current is null');
+                    _logFirebaseSync('[LISTENER] Skipping $messageId: current is null');
                   }
+                  continue;
+                }
+                
+                // Check if this is a pending write from our own local update
+                // If it has pending writes, it's our own update and we should already have the latest state locally
+                if (docChange.doc.metadata.hasPendingWrites) {
+                  if (kDebugMode) {
+                    final hasAction = current.containsKey('actionInsightText') && current['actionInsightText'] != null;
+                    _logFirebaseSync('[LISTENER] SKIP_PENDING_WRITE messageId=$messageId (local pending write, hasAction=$hasAction)');
+                  }
+                  // This is our own pending write - skip it since we already processed it locally
                   continue;
                 }
                 
                 if (kDebugMode) {
                   final hasTag = current.containsKey('localTagPersonal');
                   final tagValue = current['localTagPersonal'];
-                  _logFirebaseSync('Processing $messageId: hasLocalTagPersonal=$hasTag, value=$tagValue');
+                  final hasAction = current.containsKey('actionInsightText');
+                  final actionText = current['actionInsightText'];
+                  _logFirebaseSync('[LISTENER] Processing $messageId: hasTag=$hasTag, tag=$tagValue, hasAction=$hasAction, actionText=$actionText');
                 }
                 
                 // Process this email change (await to ensure errors are caught)
+                // Pass parent data so we can check timestamps to ignore stale updates
                 try {
-                  await _handleSingleEmailMetaUpdate(messageId, current);
+                  await _handleSingleEmailMetaUpdate(messageId, current, parentData: data);
                 } catch (e) {
                   _logFirebaseSync('Error processing update for $messageId: $e');
                 }
@@ -434,11 +463,8 @@ class FirebaseSyncService {
     }
   }
 
-  /// Sync email metadata (personal/business tag, action date, action message, action complete)
-  /// Simple push: updates Firebase with whatever values are provided
-  /// Since Dart can't distinguish "not passed" from "passed as null" for optional params,
-  /// we update fields based on what's provided. The caller is responsible for only passing
-  /// the fields they want to update.
+  /// Sync email metadata (personal/business tag, action) to Firebase
+  /// actionInsightText is the source of truth: if null or empty, no action exists
   Future<void> syncEmailMeta(String messageId, {
     String? localTagPersonal,
     DateTime? actionDate,
@@ -491,44 +517,32 @@ class FirebaseSyncService {
           'lastModified': FieldValue.serverTimestamp(),
         };
         
-        // Simple: update fields that are provided
-        // Since we can't distinguish "not passed" from "null", we use heuristics:
-        // - If only tag is "provided" (no action params), update tag
-        // - If action params are provided, update actions (and tag only if explicitly non-null)
         bool hasUpdates = false;
-        final isTagOnly = !clearAction && actionDate == null && actionInsightText == null && actionComplete == null;
         
-        if (isTagOnly) {
-          // Tag-only update
+        // Update tag if provided
+        if (localTagPersonal != null) {
           updateData['current.localTagPersonal'] = localTagPersonal;
           hasUpdates = true;
-        } else {
-          // Action update - only update tag if it's explicitly non-null
-          if (localTagPersonal != null) {
-            updateData['current.localTagPersonal'] = localTagPersonal;
-            hasUpdates = true;
+        }
+        
+        // Update action - source of truth: actionInsightText determines if action exists
+        final hasAction = actionInsightText != null && actionInsightText.isNotEmpty;
+        if (clearAction || !hasAction) {
+          // Action removed - delete fields
+          updateData['current.actionInsightText'] = FieldValue.delete();
+          updateData['current.actionDate'] = FieldValue.delete();
+          updateData['current.actionComplete'] = FieldValue.delete();
+          hasUpdates = true;
+          if (kDebugMode) {
+            _logFirebaseSync('Removing action in Firebase: messageId=$messageId (using FieldValue.delete())');
           }
-        }
-        
-        // Update action fields
-        if (actionDate != null) {
-          updateData['current.actionDate'] = actionDate.toIso8601String();
+        } else if (hasAction) {
+          // Action exists - push all fields
           updateData['current.actionInsightText'] = actionInsightText;
-          hasUpdates = true;
-        } else if (actionInsightText != null) {
-          updateData['current.actionInsightText'] = actionInsightText;
-          hasUpdates = true;
-        }
-        
-        if (actionComplete != null) {
-          updateData['current.actionComplete'] = actionComplete;
-          hasUpdates = true;
-        }
-
-        if (clearAction) {
-          updateData['current.actionDate'] = null;
-          updateData['current.actionInsightText'] = null;
-          updateData['current.actionComplete'] = null;
+          if (actionDate != null) {
+            updateData['current.actionDate'] = actionDate.toIso8601String();
+          }
+          updateData['current.actionComplete'] = actionComplete ?? false;
           hasUpdates = true;
         }
         
@@ -538,29 +552,28 @@ class FirebaseSyncService {
         
         if (!existingDoc.exists) {
           final current = <String, dynamic>{};
-          if (isTagOnly || localTagPersonal != null) {
+          if (localTagPersonal != null) {
             current['localTagPersonal'] = localTagPersonal;
           }
-          if (actionDate != null) {
-            current['actionDate'] = actionDate.toIso8601String();
+          if (hasAction) {
+            // Action exists - include all fields
             current['actionInsightText'] = actionInsightText;
-          } else if (actionInsightText != null) {
-            current['actionInsightText'] = actionInsightText;
+            if (actionDate != null) {
+              current['actionDate'] = actionDate.toIso8601String();
+            }
+            current['actionComplete'] = actionComplete ?? false;
           }
-          if (actionComplete != null) {
-            current['actionComplete'] = actionComplete;
-          }
-          if (clearAction) {
-            current['actionDate'] = null;
-            current['actionInsightText'] = null;
-            current['actionComplete'] = null;
-          }
+          // If action doesn't exist, don't include action fields
           await emailDoc.set({
             'current': current,
             'lastModified': FieldValue.serverTimestamp(),
           }, SetOptions(merge: true));
         } else {
           await emailDoc.update(updateData);
+        }
+        
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_PUSH] messageId=$messageId, actionInsightText=$actionInsightText, clearAction=$clearAction');
         }
       });
     } catch (e) {
@@ -580,7 +593,7 @@ class FirebaseSyncService {
 
   /// Handle a single email metadata update from Firebase
   /// Simple: compare Firebase values to local, update if different
-  Future<void> _handleSingleEmailMetaUpdate(String messageId, Map<String, dynamic> current) async {
+  Future<void> _handleSingleEmailMetaUpdate(String messageId, Map<String, dynamic> current, {Map<String, dynamic>? parentData}) async {
     try {
       final repo = MessageRepository();
       final localMessage = await repo.getById(messageId);
@@ -591,6 +604,7 @@ class FirebaseSyncService {
       DateTime? updatedActionDate;
       String? updatedActionText;
       bool? updatedActionComplete;
+      bool actionTextWasUpdated = false; // Track if actionText was explicitly updated (even if to null)
       
       // Compare and update localTagPersonal
       // Handle missing fields: if Firebase field is missing, treat as null (cleared)
@@ -649,74 +663,143 @@ class FirebaseSyncService {
       }
       
       // Compare and update action fields
+      // Simplified: use actionInsightText only as source of truth for action existence
+      // Note: Firebase omits null values in sync pings, so missing key = null (action removed)
+      final hasFirebaseActionText = current.containsKey('actionInsightText');
+      final hasFirebaseActionDate = current.containsKey('actionDate');
+      final hasFirebaseActionComplete = current.containsKey('actionComplete');
+      
+      // Get actionInsightText from Firebase
+      // If key is missing from sync ping, it means actionInsightText was set to null (deleted) in Firebase
+      String? firebaseActionText;
+      if (hasFirebaseActionText) {
+        final firebaseValue = current['actionInsightText'];
+        if (firebaseValue != null) {
+          final textStr = firebaseValue.toString();
+          // Handle both null and empty string as "no action" (for backwards compatibility)
+          firebaseActionText = textStr.isEmpty ? null : textStr;
+        } else {
+          // Key exists but value is null (backwards compatibility with old data) - treat as no action
+          firebaseActionText = null;
+        }
+      } else {
+        // Key missing from sync ping = actionInsightText was deleted (set to null) in Firebase
+        firebaseActionText = null;
+      }
+      
+      final firebaseHasAction = firebaseActionText != null && firebaseActionText.isNotEmpty;
+      
       DateTime? firebaseActionDate;
-      if (current.containsKey('actionDate') && current['actionDate'] != null) {
+      if (hasFirebaseActionDate && current['actionDate'] != null) {
         try {
           firebaseActionDate = DateTime.parse(current['actionDate'].toString());
         } catch (_) {}
       }
       
-      final firebaseActionText = current.containsKey('actionInsightText') 
-          ? current['actionInsightText']?.toString() 
-          : null;
-      final firebaseActionComplete = current.containsKey('actionComplete')
+      final firebaseActionComplete = hasFirebaseActionComplete
           ? current['actionComplete'] as bool?
           : null;
       
       final localActionDate = localMessage?.actionDate;
       final localActionText = localMessage?.actionInsightText;
       final localActionComplete = localMessage?.actionComplete ?? false;
+      final localHasAction = localActionText != null && localActionText.isNotEmpty;
       
-      bool actionChanged = false;
+      if (kDebugMode) {
+        _logFirebaseSync('[FIREBASE_SYNC] COMPARE messageId=$messageId, firebase=$firebaseActionText, local=$localActionText');
+      }
       
-      // Update if Firebase has actionDate key (even if null, to clear)
-      if (current.containsKey('actionDate')) {
-        if (firebaseActionDate?.toIso8601String() != localActionDate?.toIso8601String()) {
-          updatedActionDate = firebaseActionDate;
-          updatedActionText = current.containsKey('actionInsightText') 
-              ? firebaseActionText 
-              : localActionText; // Preserve local text if Firebase doesn't provide it
-          actionChanged = true;
+      // Update actionInsightText based on Firebase state
+      // Source of truth: actionInsightText determines if action exists
+      // If actionInsightText key is missing from Firebase sync (was deleted), set local to null
+      // If Firebase has action and it's different from local → update
+      
+      // Update actionInsightText based on Firebase state
+      if (!firebaseHasAction && !localHasAction) {
+        // Both are null - already in sync
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] NO_CHANGE messageId=$messageId (both null)');
+        }
+      } else if (firebaseHasAction && localHasAction && firebaseActionText == localActionText) {
+        // Both have same action text - already in sync
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] NO_CHANGE messageId=$messageId (same text: $firebaseActionText)');
+        }
+      } else if (!firebaseHasAction && localHasAction) {
+        // Firebase removed action - remove locally
+        updatedActionText = null;
+        actionTextWasUpdated = true;
+        needsUpdate = true;
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] REMOVE messageId=$messageId (Firebase null, local has action)');
+        }
+      } else if (firebaseHasAction && !localHasAction) {
+        // Firebase has action, local doesn't - add it
+        updatedActionText = firebaseActionText;
+        actionTextWasUpdated = true;
+        needsUpdate = true;
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] ADD messageId=$messageId (Firebase: $firebaseActionText, local null)');
+        }
+      } else if (firebaseHasAction && firebaseActionText != localActionText) {
+        // Firebase has different action - update
+        updatedActionText = firebaseActionText;
+        actionTextWasUpdated = true;
+        needsUpdate = true;
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] UPDATE messageId=$messageId (Firebase: $firebaseActionText, local: $localActionText)');
         }
       }
       
-      // Update text if key present and different
-      if (current.containsKey('actionInsightText') && !actionChanged) {
-        if (firebaseActionText != localActionText) {
-          updatedActionText = firebaseActionText;
-          actionChanged = true;
-        }
-      }
-      
-      // Update complete if key present and different
-      if (firebaseActionComplete != null && firebaseActionComplete != localActionComplete) {
-        updatedActionComplete = firebaseActionComplete;
-        actionChanged = true;
-      }
-      
-      if (actionChanged) {
-        // Don't update lastUpdated when applying Firebase changes (not a user change)
-        await repo.updateAction(
-          messageId, 
-          updatedActionDate ?? localActionDate,
-          updatedActionText ?? localActionText,
-          null,
-          updatedActionComplete ?? localActionComplete,
-          false, // updateTimestamp = false
-        );
+      // Update actionDate if Firebase has it and different
+      if (hasFirebaseActionDate && firebaseActionDate?.toIso8601String() != localActionDate?.toIso8601String()) {
+        updatedActionDate = firebaseActionDate;
         needsUpdate = true;
       }
       
-      if (needsUpdate && onUpdateApplied != null) {
-        // Use updated values if they were explicitly updated (even if null), otherwise keep local values
-        // This ensures null values are properly propagated to the UI when clearing tags
-        final finalTag = tagWasUpdated ? updatedLocalTag : localTag;
-        final finalActionDate = updatedActionDate ?? localActionDate;
-        final finalActionText = updatedActionText ?? localActionText;
-        final finalActionComplete = updatedActionComplete ?? localActionComplete;
+      // Update complete if key present and different
+      if (hasFirebaseActionComplete && firebaseActionComplete != localActionComplete) {
+        updatedActionComplete = firebaseActionComplete;
+        needsUpdate = true;
+      }
+      
+      if (needsUpdate && actionTextWasUpdated) {
+        // Don't update lastUpdated when applying Firebase changes (not a user change)
+        final finalActionDate = actionTextWasUpdated && !firebaseHasAction 
+            ? null // If action was removed, clear date
+            : (updatedActionDate ?? localActionDate);
+        final finalActionText = updatedActionText; // Use updated text (may be null)
+        final finalActionComplete = !firebaseHasAction 
+            ? false // If action was removed, set complete to false
+            : (updatedActionComplete ?? localActionComplete);
         
         if (kDebugMode) {
-          _logFirebaseSync('Calling onUpdateApplied: messageId=$messageId, finalTag=$finalTag, tagWasUpdated=$tagWasUpdated, updatedLocalTag=$updatedLocalTag, localTag=$localTag');
+          _logFirebaseSync('[FIREBASE_SYNC] DB_UPDATE messageId=$messageId, actionText=$finalActionText');
+        }
+        
+        await repo.updateAction(
+          messageId,
+          finalActionDate,
+          finalActionText, // Can be null when removing action
+          null, // confidence
+          finalActionComplete,
+          false, // updateTimestamp = false
+        );
+      }
+      
+      if (needsUpdate && onUpdateApplied != null) {
+        // Use updated values if they were explicitly updated (even if to null), otherwise keep local values
+        final finalTag = tagWasUpdated ? updatedLocalTag : localTag;
+        final finalActionDate = actionTextWasUpdated && !firebaseHasAction
+            ? null
+            : (updatedActionDate ?? localActionDate);
+        final finalActionText = actionTextWasUpdated ? updatedActionText : localActionText;
+        final finalActionComplete = !firebaseHasAction || (actionTextWasUpdated && !firebaseHasAction)
+            ? false
+            : (updatedActionComplete ?? localActionComplete);
+        
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC] CALLBACK messageId=$messageId, actionText=$finalActionText');
         }
         
         onUpdateApplied!(
@@ -725,6 +808,7 @@ class FirebaseSyncService {
           finalActionDate,
           finalActionText,
           finalActionComplete,
+          preserveExisting: !actionTextWasUpdated && !tagWasUpdated, // Don't preserve if explicitly updated (even if null)
         );
       } else if (needsUpdate && onUpdateApplied == null) {
         if (kDebugMode) {

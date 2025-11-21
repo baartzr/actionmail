@@ -409,15 +409,21 @@ class _GmailFolderTreeState extends ConsumerState<GmailFolderTree> {
                     fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
                   ),
                   overflow: TextOverflow.ellipsis,
+                  maxLines: 1,
                 ),
               ),
               if (unreadCount > 0)
-                Text(
-                  '($unreadCount)',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: isSelected ? selectedForegroundColor : cs.onSurfaceVariant,
-                    fontWeight: FontWeight.normal,
-                    fontSize: 12,
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text(
+                    '($unreadCount)',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: isSelected ? selectedForegroundColor : cs.onSurfaceVariant,
+                      fontWeight: FontWeight.normal,
+                      fontSize: 12,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
                   ),
                 ),
             ],

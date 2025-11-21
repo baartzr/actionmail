@@ -223,6 +223,8 @@ class _SplashScreenState extends State<SplashScreen> with WidgetsBindingObserver
                 print('[splash] navigating to home with account $targetAccountId');
                 _navigatedAway = true; // Mark as navigated to prevent pop attempts
                 // Use pushReplacementNamed to avoid Navigator history issues
+                // Check context.mounted before using context after async gap
+                if (!context.mounted) return;
                 Navigator.of(context, rootNavigator: true)
                     .pushReplacementNamed('/home', arguments: targetAccountId);
                 return; // Exit early after successful navigation

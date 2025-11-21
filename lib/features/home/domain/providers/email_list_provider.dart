@@ -42,10 +42,13 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   Timer? _timer;
   bool _isInitialSyncing = false;
   bool _isViewingLocalFolder = false; // Track if viewing local folder (prevents sync overwrites)
+  DateTime? _lastKnownDate; // Track last known date for overdue status updates
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
   static String? _lastFirebaseAccountId; // Track which account Firebase was initialized for
 
-  EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading());
+  EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading()) {
+    _lastKnownDate = DateTime.now();
+  }
 
   /// Load emails for an account: show local immediately, then background sync
   Future<void> loadEmails(String accountId, {String folderLabel = 'INBOX'}) async {
@@ -63,6 +66,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         print('[perf] loadLocal($_folderLabel) returned ${local.length} in ${dt}ms');
       }
       state = AsyncValue.data(local);
+      // Update last known date when emails are loaded
+      _lastKnownDate = DateTime.now();
 
       if (folderLabel == 'INBOX') {
         // Start Firebase listening immediately for INBOX (regardless of history or email count)
@@ -136,6 +141,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         print('[perf] loadFolder $_folderLabel returned ${local.length} in ${dt}ms');
       }
       state = AsyncValue.data(local);
+      // Update last known date when emails are loaded
+      _lastKnownDate = DateTime.now();
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
@@ -162,6 +169,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         print('[perf] refresh loadLocal $_folderLabel returned ${local.length} in ${dt}ms');
       }
       state = AsyncValue.data(local);
+      // Update last known date when emails are refreshed
+      _lastKnownDate = DateTime.now();
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
@@ -182,6 +191,28 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         return;
       }
       try {
+        // Check if date has changed (for overdue status updates)
+        final now = DateTime.now();
+        final today = DateTime(now.year, now.month, now.day);
+        final lastDate = _lastKnownDate != null
+            ? DateTime(_lastKnownDate!.year, _lastKnownDate!.month, _lastKnownDate!.day)
+            : null;
+        
+        if (lastDate != null && today != lastDate) {
+          // Date changed - trigger UI rebuild for overdue status update
+          // No database reload needed since data hasn't changed, only the comparison
+          final current = state;
+          if (current is AsyncData<List<MessageIndex>>) {
+            // Update state with new list to trigger rebuild (overdue status calculated on render)
+            state = AsyncValue.data(List<MessageIndex>.from(current.value));
+            if (kDebugMode) {
+              // ignore: avoid_print
+              print('[sync] date changed from $lastDate to $today, triggering overdue status update');
+            }
+          }
+          _lastKnownDate = now;
+        }
+        
         // Incremental sync always uses the latest historyID from DB
         final syncStart = DateTime.now();
         // ignore: avoid_print
@@ -232,6 +263,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           final syncDuration = DateTime.now().difference(syncStart);
           // ignore: avoid_print
           print('[sync] incremental done count=${local.length}, total time=${syncDuration.inMilliseconds}ms');
+          // Update last known date after successful sync
+          _lastKnownDate = now;
         } else if (_isViewingLocalFolder) {
           // ignore: avoid_print
           print('[sync] incremental sync skipped - viewing local folder');
@@ -295,6 +328,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           // ignore: avoid_print
           print('[sync] incremental sync done, reloading INBOX, count=${local.length}');
           state = AsyncValue.data(local);
+          // Update last known date after reload
+          _lastKnownDate = DateTime.now();
           final dt = DateTime.now().difference(t0).inMilliseconds;
           if (kDebugMode) {
             // ignore: avoid_print
@@ -318,6 +353,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
               // ignore: avoid_print
               print('[sync] initial sync: synced $folder, reloading $_folderLabel, count=${local.length}');
               state = AsyncValue.data(local);
+              // Update last known date after reload
+              _lastKnownDate = DateTime.now();
               final dt = DateTime.now().difference(t0).inMilliseconds;
               if (kDebugMode) {
                 // ignore: avoid_print
@@ -326,15 +363,18 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
             }
           }
           
-          // After initial sync completes for new account, start Firebase sync
-          // This ensures emails are downloaded before Firebase sync begins
-          if (_currentAccountId == accountId) {
-            unawaited(_startFirebaseAfterLocalLoad(accountId));
-          }
+        // After initial sync completes for new account, start Firebase sync
+        // This ensures emails are downloaded before Firebase sync begins
+        if (_currentAccountId == accountId) {
+          unawaited(_startFirebaseAfterLocalLoad(accountId));
+        }
         } finally {
           _isInitialSyncing = false;
         }
       }
+      
+      // Update last known date after sync completes
+      _lastKnownDate = DateTime.now();
       
       // Turn off loading indicator
       _ref.read(emailSyncingProvider.notifier).state = false;
@@ -456,6 +496,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         final t0 = DateTime.now();
         final local = await _syncService.loadLocal(accountId, folderLabel: currentFolder);
         state = AsyncValue.data(local);
+        // Update last known date after reload
+        _lastKnownDate = DateTime.now();
         // ignore: avoid_print
         print('[sync] sync current done count=${local.length}');
         final dt = DateTime.now().difference(t0).inMilliseconds;
@@ -606,6 +648,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     setFolder(messageId, newFolderLabel);
   }
 
+  /// Update action for a message in provider state
+  /// actionInsightText is the source of truth: if null or empty, no action exists
   void setAction(String messageId, DateTime? actionDate, String? actionText, {bool? actionComplete, bool preserveExisting = false}) {
     final current = state;
     if (current is AsyncData<List<MessageIndex>>) {
@@ -615,26 +659,74 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         final updated = List<MessageIndex>.from(list);
         final currentMessage = updated[idx];
 
+        // Apply preserveExisting logic
         final newActionDate = preserveExisting && actionDate == null
             ? currentMessage.actionDate
             : actionDate;
 
         final newActionText = preserveExisting && actionText == null
             ? currentMessage.actionInsightText
-            : actionText;
+            : actionText; // If preserveExisting=false, this will be null (explicitly removing action)
 
         final newActionComplete = preserveExisting && actionComplete == null
             ? currentMessage.actionComplete
             : (actionComplete ?? currentMessage.actionComplete);
 
-        final hasAction = newActionDate != null || (newActionText != null && newActionText.isNotEmpty);
+        // Source of truth: actionInsightText determines if action exists
+        final hasAction = newActionText != null && newActionText.isNotEmpty;
+        
+        // When removing action (hasAction is false), ensure actionComplete is also false
+        final finalActionComplete = hasAction ? newActionComplete : false;
 
-        updated[idx] = currentMessage.copyWith(
-          actionDate: newActionDate,
-          actionInsightText: newActionText,
-          actionComplete: newActionComplete,
-          hasAction: hasAction,
-        );
+        if (kDebugMode) {
+          debugPrint('[PROVIDER] setAction messageId=$messageId');
+          debugPrint('[PROVIDER] Input: actionText=$actionText, preserveExisting=$preserveExisting');
+          debugPrint('[PROVIDER] Current: actionText=${currentMessage.actionInsightText}, hasAction=${currentMessage.hasAction}');
+          debugPrint('[PROVIDER] Result: newActionText=$newActionText, hasAction=$hasAction');
+        }
+
+        // Handle null explicitly - copyWith treats null as "not provided", so we need to manually construct
+        // when setting actionText to null to ensure the UI updates correctly
+        if (newActionText == null && !preserveExisting) {
+          // Explicitly set to null - manually construct to override copyWith's null handling
+          updated[idx] = MessageIndex(
+            id: currentMessage.id,
+            threadId: currentMessage.threadId,
+            accountId: currentMessage.accountId,
+            accountEmail: currentMessage.accountEmail,
+            historyId: currentMessage.historyId,
+            internalDate: currentMessage.internalDate,
+            from: currentMessage.from,
+            to: currentMessage.to,
+            subject: currentMessage.subject,
+            snippet: currentMessage.snippet,
+            hasAttachments: currentMessage.hasAttachments,
+            gmailCategories: currentMessage.gmailCategories,
+            gmailSmartLabels: currentMessage.gmailSmartLabels,
+            localTagPersonal: currentMessage.localTagPersonal,
+            subsLocal: currentMessage.subsLocal,
+            shoppingLocal: currentMessage.shoppingLocal,
+            unsubscribedLocal: currentMessage.unsubscribedLocal,
+            actionDate: null, // Explicitly set to null
+            actionConfidence: null, // Explicitly set to null
+            actionInsightText: null, // Explicitly set to null
+            actionComplete: false, // Explicitly set to false when no action
+            hasAction: false, // Explicitly set to false when no action
+            isRead: currentMessage.isRead,
+            isStarred: currentMessage.isStarred,
+            isImportant: currentMessage.isImportant,
+            folderLabel: currentMessage.folderLabel,
+            prevFolderLabel: currentMessage.prevFolderLabel,
+          );
+        } else {
+          // Set to a value or preserve existing - copyWith works fine
+          updated[idx] = currentMessage.copyWith(
+            actionDate: newActionDate,
+            actionInsightText: newActionText,
+            actionComplete: finalActionComplete,
+            hasAction: hasAction,
+          );
+        }
         state = AsyncValue.data(updated);
       }
     }
@@ -657,6 +749,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       final local = await _syncService.loadLocal(_currentAccountId!, folderLabel: _folderLabel);
       if (state is AsyncData<List<MessageIndex>>) {
         state = AsyncValue.data(local);
+        // Update last known date when emails are reloaded
+        _lastKnownDate = DateTime.now();
         // ignore: avoid_print
         print('[EmailList] Silently reloaded ${local.length} emails after Phase 2');
       }

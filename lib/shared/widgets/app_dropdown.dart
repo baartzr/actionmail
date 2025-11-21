@@ -38,7 +38,10 @@ class AppDropdown<T> extends StatelessWidget {
         children: [
           Text(
             itemBuilder(value as T),
-            style: TextStyle(color: selectedTextColor, fontSize: 12, fontWeight: FontWeight.bold),
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: selectedTextColor,
+              fontWeight: FontWeight.bold,
+            ),
           ),
           Icon(Icons.arrow_drop_down, color: selectedTextColor, size: 24),
         ],

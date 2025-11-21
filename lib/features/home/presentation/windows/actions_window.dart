@@ -213,6 +213,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
       context,
       initialDate: message.actionDate,
       initialText: message.actionInsightText,
+      initialComplete: message.actionComplete,
       allowRemove: message.hasAction,
     );
 
@@ -222,7 +223,8 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
       final actionText = removed
           ? null
           : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
-      final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+      // Use actionInsightText only as source of truth
+      final hasActionNow = !removed && (actionText != null && actionText.isNotEmpty);
       final bool? markedComplete = result.actionComplete;
  
       // Capture original detected action for feedback
@@ -268,11 +270,11 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
       }
        
       // Record feedback for ML training
-      final userAction = hasActionNow
+      final userAction = hasActionNow && actionText != null
           ? ActionResult(
               actionDate: actionDate ?? DateTime.now(),
               confidence: 1.0, // User-provided actions have max confidence
-              insightText: actionText ?? '',
+              insightText: actionText!,
             )
           : null;
        

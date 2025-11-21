@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:domail/shared/widgets/app_toggle_chip.dart';
 import 'package:domail/shared/widgets/app_dropdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:domail/constants/app_constants.dart';
@@ -7,37 +6,42 @@ import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/presentation/widgets/email_tile.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
-import 'package:domail/features/settings/presentation/accounts_settings_dialog.dart';
 import 'package:domail/features/home/presentation/windows/actions_summary_window.dart';
-import 'package:domail/features/home/presentation/windows/attachments_window.dart';
-import 'package:domail/features/home/presentation/windows/subscriptions_window.dart';
-import 'package:domail/features/home/presentation/windows/shopping_window.dart';
-// import 'package:domail/features/home/presentation/windows/actions_window.dart'; // unused
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:domail/features/home/presentation/widgets/account_selector_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/email_viewer_dialog.dart';
-import 'package:domail/features/home/presentation/widgets/compose_email_dialog.dart';
 import 'package:domail/shared/widgets/reauth_prompt_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:async';
 import 'package:domail/services/sync/firebase_sync_service.dart';
 import 'package:domail/services/actions/ml_action_extractor.dart';
 import 'package:domail/services/actions/action_extractor.dart';
-import 'package:domail/features/home/presentation/widgets/gmail_folder_tree.dart';
-import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/services/gmail/gmail_sync_service.dart';
 import 'package:domail/services/local_folders/local_folder_service.dart';
 // duplicate import removed: gmail_sync_service.dart
 import 'package:domail/data/models/message_index.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:ensemble_app_badger/ensemble_app_badger.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
 import 'package:domail/features/home/presentation/widgets/grid_email_list.dart';
 import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/home_right_panel.dart';
+import 'package:domail/features/home/presentation/widgets/home_filter_bar.dart';
+import 'package:domail/features/home/presentation/widgets/home_bulk_actions_appbar.dart';
+import 'package:domail/features/home/presentation/widgets/home_appbar_state_switch.dart';
+import 'package:domail/features/home/presentation/widgets/home_left_panel.dart';
+import 'package:domail/features/home/presentation/widgets/home_provider_listeners.dart';
+import 'package:domail/shared/widgets/processing_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/home_saved_list_indicator.dart';
+import 'package:domail/features/home/presentation/widgets/home_filter_banner.dart';
+import 'package:domail/features/home/presentation/widgets/home_email_list_filter.dart';
+import 'package:domail/features/home/presentation/widgets/home_menu_button.dart';
+import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
+import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart';
+import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -48,63 +52,8 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _ProcessingDialog extends StatelessWidget {
-  final String message;
-  const _ProcessingDialog({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              height: 28,
-              width: 28,
-              child: CircularProgressIndicator(
-                strokeWidth: 3,
-                valueColor:
-                    AlwaysStoppedAnimation<Color>(theme.colorScheme.primary),
-              ),
-            ),
-            const SizedBox(width: 16),
-            Flexible(
-              child: Text(
-                message,
-                style: theme.textTheme.bodyMedium,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 /// Configuration for status buttons based on folder
-class _StatusButtonConfig {
-  final bool showPersonalBusiness;
-  final bool showStar;
-  final bool showMove;
-  final bool showArchive;
-  final bool showTrash;
-  final String moveLabel;
-  final String moveTooltip;
-
-  const _StatusButtonConfig({
-    required this.showPersonalBusiness,
-    required this.showStar,
-    required this.showMove,
-    required this.showArchive,
-    required this.showTrash,
-    required this.moveLabel,
-    required this.moveTooltip,
-  });
-}
+// _StatusButtonConfig moved to HomeBulkActionsAppBar widget
 
 class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObserver {
   // Selected folder (default to Inbox)
@@ -126,6 +75,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   // Selected local state filter: null (show all), 'Personal', or 'Business'
   String? _selectedLocalState;
+
+  // Cached service instances to avoid repeated instantiation
+  late final MessageRepository _messageRepository = MessageRepository();
 
   @override
   void initState() {
@@ -615,7 +567,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         // Set callback to update provider state when Firebase updates are applied
         try {
           _firebaseSync.onUpdateApplied =
-              (messageId, localTag, actionDate, actionText, actionComplete) {
+              (messageId, localTag, actionDate, actionText, actionComplete, {bool preserveExisting = true}) {
             // Update provider state to reflect Firebase changes in UI
             ref
                 .read(emailListProvider.notifier)
@@ -625,7 +577,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   actionDate,
                   actionText,
                   actionComplete: actionComplete,
-                  preserveExisting: true,
+                  preserveExisting: preserveExisting,
                 );
           };
 
@@ -775,7 +727,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           if (syncEnabled) {
             // Set callback to update provider state when Firebase updates are applied
             _firebaseSync.onUpdateApplied =
-                (messageId, localTag, actionDate, actionText, actionComplete) {
+                (messageId, localTag, actionDate, actionText, actionComplete, {bool preserveExisting = true}) {
               // Update provider state to reflect Firebase changes in UI
               ref
                   .read(emailListProvider.notifier)
@@ -785,7 +737,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     actionDate,
                     actionText,
                     actionComplete: actionComplete,
-                    preserveExisting: true,
+                    preserveExisting: preserveExisting,
                   );
             };
 
@@ -847,111 +799,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   @override
   Widget build(BuildContext context) {
-    // Listen for auth failures during incremental sync
-    // Must be in build method - ref.listen can only be used here
-    // authFailureProvider is only set for the active account during incremental sync
-    // Since there's only one active account, there will only ever be one dialog
-    // Listen for network errors - show simple message dialog (only for manual refresh)
-    ref.listen<bool>(networkErrorProvider, (previous, next) {
-      // ignore: avoid_print
-      print('[home] networkErrorProvider changed: previous=$previous, next=$next, mounted=$mounted');
-      if (!mounted) {
-        // ignore: avoid_print
-        print('[home] networkErrorProvider: widget not mounted, skipping');
-        return;
-      }
-      if (!next) {
-        // ignore: avoid_print
-        print('[home] networkErrorProvider: next is false, skipping');
-        return;
-      }
-      // ignore: avoid_print
-      print('[home] Network error detected, showing network error message');
-      // Clear the provider immediately
-      ref.read(networkErrorProvider.notifier).state = false;
-      // Show simple dialog
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          // ignore: avoid_print
-          print('[home] Showing network error dialog');
-          showDialog(
-            context: context,
-            barrierDismissible: true,
-            builder: (ctx) => AlertDialog(
-              title: const Text('Network Issue'),
-              content: const Text('There\'s a network issue. Please try again later.'),
-              actions: [
-                FilledButton(
-                  onPressed: () {
-                    // ignore: avoid_print
-                    print('[home] Network error dialog OK pressed');
-                    Navigator.of(ctx).pop();
-                  },
-                  child: const Text('OK'),
-                ),
-              ],
-            ),
-          );
-        } else {
-          // ignore: avoid_print
-          print('[home] Widget not mounted in post-frame callback, skipping network error dialog');
-        }
-      });
-    });
-
-    ref.listen<String?>(authFailureProvider, (previous, next) {
-      // ignore: avoid_print
-      print('[home] authFailureProvider changed: previous=$previous, next=$next, mounted=$mounted, selectedAccountId=$_selectedAccountId');
-      if (!mounted) {
-        // ignore: avoid_print
-        print('[home] authFailureProvider: widget not mounted, skipping');
-        return;
-      }
-      if (next == null) {
-        // ignore: avoid_print
-        print('[home] authFailureProvider: next is null, skipping');
-        return;
-      }
-      // Only show dialog if this is for the currently selected account
-      if (next != _selectedAccountId) {
-        // ignore: avoid_print
-        print('[home] Auth failure detected for account=$next, but it is not the active account (active=$_selectedAccountId)');
-        return;
-      }
-      // ignore: avoid_print
-      print('[home] Auth failure detected for active account=$next during incremental sync, showing dialog');
-      // Use post-frame callback to avoid showing dialog during build
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          // ignore: avoid_print
-          print('[home] Calling _handleReauthNeeded for account=$next');
-          _handleReauthNeeded(next);
-        } else {
-          // ignore: avoid_print
-          print('[home] Widget not mounted in post-frame callback, skipping dialog');
-        }
-      });
-    });
-
-    // Listen for view mode changes and adjust panels accordingly
-    ref.listen<ViewMode>(viewModeProvider, (previous, next) {
-      if (!mounted) return;
-      // When switching to table view, collapse both panels
-      if (next == ViewMode.table && previous != ViewMode.table) {
-        setState(() {
-          _leftPanelCollapsed = true;
-          _rightPanelCollapsed = true;
-        });
-      }
-      // When switching to tile view, expand both panels
-      else if (next == ViewMode.tile && previous != ViewMode.tile) {
-        setState(() {
-          _leftPanelCollapsed = false;
-          _rightPanelCollapsed = false;
-        });
-      }
-    });
-    
     // Initialize selected account from route args if provided (e.g., new account sign-in)
     if (!_initializedFromRoute) {
       final args = ModalRoute.of(context)?.settings.arguments;
@@ -1015,29 +862,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _initializedFromRoute = true;
     }
 
-    // Listen to email list changes and refresh active account's unread count
-    ref.listen<AsyncValue<List<MessageIndex>>>(emailListProvider,
-        (previous, next) {
-      final activeAccountId = _selectedAccountId;
-      if (!mounted || !next.hasValue || activeAccountId == null) {
-        return;
-      }
-      if (_pendingLocalUnreadAccounts.contains(activeAccountId)) {
-        return;
-      }
-      // Refresh active account's unread count from local DB when emails change
-      // Use post-frame callback to avoid updating during build
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        if (_selectedAccountId != activeAccountId) return;
-        if (_pendingLocalUnreadAccounts.contains(activeAccountId)) return;
-        _refreshAccountUnreadCountLocal(activeAccountId);
-      });
-    });
-/*
+    // Provider listeners extracted to HomeProviderListeners widget
+    // Must be called in build method so ref.listen can be used
+    // Wrap the scaffold with the listeners widget
+    return HomeProviderListeners(
+      selectedAccountId: _selectedAccountId,
+      pendingLocalUnreadAccounts: _pendingLocalUnreadAccounts,
+      onPanelCollapseChanged: (leftCollapsed, rightCollapsed) {
+        setState(() {
+          _leftPanelCollapsed = leftCollapsed;
+          _rightPanelCollapsed = rightCollapsed;
+        });
+      },
+      onHandleReauthNeeded: _handleReauthNeeded,
+      onRefreshAccountUnreadCountLocal: _refreshAccountUnreadCountLocal,
+      child: _buildScaffold(context),
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: PreferredSize(
-        preferredSize: Size.fromHeight(kToolbarHeight * 2),
+        preferredSize: Size.fromHeight(kToolbarHeight * 2 + 8.0),
         child: Container(
           decoration: BoxDecoration(
             color: Theme.of(context).appBarTheme.backgroundColor ??
@@ -1051,12 +897,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           ),
           child: SafeArea(
             bottom: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
 
                 // ------------------------------------
-                // TOP ROW: Title + Account selector
+                // TOP ROW: Title + Account selector (centered)
                 // ------------------------------------
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
@@ -1100,10 +948,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         label: Text(
                           _selectedAccountId != null && _accounts.isNotEmpty
                               ? _accounts
-                              .firstWhere(
-                                  (acc) => acc.id == _selectedAccountId,
-                              orElse: () => _accounts.first)
-                              .email
+                                  .firstWhere(
+                                      (acc) => acc.id == _selectedAccountId,
+                                  orElse: () => _accounts.first)
+                                  .email
                               : '',
                           style: TextStyle(
                             color: Theme.of(context).appBarTheme.foregroundColor,
@@ -1151,353 +999,63 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       else
                         Text(
                           _selectedFolder,
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
                             color: Theme.of(context).appBarTheme.foregroundColor,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
 
-                      const Spacer(),
-
-                      // PERSONAL/BUSINESS SWITCH
-                      _buildAppBarLocalStateSwitch(context),
                       const SizedBox(width: 8),
-
-                      // MENU BUTTON
-                      PopupMenuButton<String>(
-                        icon: Icon(
-                          Icons.menu,
-                          size: 18,
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                        ),
-                        onSelected: _handleMenuSelection,
-                        itemBuilder: (context) => _buildPopupMenuItems(context),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-
-
-
-
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final isDesktop = constraints.maxWidth >= 900;
-          final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);  
-          final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0); 
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (isDesktop)
-                ClipRect(
-                  child: SizedBox(
-                    width: leftWidth,
-                    child: _buildLeftPanel(context),
-                  ),
-                ),
-              Expanded(
-                child: ClipRect(child: _buildMainColumn()),
-              ),
-              if (isDesktop)
-                ClipRect(
-                  child: SizedBox(
-                    width: rightWidth,
-                    child: _buildRightPanel(context),
-                  ),
-                ),
-            ],
-          );
-        },
-      ),
-    );
-*/
-
-    return Scaffold(
-      /*     appBar: AppBar(
-        automaticallyImplyLeading: false,
-        toolbarHeight: kToolbarHeight * 1.8,
-        backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
-            Theme.of(context).colorScheme.surfaceContainerHighest,
-        elevation: 0,
-
-        flexibleSpace: Container(
-          decoration: BoxDecoration(
-            border: Border(
-              bottom: BorderSide(
-                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.1),
-                width: 1,
-              ),
-            ),
-          ),
-          child: SafeArea(
-            bottom: false,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-
-                // ------------------------------------
-                // TOP ROW: Title + Account selector
-                // ------------------------------------
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      GestureDetector(
-                        onTap: () => showDialog(
-                          context: context,
-                          builder: (_) => ActionsSummaryWindow(),
-                        ),
-                        child: Text(
-                          AppConstants.appName,
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: ActionMailTheme.alertColor,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-
-                      TextButton.icon(
-                        onPressed: _isOpeningAccountDialog
-                            ? null
-                            : _showAccountSelectorDialog,
-                        icon: _isOpeningAccountDialog
-                            ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Theme.of(context).appBarTheme.foregroundColor,
-                          ),
-                        )
-                            : Icon(
-                          Icons.account_circle,
-                          size: 18,
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                        ),
-                        label: Text(
-                          _selectedAccountId != null && _accounts.isNotEmpty
-                              ? _accounts
-                              .firstWhere(
-                                (acc) => acc.id == _selectedAccountId,
-                            orElse: () => _accounts.first,
-                          )
-                              .email
-                              : '',
-                          style: TextStyle(
-                            color: Theme.of(context).appBarTheme.foregroundColor,
-                            fontSize: 14,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 0),
-
-                // ------------------------------------
-                // BOTTOM ROW: Folder selector + actions
-                // ------------------------------------
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
-                  child: Row(
-                    children: [
-                      if (!_isLocalFolder)
-                        AppDropdown<String>(
-                          value: _selectedFolder,
-                          items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
-                          itemBuilder: (folder) =>
-                          AppConstants.folderDisplayNames[folder] ?? folder,
-                          textColor: Theme.of(context).appBarTheme.foregroundColor,
-                          onChanged: (value) async {
-                            if (value != null) {
-                              setState(() {
-                                _selectedFolder = value;
-                                _isLocalFolder = false;
-                              });
-                              if (_selectedAccountId != null) {
-                                await ref
-                                    .read(emailListProvider.notifier)
-                                    .loadFolder(
-                                  _selectedAccountId!,
-                                  folderLabel: _selectedFolder,
-                                );
-                              }
-                            }
-                          },
-                        )
-                      else
-                        Text(
-                          _selectedFolder,
-                          style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                            color: Theme.of(context).appBarTheme.foregroundColor,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-
-                      const Spacer(),
-
-                      _buildAppBarLocalStateSwitch(context),
-                      const SizedBox(width: 8),
-
-                      PopupMenuButton<String>(
-                        icon: Icon(
-                          Icons.menu,
-                          size: 18,
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                        ),
-                        onSelected: _handleMenuSelection,
-                        itemBuilder: (context) => _buildPopupMenuItems(context),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-*/
-
-      appBar: AppBar(
-        automaticallyImplyLeading: false,
-        toolbarHeight: kToolbarHeight * 1.8,
-        elevation: 0,
-        shadowColor: Colors.transparent,
-        surfaceTintColor: Colors.transparent,
-        backgroundColor: Theme.of(context).appBarTheme.backgroundColor ??
-            Theme.of(context).colorScheme.surfaceContainerHighest,
-        flexibleSpace: SafeArea(
-          bottom: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // -------------------------------
-              // TOP ROW: Title + Account picker
-              // -------------------------------
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    GestureDetector(
-                      onTap: () => showDialog(
-                        context: context,
-                        builder: (_) => ActionsSummaryWindow(),
-                      ),
-                      child: Text(
-                        AppConstants.appName,
-                        style:
-                            Theme.of(context).textTheme.headlineSmall?.copyWith(
-                                  color: ActionMailTheme.alertColor,
+                      
+                      // Local Folders button (Table View only)
+                      Consumer(
+                        builder: (context, ref, child) {
+                          final viewMode = ref.watch(viewModeProvider);
+                          final isDesktop = MediaQuery.of(context).size.width >= 900;
+                          if (isDesktop && viewMode == ViewMode.table) {
+                            return TextButton.icon(
+                              onPressed: () => _showLocalFoldersDialog(context),
+                              icon: const Icon(Icons.folder, size: 18),
+                              label: Text(
+                                'Local Folders',
+                                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
                                   fontWeight: FontWeight.w500,
                                 ),
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    TextButton.icon(
-                      onPressed: _isOpeningAccountDialog
-                          ? null
-                          : _showAccountSelectorDialog,
-                      icon: _isOpeningAccountDialog
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Icon(
-                              Icons.account_circle,
-                              size: 18,
-                              color:
-                                  Theme.of(context).appBarTheme.foregroundColor,
-                            ),
-                      label: Text(
-                        _selectedAccountId != null && _accounts.isNotEmpty
-                            ? _accounts
-                                .firstWhere(
-                                  (acc) => acc.id == _selectedAccountId,
-                                  orElse: () => _accounts.first,
-                                )
-                                .email
-                            : '',
-                        style: TextStyle(
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                          fontSize: 14,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // -------------------------------
-              // BOTTOM ROW: Folder selector + actions
-              // -------------------------------
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Row(
-                  children: [
-                    if (!_isLocalFolder)
-                      AppDropdown<String>(
-                        value: _selectedFolder,
-                        items: AppConstants.folderDisplayNames.keys.toList(),
-                        itemBuilder: (folder) =>
-                            AppConstants.folderDisplayNames[folder] ?? folder,
-                        textColor:
-                            Theme.of(context).appBarTheme.foregroundColor,
-                        onChanged: (value) async {
-                          if (value != null) {
-                            setState(() {
-                              _selectedFolder = value;
-                              _isLocalFolder = false;
-                            });
-                            if (_selectedAccountId != null) {
-                              await ref
-                                  .read(emailListProvider.notifier)
-                                  .loadFolder(
-                                    _selectedAccountId!,
-                                    folderLabel: _selectedFolder,
-                                  );
-                            }
+                              ),
+                              style: TextButton.styleFrom(
+                                foregroundColor: Theme.of(context).appBarTheme.foregroundColor,
+                              ),
+                            );
                           }
+                          return const SizedBox.shrink();
                         },
-                      )
-                    else
-                      Text(
-                        _selectedFolder,
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              color:
-                                  Theme.of(context).appBarTheme.foregroundColor,
-                              fontWeight: FontWeight.w500,
-                            ),
                       ),
-                    const Spacer(),
+
+                      const Spacer(),
+
                     // Bulk actions (table view only, when emails are selected)
-                    Builder(
-                      builder: (context) {
-                        final isDesktop = MediaQuery.of(context).size.width >= 900;
-                        if (isDesktop) {
-                          return Consumer(
+                      Consumer(
                             builder: (context, ref, child) {
                               final viewMode = ref.watch(viewModeProvider);
                               if (viewMode == ViewMode.table && _tableSelectedCount > 0) {
                                 return Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    _buildBulkActionButtonsAppBar(context, ref),
+                                HomeBulkActionsAppBar(
+                                  selectedEmailIds: _tableSelectedEmailIds,
+                                  selectedCount: _tableSelectedCount,
+                                  selectedFolder: _selectedFolder,
+                                  isLocalFolder: _isLocalFolder,
+                                  onApplyPersonal: (emails) => _applyBulkPersonalBusiness(emails, 'Personal', ref),
+                                  onApplyBusiness: (emails) => _applyBulkPersonalBusiness(emails, 'Business', ref),
+                                  onApplyStar: (emails) => _applyBulkStar(emails, ref),
+                                  onApplyMove: (emails) => _applyBulkMove(emails, ref),
+                                  onApplyArchive: (emails) => _applyBulkArchive(emails, ref),
+                                  onApplyTrash: (emails) => _applyBulkTrash(emails, ref),
+                                ),
                                     const SizedBox(width: 8),
                                   ],
-                                );
-                              }
-                              return const SizedBox.shrink();
-                            },
                           );
                         }
                         return const SizedBox.shrink();
@@ -1534,203 +1092,161 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       },
                     ),
                     const SizedBox(width: 8),
-                    _buildAppBarLocalStateSwitch(context),
-                    const SizedBox(width: 8),
-                    PopupMenuButton<String>(
-                      icon: Icon(
-                        Icons.menu,
-                        size: 18,
-                        color: Theme.of(context).appBarTheme.foregroundColor,
+                      // PERSONAL/BUSINESS SWITCH
+                      HomeAppBarStateSwitch(
+                        selectedLocalState: _selectedLocalState,
+                        onStateChanged: (state) {
+                          setState(() {
+                            _selectedLocalState = state;
+                          });
+                        },
                       ),
-                      onSelected: _handleMenuSelection,
-                      itemBuilder: _buildPopupMenuItems,
-                    ),
-                  ],
+                    const SizedBox(width: 8),
+
+                      // MENU BUTTON
+                      HomeMenuButton(
+                        selectedAccountId: _selectedAccountId,
+                        selectedFolder: _selectedFolder,
+                        accounts: _accounts,
+                        ensureAccountAuthenticated: _ensureAccountAuthenticated,
+                        onRefresh: (accountId, folderLabel) async {
+                          await ref
+                              .read(emailListProvider.notifier)
+                              .refresh(accountId, folderLabel: folderLabel);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
-
-      // ------------------------------
-      // MAIN BODY
-      // ------------------------------
-      body: LayoutBuilder(
+    ),
+    body: LayoutBuilder(
         builder: (context, constraints) {
           final isDesktop = constraints.maxWidth >= 900;
+          final viewMode = ref.watch(viewModeProvider);
           final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
           final rightWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
           final collapsedWidth = 40.0;
-
+          
+          // Temporarily hide left and right panels in TableView
+          final showPanels = isDesktop && viewMode != ViewMode.table;
+          
           return Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (isDesktop)
-                AnimatedContainer(
+              if (showPanels)
+                SizedBox(
+                  width: _leftPanelCollapsed ? collapsedWidth : leftWidth,
+                  child: AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
                   curve: Curves.easeInOut,
                   width: _leftPanelCollapsed ? collapsedWidth : leftWidth,
                   child: ClipRect(
-                    child: _buildLeftPanel(context),
+                      clipBehavior: Clip.hardEdge,
+                      child: HomeLeftPanel(
+                        isCollapsed: _leftPanelCollapsed,
+                        accounts: _accounts,
+                        selectedAccountId: _selectedAccountId,
+                        selectedFolder: _selectedFolder,
+                        isLocalFolder: _isLocalFolder,
+                        accountUnreadCounts: _accountUnreadCounts,
+                        pendingLocalUnreadAccounts: _pendingLocalUnreadAccounts,
+                        onToggleCollapse: (collapsed) {
+                          setState(() {
+                            _leftPanelCollapsed = collapsed;
+                          });
+                        },
+                        onAccountSelected: _handleAccountSelected,
+                        onFolderSelected: _handleFolderSelected,
+                        onEmailDropped: _handleEmailDroppedToFolder,
+                      ),
+                    ),
                   ),
                 ),
               Flexible(
                 child: ClipRect(child: _buildMainColumn()),
               ),
-              if (isDesktop)
+              if (showPanels)
                 AnimatedContainer(
                   duration: const Duration(milliseconds: 300),
                   curve: Curves.easeInOut,
                   width: _rightPanelCollapsed ? collapsedWidth : rightWidth,
                   child: ClipRect(
-                    child: _buildRightPanel(context),
-                  ),
-                ),
-            ],
+                    child: HomeRightPanel(
+                      isCollapsed: _rightPanelCollapsed,
+                      isLocalFolder: _isLocalFolder,
+                      selectedFolder: _selectedFolder,
+                      onToggleCollapse: () {
+              setState(() {
+                          _rightPanelCollapsed = !_rightPanelCollapsed;
+              });
+            },
+                      onFolderSelected: (folderPath) async {
+                        // This is a local folder selection from right panel
+                  setState(() {
+                          _selectedFolder = folderPath;
+                          _isLocalFolder = true;
+                        });
+                        await _loadFolderEmails(folderPath, true);
+                      },
+                      onEmailDropped: (folderPath, message) async {
+                        await _handleEmailDroppedToFolder(folderPath, message);
+                      },
+                          ),
+                        ),
+                      ),
+                    ],
           );
         },
       ),
     );
   }
 
-  // Left panel for desktop - Accounts and Gmail folder tree
-  Widget _buildLeftPanel(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
-    final highlightBorderColor =
-        ActionMailTheme.alertColor.withValues(alpha: 1);
-    const accountSelectedBorderColor = Color(0xFF00695C);
+  // Left panel widget moved to HomeLeftPanel
 
-    if (_leftPanelCollapsed) {
-      return Container(
-        color: cs.surface,
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: IconButton(
-            icon: Icon(
-              Icons.chevron_right,
-              color: cs.onSurfaceVariant,
-            ),
-            onPressed: () {
-              setState(() {
-                _leftPanelCollapsed = false;
-              });
-            },
-            tooltip: 'Expand left panel',
-          ),
-        ),
-      );
-    }
-
-    final column = Column(
-      children: [
-        // Collapse button
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              IconButton(
-                icon: Icon(
-                  Icons.chevron_left,
-                  size: 18,
-                  color: cs.onSurfaceVariant,
-                ),
-                onPressed: () {
-                  setState(() {
-                    _leftPanelCollapsed = true;
-                  });
-                },
-                tooltip: 'Collapse left panel',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
-            ],
-          ),
-        ),
-        // Accounts section
-        if (_accounts.isNotEmpty)
-          Container(
-            decoration: BoxDecoration(
-              color: Colors.transparent,
-              border: Border(
-                bottom: BorderSide(
-                  color: cs.outline.withValues(alpha: 0.1),
-                  width: 1,
-                ),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.account_circle, size: 20),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'Accounts',
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                ..._accounts.map((account) {
-                  final isSelected = account.id == _selectedAccountId;
-                  final isAccountActive = isSelected && !_isLocalFolder;
-                  return Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: () async {
-                        if (account.id != _selectedAccountId) {
+  // Handler methods for left panel callbacks
+  Future<void> _handleAccountSelected(String accountId) async {
+    if (accountId != _selectedAccountId) {
                           // Allow account selection even if token is invalid
                           // Dialog will be shown automatically when incremental sync fails
-                          _pendingLocalUnreadAccounts.add(account.id);
+      _pendingLocalUnreadAccounts.add(accountId);
                           setState(() {
-                            _selectedAccountId = account.id;
+        _selectedAccountId = accountId;
                             _isLocalFolder = false;
                             _selectedFolder = AppConstants.folderInbox;
                           });
-                          await _saveLastActiveAccount(account.id);
+      await _saveLastActiveAccount(accountId);
                           if (_selectedAccountId != null) {
                             // Load emails from local DB immediately (fast UI update)
                             await ref
                                 .read(emailListProvider.notifier)
-                                .loadEmails(_selectedAccountId!,
-                                    folderLabel: _selectedFolder);
+            .loadEmails(_selectedAccountId!, folderLabel: _selectedFolder);
 
                             // Run sync in background (non-blocking)
-                            unawaited(Future(() async {
+        unawaited(() async {
                               try {
                                 final syncService = GmailSyncService();
                                 await syncService.processPendingOps();
-                                final hasHistory = await syncService
-                                    .hasHistoryId(_selectedAccountId!);
+            final hasHistory =
+                await syncService.hasHistoryId(_selectedAccountId!);
                                 if (hasHistory) {
                                   // Account already has history - run incremental sync
-                                  await syncService
-                                      .incrementalSync(_selectedAccountId!);
+              await syncService.incrementalSync(_selectedAccountId!);
                                 }
                                 // If no history, loadEmails already triggered initial sync in background
 
                                 // Switch unread count to local after sync
-                                await _switchUnreadCountToLocal(
-                                    _selectedAccountId!);
+            await _switchUnreadCountToLocal(_selectedAccountId!);
                               } catch (e) {
                                 debugPrint(
                                     '[HomeScreen] Error during background sync on account tap: $e');
-                                await _switchUnreadCountToLocal(
-                                    _selectedAccountId!);
+            await _switchUnreadCountToLocal(_selectedAccountId!);
                               }
-                            }));
+        }());
                           }
                         } else if (_isLocalFolder) {
                           setState(() {
@@ -1738,103 +1254,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             _selectedFolder = AppConstants.folderInbox;
                           });
                           if (_selectedAccountId != null) {
-                            await _loadFolderEmails(
-                                AppConstants.folderInbox, false);
-                          }
-                          await _saveLastActiveAccount(account.id);
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: isAccountActive
-                              ? highlightColor
-                              : Colors.transparent,
-                          border: isAccountActive
-                              ? Border(
-                                  left: BorderSide(
-                                    color: highlightBorderColor,
-                                    width: 3,
-                                  ),
-                                )
-                              : isSelected
-                                  ? const Border(
-                                      left: BorderSide(
-                                        color: accountSelectedBorderColor,
-                                        width: 3,
-                                      ),
-                                    )
-                                  : null,
-                        ),
-                        child: Row(
-                          children: [
-                            Icon(
-                              isSelected
-                                  ? Icons.account_circle
-                                  : Icons.account_circle_outlined,
-                              size: 18,
-                              color: isAccountActive
-                                  ? cs.onSurface
-                                  : (isSelected
-                                      ? accountSelectedBorderColor
-                                      : cs.onSurfaceVariant),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                account.email,
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: isAccountActive || !isSelected
-                                      ? cs.onSurface
-                                      : accountSelectedBorderColor,
-                                  fontWeight: isAccountActive
-                                      ? FontWeight.w600
-                                      : FontWeight.normal,
-                                ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (_accountUnreadCounts[account.id] != null &&
-                                _accountUnreadCounts[account.id]! > 0)
-                              Padding(
-                                padding: const EdgeInsets.only(left: 8),
-                                child: Text(
-                                  '(${_accountUnreadCounts[account.id]})',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: isAccountActive
-                                        ? cs.onSurface
-                                        : (isSelected
-                                            ? accountSelectedBorderColor
-                                            : cs.onSurfaceVariant),
-                                    fontWeight: FontWeight.normal,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
-                }),
-              ],
-            ),
-          ),
-        // Gmail folder tree
-        Expanded(
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              // Only render folder tree when panel is wide enough
-              if (constraints.maxWidth < 100) {
-                return const SizedBox.shrink();
-              }
-              return GmailFolderTree(
-                selectedFolder: _selectedFolder,
-                isViewingLocalFolder: _isLocalFolder,
-                accountId: _selectedAccountId,
-                selectedBackgroundColor: highlightColor,
-                onFolderSelected: (folderId) async {
+        await _loadFolderEmails(AppConstants.folderInbox, false);
+      }
+      await _saveLastActiveAccount(accountId);
+    }
+  }
+
+  Future<void> _handleFolderSelected(String folderId) async {
                   setState(() {
                     _selectedFolder = folderId;
                     _isLocalFolder = false; // Reset to Gmail folder
@@ -1842,10 +1268,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   if (_selectedAccountId != null) {
                     await ref.read(emailListProvider.notifier).loadFolder(
                         _selectedAccountId!,
-                        folderLabel: _selectedFolder);
+            folderLabel: _selectedFolder,
+          );
                   }
-                },
-                onEmailDropped: (folderId, message) async {
+  }
+
+  Future<void> _handleEmailDroppedToFolder(String folderId, MessageIndex message) async {
                   if (_isLocalFolder) {
                     if (folderId.toUpperCase() != 'INBOX') {
                       if (mounted) {
@@ -1865,65 +1293,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   try {
                     // Optimistic UI update first
                     if (folderId == 'TRASH') {
-                      if (_selectedFolder != 'TRASH') {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .removeMessage(message.id);
-                      } else {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .setFolder(message.id, 'TRASH');
-                      }
+                      HomeScreenHelpers.updateFolderOptimistic(
+                        ref: ref,
+                        messageId: message.id,
+                        currentFolder: _selectedFolder,
+                        targetFolder: 'TRASH',
+                      );
                       final prev = message.folderLabel;
                       if (prev.toUpperCase() == 'ARCHIVE') {
                         // ARCHIVE -> TRASH: do not change prevFolderLabel
-                        unawaited(MessageRepository()
+                        unawaited(_messageRepository
                             .updateFolderNoPrev(message.id, 'TRASH'));
                       } else {
-                        unawaited(MessageRepository().updateFolderWithPrev(
+                        unawaited(_messageRepository.updateFolderWithPrev(
                           message.id,
                           'TRASH',
                           prevFolderLabel: prev,
                         ));
                       }
-                      _enqueueGmailUpdate(
-                          'trash:${prev.toUpperCase()}', message.id);
+        _enqueueGmailUpdate('trash:${prev.toUpperCase()}', message.id);
                     } else if (folderId == 'ARCHIVE') {
-                      if (_selectedFolder != 'ARCHIVE') {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .removeMessage(message.id);
-                      } else {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .setFolder(message.id, 'ARCHIVE');
-                      }
+                      HomeScreenHelpers.updateFolderOptimistic(
+                        ref: ref,
+                        messageId: message.id,
+                        currentFolder: _selectedFolder,
+                        targetFolder: 'ARCHIVE',
+                      );
                       final prev = message.folderLabel;
                       if (prev.toUpperCase() == 'TRASH') {
                         // TRASH -> ARCHIVE: do not change prevFolderLabel
-                        unawaited(MessageRepository()
+                        unawaited(_messageRepository
                             .updateFolderNoPrev(message.id, 'ARCHIVE'));
                       } else {
-                        unawaited(MessageRepository().updateFolderWithPrev(
+                        unawaited(_messageRepository.updateFolderWithPrev(
                           message.id,
                           'ARCHIVE',
                           prevFolderLabel: prev,
                         ));
                       }
-                      _enqueueGmailUpdate(
-                          'archive:${prev.toUpperCase()}', message.id);
+        _enqueueGmailUpdate('archive:${prev.toUpperCase()}', message.id);
                     } else if (folderId == 'INBOX') {
-                      if (_selectedFolder != 'INBOX') {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .removeMessage(message.id);
-                      } else {
-                        ref
-                            .read(emailListProvider.notifier)
-                            .setFolder(message.id, 'INBOX');
-                      }
+                      HomeScreenHelpers.updateFolderOptimistic(
+                        ref: ref,
+                        messageId: message.id,
+                        currentFolder: _selectedFolder,
+                        targetFolder: 'INBOX',
+                      );
                       final prev = message.folderLabel;
-                      unawaited(MessageRepository().updateFolderWithPrev(
+                      unawaited(_messageRepository.updateFolderWithPrev(
                         message.id,
                         'INBOX',
                         prevFolderLabel: prev,
@@ -1953,8 +1370,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                     .read(emailListProvider.notifier)
                                     .setFolder(message.id, dest);
                               }
-                              _enqueueGmailUpdate(
-                                  'restore:${dest.toUpperCase()}', message.id);
+                _enqueueGmailUpdate('restore:${dest.toUpperCase()}', message.id);
                             }
                           }
                         }());
@@ -1967,8 +1383,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               'Email moved to ${AppConstants.folderDisplayNames[folderId] ?? folderId}')),
                     );
                   } catch (e) {
-                    debugPrint(
-                        '[HomeScreen] Error moving email to Gmail folder: $e');
+      debugPrint('[HomeScreen] Error moving email to Gmail folder: $e');
                     if (!context.mounted) return;
                     {
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -1976,122 +1391,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       );
                     }
                   }
-                },
-              );
-            },
-          ),
-        ),
-      ],
-    );
-    return Container(
-      color: theme.colorScheme.surface,
-      child: column,
-    );
   }
 
-  // Right panel for desktop - local folder tree
-  Widget _buildRightPanel(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+  // Left panel widget moved to HomeLeftPanel
 
-    if (_rightPanelCollapsed) {
-      return Container(
-        color: cs.surface,
-        child: Align(
-          alignment: Alignment.topCenter,
-          child: IconButton(
-            icon: Icon(
-              Icons.chevron_left,
-              color: cs.onSurfaceVariant,
-            ),
-            onPressed: () {
-              setState(() {
-                _rightPanelCollapsed = false;
-              });
-            },
-            tooltip: 'Expand right panel',
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      color: cs.surface,
-      child: Column(
-        children: [
-          // Collapse button
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.start,
-              children: [
-                IconButton(
-                  icon: Icon(
-                    Icons.chevron_right,
-                    size: 18,
-                    color: cs.onSurfaceVariant,
-                  ),
-                  onPressed: () {
-                    setState(() {
-                      _rightPanelCollapsed = true;
-                    });
-                  },
-                  tooltip: 'Collapse right panel',
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                // Only render folder tree when panel is wide enough
-                if (constraints.maxWidth < 100) {
-                  return const SizedBox.shrink();
-                }
-                return LocalFolderTree(
-                  selectedFolder: _isLocalFolder ? _selectedFolder : null,
-                  selectedBackgroundColor: highlightColor,
-                  onFolderSelected: (folderPath) async {
-                    setState(() {
-                      _selectedFolder = folderPath;
-                      _isLocalFolder = true;
-                    });
-                    await _loadFolderEmails(folderPath, true);
-                  },
-                  onEmailDropped: (folderPath, message) async {
-                    // Determine if this is a local-to-local move or Gmail-to-local save
-                    // If we're currently viewing a local folder, the email is from a local folder
-                    if (_isLocalFolder) {
-                      // Local email -> Local folder: move within local storage
-                      await _moveLocalEmailToFolder(folderPath, message);
-                    } else {
-                      // Gmail email -> Local folder: only allowed from INBOX, SPAM, SENT
-                      final src = (message.folderLabel).toUpperCase();
-                      if (src == 'TRASH' || src == 'ARCHIVE') {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text(
-                                    'Cannot save from Trash/Archive to local. Move to Inbox/Sent/Spam first.')),
-                          );
-                        }
-                        return;
-                      }
-                      // Proceed: save and archive
-                      await _saveEmailToFolder(folderPath, message);
-                    }
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  // Right panel widget moved to HomeRightPanel
 
   /// Load emails for the selected folder (Gmail or local)
   Future<void> _loadFolderEmails(String folderLabel, bool isLocal) async {
@@ -2117,16 +1421,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Saved List indicator when viewing local folder
-        if (_isLocalFolder) _buildSavedListIndicator(),
+        if (_isLocalFolder)
+          HomeSavedListIndicator(
+            selectedFolder: _selectedFolder,
+            onBackToGmail: () {
+              if (_selectedAccountId == null) return;
+              setState(() {
+                _isLocalFolder = false;
+                _selectedFolder = AppConstants.folderInbox;
+              });
+              unawaited(_loadFolderEmails(AppConstants.folderInbox, false));
+            },
+          ),
 
-        // Top filter row: Personal/Business, Action buttons, Filter toggle
-        _buildTopFilterRow(),
-
-        // Filter bar: Unread, Starred, Important, Category filter, Search
-        if (_showFilterBar) _buildFilterBar(),
-
-        // Search field (below filter bar when active)
-        if (_showFilterBar && _showSearch) _buildSearchField(),
+        // Filter bar: Top row, state filters, category filter, and search
+        HomeFilterBar(
+          stateFilter: _stateFilter,
+          selectedCategories: _selectedCategories,
+          showFilterBar: _showFilterBar,
+          showSearch: _showSearch,
+          searchQuery: _searchQuery,
+          searchController: _searchController,
+          selectedActionFilter: _selectedActionFilter,
+          selectedLocalState: _selectedLocalState,
+          isLocalFolder: _isLocalFolder,
+          onStateFilterChanged: (filter) {
+                  setState(() {
+              _stateFilter = filter;
+                  });
+                },
+          onCategoriesChanged: (categories) {
+              setState(() {
+              _selectedCategories.clear();
+              _selectedCategories.addAll(categories);
+              });
+            },
+          onFilterBarToggled: (show) {
+              setState(() {
+              if (!show) {
+                // Closing FilterBar - reset all filters
+                _stateFilter = null;
+                _selectedCategories.clear();
+                _searchQuery = '';
+                _searchController.clear();
+                _showSearch = false;
+              }
+              _showFilterBar = show;
+              });
+            },
+          onSearchToggled: (show) {
+              setState(() {
+              _showSearch = show;
+              if (!show) {
+                _searchQuery = '';
+                _searchController.clear();
+              }
+              });
+            },
+          onSearchQueryChanged: (query) {
+              setState(() {
+              _searchQuery = query;
+              });
+            },
+          onActionFilterChanged: (filter) {
+            setState(() {
+              _selectedActionFilter = filter;
+            });
+          },
+          onMarkAllAsRead: _markAllUnreadAsRead,
+        ),
 
         // Email list
         Expanded(
@@ -2137,731 +1500,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
   /// Indicator showing we're viewing a saved list
-  Widget _buildSavedListIndicator() {
-    final theme = Theme.of(context);
-    final textColor = const Color(0xFF333333);
-    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.5);
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: highlightColor,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.sd_storage_outlined,
-            size: 20,
-            color: textColor,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Viewing local storage',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    color: textColor,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Saved list: $_selectedFolder',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: textColor,
-                    fontWeight: FontWeight.w500,
-                  ),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 16),
-          TextButton(
-            onPressed: () {
-              if (_selectedAccountId == null) return;
-              setState(() {
-                _isLocalFolder = false;
-                _selectedFolder = AppConstants.folderInbox;
-              });
-              unawaited(_loadFolderEmails(AppConstants.folderInbox, false));
-            },
-            style: TextButton.styleFrom(
-              foregroundColor: textColor,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              minimumSize: const Size(0, 0),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              textStyle: theme.textTheme.labelMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            child: const Text('Back to Gmail'),
-          ),
-        ],
-      ),
-    );
-  }
+  // Saved list indicator widget moved to HomeSavedListIndicator
 
-  Widget _buildFilterBar() {
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-    return Container(
-      padding:
-          const EdgeInsets.only(left: 8.0, right: 8.0, top: 2.0, bottom: 6.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // State filter buttons (Unread, Starred, Important) - sophisticated style
-          _buildSophisticatedStateFilterButtons(context),
-          SizedBox(width: isDesktop ? 4 : 12),
-          // Category filter button - sophisticated style
-          _buildSophisticatedCategoryButton(context),
-          SizedBox(width: isDesktop ? 4 : 12),
-          // Search button - sophisticated style
-          _buildSophisticatedSearchButton(context),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSearchField() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-      child: Center(
-        child: SizedBox(
-          width: 400,
-          child: TextField(
-            controller: _searchController,
-            autofocus: true,
-            decoration: InputDecoration(
-              hintText: 'Search emails...',
-              hintStyle: TextStyle(
-                fontSize: 13,
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-              prefixIcon: const Icon(Icons.search, size: 18),
-              suffixIcon: IconButton(
-                icon: const Icon(Icons.clear, size: 18),
-                onPressed: () {
-                  setState(() {
-                    _searchQuery = '';
-                    _searchController.clear();
-                  });
-                },
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(),
-              ),
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              disabledBorder: InputBorder.none,
-              contentPadding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              isDense: true,
-              filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-            ),
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurface,
-              fontSize: 13,
-            ),
-            onChanged: (value) {
-              setState(() {
-                _searchQuery = value.toLowerCase().trim();
-              });
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSophisticatedStateFilterButtons(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-
-    // Get counts from the currently displayed email list (account + folder)
-    // This reflects what's actually shown in the email list
-    final emailListAsync = ref.watch(emailListProvider);
-
-    // Calculate counts from the current email list
-    final counts = emailListAsync.when(
-      data: (emails) {
-        // Count from emails in the current folder (already filtered by account and folder)
-        return {
-          'unread': emails.where((m) => !m.isRead).length,
-          'starred': emails.where((m) => m.isStarred).length,
-          'important': emails.where((m) => m.isImportant).length,
-        };
-      },
-      loading: () => {'unread': 0, 'starred': 0, 'important': 0},
-      error: (_, __) => {'unread': 0, 'starred': 0, 'important': 0},
-    );
-
-    final unreadCount = counts['unread']!;
-    final starredCount = counts['starred']!;
-    final importantCount = counts['important']!;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cs.outlineVariant.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _buildSophisticatedFilterButton(
-            context,
-            'Unread',
-            Icons.mark_email_unread_outlined,
-            Icons.mark_email_unread,
-            _stateFilter == 'Unread',
-            unreadCount,
-            () {
-              setState(() {
-                _stateFilter = _stateFilter == 'Unread' ? null : 'Unread';
-              });
-            },
-          ),
-          // Mark all as read button (only show when Unread filter is active)
-          if (_stateFilter == 'Unread') ...[
-            SizedBox(width: isDesktop ? 2 : 12),
-            _buildMarkAllAsReadButton(context),
-          ],
-          SizedBox(width: isDesktop ? 2 : 12),
-          _buildSophisticatedFilterButton(
-            context,
-            'Starred',
-            Icons.star_border,
-            Icons.star,
-            _stateFilter == 'Starred',
-            starredCount,
-            () {
-              setState(() {
-                _stateFilter = _stateFilter == 'Starred' ? null : 'Starred';
-              });
-            },
-          ),
-          SizedBox(width: isDesktop ? 2 : 12),
-          _buildSophisticatedFilterButton(
-            context,
-            'Important',
-            Icons.priority_high_outlined,
-            Icons.priority_high,
-            _stateFilter == 'Important',
-            importantCount,
-            () {
-              setState(() {
-                _stateFilter = _stateFilter == 'Important' ? null : 'Important';
-              });
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSophisticatedCategoryButton(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final hasCategories = _selectedCategories.isNotEmpty;
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cs.outlineVariant.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Material(
-        color: hasCategories ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: () => _showCategoriesPopup(context),
-          child: Container(
-            padding: isDesktop
-                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
-                : const EdgeInsets.all(6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Stack(
-                  children: [
-                    Icon(
-                      hasCategories
-                          ? Icons.filter_alt
-                          : Icons.filter_alt_outlined,
-                      size: 18,
-                      color: hasCategories
-                          ? ActionMailTheme.alertColor
-                          : const Color(0xFF00897B), // Teal for categories
-                    ),
-                    if (hasCategories)
-                      Positioned(
-                        right: 0,
-                        top: 0,
-                        child: Container(
-                          width: 6,
-                          height: 6,
-                          decoration: BoxDecoration(
-                            color: ActionMailTheme.alertColor,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                                color: ActionMailTheme.alertColor.withValues(alpha: 0.3), width: 1),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                if (isDesktop) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    'Categories',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: hasCategories
-                          ? ActionMailTheme.alertColor
-                          : cs.onSurfaceVariant,
-                      fontWeight:
-                          hasCategories ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildMarkAllAsReadButton(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-
-    // Get unread emails from the current list (reactive)
-    final emailListAsync = ref.watch(emailListProvider);
-
-    final unreadInfo = emailListAsync.when(
-      data: (emails) {
-        final unreadEmails = emails.where((m) => !m.isRead).toList();
-        return {
-          'count': unreadEmails.length,
-          'ids': unreadEmails.map((m) => m.id).toList(),
-        };
-      },
-      loading: () => {'count': 0, 'ids': <String>[]},
-      error: (_, __) => {'count': 0, 'ids': <String>[]},
-    );
-
-    final unreadCount = unreadInfo['count'] as int;
-    final unreadMessageIds = unreadInfo['ids'] as List<String>;
-    final isEnabled = unreadCount > 0 && !_isLocalFolder;
-
-    return Tooltip(
-      message: 'Mark all as Read',
-      child: Material(
-        color: isEnabled ? cs.primaryContainer : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap:
-              isEnabled ? () => _markAllUnreadAsRead(unreadMessageIds) : null,
-          child: Container(
-            padding: const EdgeInsets.all(6),
-            child: Icon(
-              Icons.done_all,
-              size: 18,
-              color: isEnabled
-                  ? cs.onPrimaryContainer
-                  : cs.onSurfaceVariant.withValues(alpha: 0.5),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSophisticatedSearchButton(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final isSearchActive = _showSearch;
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-
-    return Container(
-      decoration: BoxDecoration(
-        color: cs.surfaceContainerHighest.withValues(alpha: 0.5),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: cs.outlineVariant.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      padding: const EdgeInsets.all(2),
-      child: Material(
-        color: isSearchActive ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: () {
-            setState(() {
-              _showSearch = !_showSearch;
-              if (!_showSearch) {
-                _searchQuery = '';
-                _searchController.clear();
-              }
-            });
-          },
-          child: Container(
-            padding: isDesktop
-                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
-                : const EdgeInsets.all(6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  isSearchActive ? Icons.search_off : Icons.search,
-                  size: 18,
-                  color: isSearchActive
-                      ? ActionMailTheme.alertColor
-                      : const Color(0xFF42A5F5), // Blue for search
-                ),
-                if (isDesktop) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    'Search',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: isSearchActive
-                          ? ActionMailTheme.alertColor
-                          : cs.onSurfaceVariant,
-                      fontWeight:
-                          isSearchActive ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildSophisticatedFilterButton(
-    BuildContext context,
-    String label,
-    IconData outlinedIcon,
-    IconData filledIcon,
-    bool selected,
-    int count,
-    VoidCallback onTap,
-  ) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final isDesktop = MediaQuery.of(context).size.width >= 900;
-
-    // Assign colors based on filter type
-    Color iconColor;
-    if (selected) {
-      iconColor = ActionMailTheme.alertColor;
-    } else {
-      switch (label) {
-        case 'Unread':
-          iconColor = const Color(0xFF2196F3); // Blue
-          break;
-        case 'Starred':
-          iconColor = const Color(0xFFFFB300); // Amber/Yellow
-          break;
-        case 'Important':
-          iconColor = const Color(0xFFE91E63); // Pink/Red
-          break;
-        default:
-          iconColor = cs.onSurfaceVariant;
-      }
-    }
-
-    // Tooltip text
-    String tooltipText;
-    switch (label) {
-      case 'Starred':
-        tooltipText = 'Emails you have Starred';
-        break;
-      case 'Important':
-        tooltipText = 'Emails Google has flagged as Important';
-        break;
-      default:
-        tooltipText = label;
-    }
-    if (count > 0) {
-      tooltipText = '$tooltipText ($count)';
-    }
-
-    return Tooltip(
-      message: tooltipText,
-      child: Material(
-        color: selected ? ActionMailTheme.alertColor.withValues(alpha: 0.2) : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: onTap,
-          child: Container(
-            padding: isDesktop
-                ? const EdgeInsets.symmetric(horizontal: 12, vertical: 6)
-                : const EdgeInsets.all(6),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  selected ? filledIcon : outlinedIcon,
-                  size: 18,
-                  color: iconColor,
-                ),
-                if (isDesktop) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: selected
-                          ? ActionMailTheme.alertColor
-                          : cs.onSurfaceVariant,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                  ),
-                  if (count > 0) ...[
-                    const SizedBox(width: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 5, vertical: 1),
-                      decoration: BoxDecoration(
-                        color: selected ? ActionMailTheme.alertColor : iconColor,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        count > 99 ? '99+' : '$count',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 10,
-                        ),
-                      ),
-                    ),
-                  ],
-                ] else if (count > 0) ...[
-                  const SizedBox(width: 4),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: selected ? ActionMailTheme.alertColor : iconColor,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      count > 99 ? '99+' : '$count',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 9,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showCategoriesPopup(BuildContext context) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final currentSelections = Set<String>.from(_selectedCategories);
-
-    // Map categories to icons and colors
-    final categoryConfig = <String, Map<String, dynamic>>{
-      'categoryPersonal': {
-        'icon': Icons.person_outline,
-        'color': const Color(0xFF2196F3)
-      },
-      'categorySocial': {
-        'icon': Icons.people_outline,
-        'color': const Color(0xFF673AB7)
-      },
-      'categoryPromotions': {
-        'icon': Icons.local_offer_outlined,
-        'color': const Color(0xFFE91E63)
-      },
-      'categoryUpdates': {
-        'icon': Icons.info_outline,
-        'color': const Color(0xFF00BCD4)
-      },
-      'categoryForums': {
-        'icon': Icons.forum_outlined,
-        'color': const Color(0xFFFF9800)
-      },
-      'categoryBills': {
-        'icon': Icons.receipt_long_outlined,
-        'color': const Color(0xFF4CAF50)
-      },
-      'categoryPurchases': {
-        'icon': Icons.shopping_bag_outlined,
-        'color': const Color(0xFFFF5722)
-      },
-      'categoryFinance': {
-        'icon': Icons.account_balance_outlined,
-        'color': const Color(0xFF009688)
-      },
-      'categoryTravel': {
-        'icon': Icons.flight_outlined,
-        'color': const Color(0xFF03A9F4)
-      },
-      'categoryReceipts': {
-        'icon': Icons.receipt_outlined,
-        'color': const Color(0xFF795548)
-      },
-    };
-
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (context) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: StatefulBuilder(
-          builder: (context, setDialogState) {
-            return Container(
-              width: 250,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // Header
-                  Padding(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    child: Row(
-                      children: [
-                        Text(
-                          'Categories',
-                          style: theme.textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const Spacer(),
-                        IconButton(
-                          icon: const Icon(Icons.close, size: 20),
-                          iconSize: 20,
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          onPressed: () => Navigator.of(context).pop(),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const Divider(height: 1),
-                  // Category list
-                  Flexible(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children:
-                            AppConstants.allGmailCategories.map((category) {
-                          final displayName =
-                              AppConstants.categoryDisplayNames[category] ??
-                                  category;
-                          final isSelected =
-                              currentSelections.contains(category);
-                          final config = categoryConfig[category] ??
-                              {
-                                'icon': Icons.label_outline,
-                                'color': cs.onSurfaceVariant
-                              };
-                          final icon = config['icon'] as IconData;
-                          final color = config['color'] as Color;
-
-                          return InkWell(
-                            onTap: () {
-                              setDialogState(() {
-                                if (isSelected) {
-                                  currentSelections.remove(category);
-                                } else {
-                                  currentSelections.add(category);
-                                }
-                              });
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 12),
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? cs.primaryContainer.withValues(alpha: 0.3)
-                                    : null,
-                              ),
-                              child: Row(
-                                children: [
-                                  Icon(
-                                    icon,
-                                    size: 20,
-                                    color: isSelected ? cs.primary : color,
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Text(
-                                      displayName,
-                                      style:
-                                          theme.textTheme.bodyMedium?.copyWith(
-                                        color: isSelected
-                                            ? cs.onPrimaryContainer
-                                            : null,
-                                        fontWeight: isSelected
-                                            ? FontWeight.w600
-                                            : FontWeight.normal,
-                                      ),
-                                    ),
-                                  ),
-                                  if (isSelected)
-                                    Icon(
-                                      Icons.check,
-                                      size: 18,
-                                      color: cs.primary,
-                                    ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        ),
-      ),
-    ).then((_) {
-      // Apply selections when dialog closes
-      setState(() {
-        _selectedCategories.clear();
-        _selectedCategories.addAll(currentSelections);
-      });
-    });
-  }
+  // Filter bar methods moved to HomeFilterBar widget
 
   /// Save email to local folder and move to Archive
   Future<void> _saveEmailToFolder(
@@ -2883,11 +1524,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final wasArchive = message.folderLabel.toUpperCase() == 'ARCHIVE';
     if (!wasArchive) {
       // Remove from current view if not ARCHIVE; otherwise set folder to ARCHIVE
-      if (_selectedFolder != 'ARCHIVE') {
-        ref.read(emailListProvider.notifier).removeMessage(message.id);
-      } else {
-        ref.read(emailListProvider.notifier).setFolder(message.id, 'ARCHIVE');
-      }
+      HomeScreenHelpers.updateFolderOptimistic(
+        ref: ref,
+        messageId: message.id,
+        currentFolder: _selectedFolder,
+        targetFolder: 'ARCHIVE',
+      );
     }
 
     // Defer heavy work (token check, body fetch, file IO, DB, Gmail) until after UI paints
@@ -2920,28 +1562,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           return;
         }
 
-        String accountEmail = message.accountEmail ??
-            _accounts
-                .firstWhere(
-                  (a) => a.id == _selectedAccountId,
-                  orElse: () => const GoogleAccount(
-                    id: '',
-                    email: '',
-                    displayName: '',
-                    photoUrl: null,
-                    accessToken: '',
-                    refreshToken: null,
-                    tokenExpiryMs: null,
-                    idToken: '',
-                  ),
-                )
-                .email;
-        if (accountEmail.isEmpty) {
-          accountEmail = message.to.isNotEmpty ? message.to : message.from;
-        }
-        if (accountEmail.isEmpty) {
-          accountEmail = message.to.isNotEmpty ? message.to : message.from;
-        }
+        final accountEmail = HomeScreenHelpers.getAccountEmail(
+          message: message,
+          accountId: _selectedAccountId,
+          accounts: _accounts,
+        );
 
         // Save to local folder
         final saved = await _localFolderService.saveEmailToFolder(
@@ -2956,7 +1581,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         if (saved) {
           if (!wasArchive) {
             // Persist archive intent and enqueue Gmail modify
-            await MessageRepository().updateFolderWithPrev(
+            await _messageRepository.updateFolderWithPrev(
               message.id,
               'ARCHIVE',
               prevFolderLabel: message.folderLabel,
@@ -3054,22 +1679,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         return;
       }
 
-      final accountEmail = message.accountEmail ??
-          _accounts
-              .firstWhere(
-                (a) => a.id == _selectedAccountId,
-                orElse: () => const GoogleAccount(
-                  id: '',
-                  email: '',
-                  displayName: '',
-                  photoUrl: null,
-                  accessToken: '',
-                  refreshToken: null,
-                  tokenExpiryMs: null,
-                  idToken: '',
-                ),
-              )
-              .email;
+      final accountEmail = HomeScreenHelpers.getAccountEmail(
+        message: message,
+        accountId: _selectedAccountId,
+        accounts: _accounts,
+      );
 
       // Save to target folder
       final saved = await _localFolderService.saveEmailToFolder(
@@ -3120,8 +1734,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   Future<void> _restoreLocalEmailToInbox(MessageIndex message) async {
     var accountId = message.accountId;
-    final messageAccountEmail = message.accountEmail ?? '';
-    if (accountId.isEmpty && messageAccountEmail.isEmpty) {
+    final storedAccountEmail = HomeScreenHelpers.getAccountEmail(
+      message: message,
+      accountId: message.accountId,
+      accounts: _accounts,
+    );
+    
+    if (accountId.isEmpty && storedAccountEmail.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -3141,23 +1760,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       }
       return;
     }
-
-    final storedAccountEmail = message.accountEmail ??
-        _accounts
-            .firstWhere(
-              (a) => a.id == message.accountId,
-              orElse: () => const GoogleAccount(
-                id: '',
-                email: '',
-                displayName: '',
-                photoUrl: null,
-                accessToken: '',
-                refreshToken: null,
-                tokenExpiryMs: null,
-                idToken: '',
-              ),
-            )
-            .email;
 
     debugPrint(
         '[Restore] requested accountId=$accountId local message account=${message.accountId} email=$storedAccountEmail');
@@ -3250,7 +1852,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 .restoreMessageToInbox(accountId, message.id);
             debugPrint(
                 '[Restore] Gmail modify succeeded for message=${message.id} account=$accountId');
-            await MessageRepository().updateFolderNoPrev(message.id, 'INBOX');
+            await _messageRepository.updateFolderNoPrev(message.id, 'INBOX');
 
             await _localFolderService.removeEmailFromFolder(
                 sourceFolderPath, message.id);
@@ -3292,7 +1894,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           }
         });
 
-        return const _ProcessingDialog(message: 'Restoring to Inbox...');
+        return const ProcessingDialog(message: 'Restoring to Inbox...');
       },
     );
   }
@@ -3309,573 +1911,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     });
   }
 
-  Widget _buildTopFilterRow() {
-    return Container(
-      padding:
-          const EdgeInsets.only(left: 8.0, right: 8.0, top: 6.0, bottom: 2.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          // Action filter as text buttons
-          Builder(
-            builder: (context) {
-              final emailsValue = ref.read(emailListProvider);
-              int countToday = 0,
-                  countUpcoming = 0,
-                  countOverdue = 0,
-                  countPossible = 0;
-              emailsValue.whenData((emails) {
-                final now = DateTime.now();
-                final today = DateTime(now.year, now.month, now.day);
-                for (final m in emails) {
-                  if (_selectedLocalState != null &&
-                      m.localTagPersonal != _selectedLocalState) {
-                    continue;
-                  }
-                  if (m.actionComplete) {
-                    continue;
-                  }
-                  if (!m.hasAction) {
-                    continue;
-                  }
-                  if (m.actionDate == null) {
-                    countPossible++;
-                    continue;
-                  }
-                  final local = m.actionDate!.toLocal();
-                  final d = DateTime(local.year, local.month, local.day);
-                  if (d == today) {
-                    countToday++;
-                  } else if (d.isAfter(today)) {
-                    countUpcoming++;
-                  } else {
-                    countOverdue++;
-                  }
-                }
-              });
-              // Action filter as text buttons
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildActionFilterTextButton(
-                      context, AppConstants.filterToday, countToday),
-                  _buildActionFilterTextButton(
-                      context, AppConstants.filterUpcoming, countUpcoming),
-                  _buildActionFilterTextButton(
-                      context, AppConstants.filterOverdue, countOverdue),
-                  _buildActionFilterTextButton(
-                      context, AppConstants.filterPossible, countPossible),
-                ],
-              );
-            },
-          ),
-          const SizedBox(width: 16),
-          // Filter toggle icon (subtle, sophisticated)
-          IconButton(
-            tooltip: 'Filters',
-            icon: Icon(_showFilterBar
-                ? Icons.filter_list
-                : Icons.filter_list_outlined),
-            color: _showFilterBar
-                ? const Color(0xFF00695C) // Teal when active
-                : Theme.of(context)
-                    .colorScheme
-                    .onSurfaceVariant
-                    .withValues(alpha: 0.7),
-            iconSize: 20,
-            onPressed: () {
-              setState(() {
-                if (_showFilterBar) {
-                  // Closing FilterBar - reset all filters
-                  _stateFilter = null;
-                  _selectedCategories.clear();
-                  _searchQuery = '';
-                  _searchController.clear();
-                  _showSearch = false;
-                }
-                _showFilterBar = !_showFilterBar;
-              });
-            },
-          ),
-        ],
-      ),
-    );
-  }
+  // _buildTopFilterRow and _buildActionFilterTextButton moved to HomeFilterBar widget
 
-  Widget _buildAppBarLocalStateSwitch(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Calculate approximate button widths (text only, no icons)
-        // All button: text (~30) + padding (20) ≈ 50
-        // Personal button: text (~60) + padding (20) ≈ 80
-        // Business button: text (~65) + padding (20) ≈ 85
-        const double allButtonWidth = 50.0;
-        const double allTextWidth = 30.0;
-        const double personalButtonWidth = 80.0;
-        const double personalTextWidth = 60.0;
-        const double businessTextWidth = 65.0;
-
-        double underlineLeft = 0;
-        double underlineWidth = 0;
-
-        if (_selectedLocalState == null) {
-          // All selected
-          underlineLeft = 0;
-          underlineWidth = allTextWidth;
-        } else if (_selectedLocalState == 'Personal') {
-          underlineLeft = allButtonWidth;
-          underlineWidth = personalTextWidth;
-        } else if (_selectedLocalState == 'Business') {
-          underlineLeft = allButtonWidth + personalButtonWidth;
-          underlineWidth = businessTextWidth;
-        }
-
-        return Stack(
-          clipBehavior: Clip.none,
-          children: [
-            // Row of text-only switch buttons
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _buildAppBarStateButton(
-                  context,
-                  'All',
-                  _selectedLocalState == null,
-                  () {
-                    setState(() {
-                      _selectedLocalState = null;
-                    });
-                  },
-                ),
-                _buildAppBarStateButton(
-                  context,
-                  'Personal',
-                  _selectedLocalState == 'Personal',
-                  () {
-                    setState(() {
-                      _selectedLocalState = 'Personal';
-                    });
-                  },
-                ),
-                _buildAppBarStateButton(
-                  context,
-                  'Business',
-                  _selectedLocalState == 'Business',
-                  () {
-                    setState(() {
-                      _selectedLocalState = 'Business';
-                    });
-                  },
-                ),
-              ],
-            ),
-            // Sliding underline indicator
-            Positioned(
-              bottom: 0,
-              left: underlineLeft,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeInOut,
-                width: underlineWidth,
-                height: 2,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(1),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildAppBarStateButton(
-    BuildContext context,
-    String state,
-    bool selected,
-    VoidCallback onTap,
-  ) {
-    final theme = Theme.of(context);
-
-    // Color for text - white for better visibility on teal background
-    final Color textColor = Theme.of(context).appBarTheme.foregroundColor ??
-        Theme.of(context).colorScheme.onPrimary;
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Text(
-            state,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: textColor,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              fontSize: 12,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildCategoryCarousel() {
-    return SizedBox(
-      height: 40,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-        itemCount: AppConstants.allGmailCategories.length,
-        itemBuilder: (context, index) {
-          final category = AppConstants.allGmailCategories[index];
-          final displayName =
-              AppConstants.categoryDisplayNames[category] ?? category;
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4.0),
-            child: AppToggleChip(
-              label: displayName,
-              selected: _selectedCategories.contains(category),
-              linkStyle: true,
-              onTap: () {
-                setState(() {
-                  if (_selectedCategories.contains(category)) {
-                    _selectedCategories.remove(category);
-                  } else {
-                    _selectedCategories.add(category);
-                  }
-                });
-              },
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Color _categoryColor(BuildContext context, String category) {
-    final cs = Theme.of(context).colorScheme;
-    switch (category) {
-      case 'CATEGORY_PERSONAL':
-        return cs.primary;
-      case 'CATEGORY_PROMOTIONS':
-        return cs.tertiary;
-      case 'CATEGORY_SOCIAL':
-        return Colors.indigo;
-      case 'CATEGORY_UPDATES':
-        return Colors.teal;
-      case 'CATEGORY_FORUMS':
-        return Colors.deepOrange;
-      default:
-        return cs.secondary;
-    }
-  }
-
-  // ignore: unused_element
-  Widget _buildStateFilterIconButton(
-      BuildContext context, String state, IconData icon) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final selected = _stateFilter == state;
-    Color colorFor(bool sel) => sel ? cs.primary : cs.onSurfaceVariant;
-    String tooltip;
-    switch (state) {
-      case 'Unread':
-        tooltip = AppConstants.emailStateUnread;
-        break;
-      case 'Starred':
-        tooltip = AppConstants.emailStateStarred;
-        break;
-      case 'Important':
-        tooltip = AppConstants.emailStateImportant;
-        break;
-      default:
-        tooltip = state;
-    }
-    return Container(
-      decoration: selected
-          ? BoxDecoration(
-              color: cs.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            )
-          : null,
-      child: IconButton(
-        tooltip: tooltip,
-        icon: Icon(icon, color: colorFor(selected)),
-        onPressed: () {
-          setState(() {
-            _stateFilter = selected ? null : state;
-          });
-        },
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildLocalStateIconButton(
-      BuildContext context, String state, IconData icon) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final selected = _selectedLocalState == state;
-    Color colorFor(bool sel) => sel ? cs.primary : cs.onSurfaceVariant;
-    IconData actualIcon = icon;
-    // Match email tile: use solid icon when selected, outlined when not
-    if (state == 'Personal') {
-      actualIcon = selected ? Icons.person : Icons.person_outline;
-    } else if (state == 'Business') {
-      actualIcon =
-          selected ? Icons.business_center : Icons.business_center_outlined;
-    }
-    return Container(
-      decoration: selected
-          ? BoxDecoration(
-              color: cs.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            )
-          : null,
-      child: IconButton(
-        tooltip: state,
-        icon: Icon(actualIcon, color: colorFor(selected)),
-        onPressed: () {
-          setState(() {
-            // Toggle: if already selected, deselect; otherwise select
-            _selectedLocalState = selected ? null : state;
-          });
-        },
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildActionFilterIconButton(
-      BuildContext context, String filter, IconData icon, int? count) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final selected = _selectedActionFilter == filter;
-    Color colorFor(bool sel) => sel ? cs.primary : cs.onSurfaceVariant;
-    String tooltip;
-    switch (filter) {
-      case AppConstants.filterToday:
-        tooltip =
-            '${AppConstants.actionSummaryToday}${count != null ? ' ($count)' : ''}';
-        break;
-      case AppConstants.filterUpcoming:
-        tooltip =
-            '${AppConstants.actionSummaryUpcoming}${count != null ? ' ($count)' : ''}';
-        break;
-      case AppConstants.filterOverdue:
-        tooltip =
-            '${AppConstants.actionSummaryOverdue}${count != null ? ' ($count)' : ''}';
-        break;
-      default:
-        tooltip = AppConstants.actionSummaryAll;
-    }
-    return Container(
-      decoration: selected
-          ? BoxDecoration(
-              color: cs.primary.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            )
-          : null,
-      child: IconButton(
-        tooltip: tooltip,
-        icon: Icon(icon, color: colorFor(selected)),
-        onPressed: () {
-          setState(() {
-            // Toggle: if already selected, deselect (null); otherwise select
-            _selectedActionFilter =
-                _selectedActionFilter == filter ? null : filter;
-          });
-        },
-      ),
-    );
-  }
-
-  Widget _buildActionFilterTextButton(
-      BuildContext context, String filter, int count) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final selected = _selectedActionFilter == filter;
-    String label;
-    String tooltipText;
-    switch (filter) {
-      case AppConstants.filterToday:
-        label = AppConstants.actionSummaryToday;
-        tooltipText = 'Actions due today';
-        break;
-      case AppConstants.filterUpcoming:
-        label = 'Future';
-        tooltipText = 'Upcoming actions';
-        break;
-      case AppConstants.filterOverdue:
-        label = AppConstants.actionSummaryOverdue;
-        tooltipText = 'Overdue actions';
-        break;
-      case AppConstants.filterPossible:
-        label = AppConstants.filterPossible;
-        tooltipText = 'Actions without a date';
-        break;
-      default:
-        label = AppConstants.actionSummaryAll;
-        tooltipText = label;
-    }
-    final displayText = '$label ($count)';
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 1.0),
-      child: Tooltip(
-        message: tooltipText,
-        child: InkWell(
-          onTap: () {
-            setState(() {
-              // Toggle: if already selected, deselect (null); otherwise select
-              _selectedActionFilter =
-                  _selectedActionFilter == filter ? null : filter;
-            });
-          },
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-            decoration: selected
-                ? BoxDecoration(
-                    color: ActionMailTheme.alertColor.withValues(alpha: 0.2),
-                    borderRadius: BorderRadius.circular(8),
-                  )
-                : null,
-            child: Text(
-              displayText,
-              style: theme.textTheme.labelMedium?.copyWith(
-                color: selected ? ActionMailTheme.alertColor : cs.onSurfaceVariant,
-                fontWeight: FontWeight.w700,
-                fontSize: 12,
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ignore: unused_element
-  Widget _buildStateFilterDropdownRow() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        children: [
-          PopupMenuButton<String?>(
-            tooltip: 'Filters',
-            icon: const Icon(Icons.filter_list),
-            onSelected: (value) {
-              setState(() {
-                if (value == 'Clear') {
-                  _stateFilter = null;
-                } else {
-                  _stateFilter = value;
-                }
-              });
-            },
-            itemBuilder: (context) {
-              final cs = Theme.of(context).colorScheme;
-              return <PopupMenuEntry<String?>>[
-                PopupMenuItem<String?>(
-                  value: 'Unread',
-                  child: Row(
-                    children: [
-                      // ignore: deprecated_member_use
-                      Radio<String?>(
-                        value: 'Unread',
-                        // ignore: deprecated_member_use
-                        groupValue: _stateFilter,
-                        // ignore: deprecated_member_use
-                        onChanged: (_) {},
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        AppConstants.emailStateUnread,
-                        style: TextStyle(
-                          color: cs.onSurface,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                PopupMenuItem<String?>(
-                  value: 'Starred',
-                  child: Row(
-                    children: [
-                      // ignore: deprecated_member_use
-                      Radio<String?>(
-                        value: 'Starred',
-                        // ignore: deprecated_member_use
-                        groupValue: _stateFilter,
-                        // ignore: deprecated_member_use
-                        onChanged: (_) {},
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        AppConstants.emailStateStarred,
-                        style: TextStyle(
-                          color: cs.onSurface,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                PopupMenuItem<String?>(
-                  value: 'Important',
-                  child: Row(
-                    children: [
-                      // ignore: deprecated_member_use
-                      Radio<String?>(
-                        value: 'Important',
-                        // ignore: deprecated_member_use
-                        groupValue: _stateFilter,
-                        // ignore: deprecated_member_use
-                        onChanged: (_) {},
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      const SizedBox(width: 4),
-                      Text(
-                        AppConstants.emailStateImportant,
-                        style: TextStyle(
-                          color: cs.onSurface,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const PopupMenuDivider(),
-                PopupMenuItem<String?>(
-                  value: 'Clear',
-                  child: Row(
-                    children: [
-                      Icon(Icons.clear, size: 16, color: cs.onSurface),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Clear Filters',
-                        style: TextStyle(
-                          color: cs.onSurface,
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ];
-            },
-          ),
-        ],
-      ),
-    );
-  }
+  // AppBar state switch widget moved to HomeAppBarStateSwitch
+  // _buildActionFilterTextButton moved to HomeFilterBar widget
 
   Widget _buildEmailList() {
     final emailListAsync = ref.watch(emailListProvider);
@@ -3888,84 +1927,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     if (isDesktop && viewMode == ViewMode.table) {
       return emailListAsync.when(
         data: (emails) {
-          // Apply filters (same as tile view)
-          final filtered = emails.where((m) {
-            if (_selectedLocalState != null) {
-              if (m.localTagPersonal != _selectedLocalState) return false;
-            }
-            if (_selectedCategories.isNotEmpty) {
-              final hasAny = m.gmailCategories.any((c) => _selectedCategories.contains(c));
-              if (!hasAny) return false;
-            }
-            if (_stateFilter != null) {
-              switch (_stateFilter) {
-                case 'Unread':
-                  if (m.isRead) return false;
-                  break;
-                case 'Starred':
-                  if (!m.isStarred) return false;
-                  break;
-                case 'Important':
-                  if (!m.isImportant) return false;
-                  break;
-              }
-            }
-            if (_selectedActionFilter != null) {
-              if (!m.hasAction) return false;
-              if (m.actionComplete) return false;
-              switch (_selectedActionFilter) {
-                case AppConstants.filterToday:
-                  if (m.actionDate == null) return false;
-                  final now = DateTime.now();
-                  final today = DateTime(now.year, now.month, now.day);
-                  final local = m.actionDate!.toLocal();
-                  final d = DateTime(local.year, local.month, local.day);
-                  if (d != today) return false;
-                  break;
-                case AppConstants.filterUpcoming:
-                  if (m.actionDate == null) return false;
-                  final now = DateTime.now();
-                  final today = DateTime(now.year, now.month, now.day);
-                  final local = m.actionDate!.toLocal();
-                  final d = DateTime(local.year, local.month, local.day);
-                  if (!d.isAfter(today)) return false;
-                  break;
-                case AppConstants.filterOverdue:
-                  if (m.actionDate == null) return false;
-                  final now = DateTime.now();
-                  final today = DateTime(now.year, now.month, now.day);
-                  final local = m.actionDate!.toLocal();
-                  final d = DateTime(local.year, local.month, local.day);
-                  if (!d.isBefore(today)) return false;
-                  break;
-                case AppConstants.filterPossible:
-                  if (m.actionDate != null) return false;
-                  break;
-              }
-            }
-            if (_searchQuery.isNotEmpty) {
-              final query = _searchQuery.toLowerCase();
-              final matchesSubject = m.subject.toLowerCase().contains(query);
-              final matchesFrom = m.from.toLowerCase().contains(query);
-              final matchesTo = m.to.toLowerCase().contains(query);
-              final matchesSnippet = (m.snippet ?? '').toLowerCase().contains(query);
-              if (!matchesSubject && !matchesFrom && !matchesTo && !matchesSnippet) {
-                return false;
-              }
-            }
-            return true;
-          }).toList();
+          // Apply filters using helper function
+          final filtered = HomeEmailListFilter.filterEmails(
+            emails: emails,
+            selectedLocalState: _selectedLocalState,
+            stateFilter: _stateFilter,
+            selectedCategories: _selectedCategories,
+            selectedActionFilter: _selectedActionFilter,
+            searchQuery: _searchQuery,
+          );
 
           // Build active filters set for GridEmailList
-          final activeFilters = <String>{};
-          if (_stateFilter == 'Unread') activeFilters.add('unread');
-          if (_stateFilter == 'Starred') activeFilters.add('starred');
-          if (_selectedLocalState == 'Personal') activeFilters.add('personal');
-          if (_selectedLocalState == 'Business') activeFilters.add('business');
-          if (_selectedActionFilter == AppConstants.filterToday) activeFilters.add('action_today');
-          if (_selectedActionFilter == AppConstants.filterUpcoming) activeFilters.add('action_upcoming');
-          if (_selectedActionFilter == AppConstants.filterOverdue) activeFilters.add('action_overdue');
-          if (_selectedActionFilter == AppConstants.filterPossible) activeFilters.add('action_possible');
+          final activeFilters = HomeEmailListFilter.buildActiveFilters(
+            stateFilter: _stateFilter,
+            selectedLocalState: _selectedLocalState,
+            selectedActionFilter: _selectedActionFilter,
+          );
 
           // Get account emails for dropdown
           final accountEmails = _accounts.map((a) => a.email).toList();
@@ -4035,6 +2012,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   });
                   await _loadFolderEmails(_selectedFolder, _isLocalFolder);
                 },
+                onLocalFolderSelected: (folderPath) async {
+                  // Handle local folder selection from dialog (same as right panel)
+                  setState(() {
+                    _selectedFolder = folderPath;
+                    _isLocalFolder = true;
+                  });
+                  await _loadFolderEmails(folderPath, true);
+                },
                 onEmailTap: (email) {
                   if (_selectedAccountId != null) {
                     showDialog(
@@ -4046,7 +2031,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         localFolderName: _isLocalFolder ? _selectedFolder : null,
                         onMarkRead: () async {
                           if (!email.isRead && !_isLocalFolder) {
-                            await MessageRepository().updateRead(email.id, true);
+                            await _messageRepository.updateRead(email.id, true);
                             ref.read(emailListProvider.notifier).setRead(email.id, true);
                             _enqueueGmailUpdate('markRead', email.id);
                           }
@@ -4057,7 +2042,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 },
                 onPersonalBusinessToggle: (email) async {
                   final newState = email.localTagPersonal;
-                  await MessageRepository().updateLocalTag(email.id, newState);
+                  await _messageRepository.updateLocalTag(email.id, newState);
                   ref.read(emailListProvider.notifier).setLocalTag(email.id, newState);
                   
                   final syncEnabled = await _firebaseSync.isSyncEnabled();
@@ -4075,7 +2060,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   }
                 },
                 onStarToggle: (email) async {
-                  await MessageRepository().updateStarred(email.id, !email.isStarred);
+                  await _messageRepository.updateStarred(email.id, !email.isStarred);
                   ref.read(emailListProvider.notifier).setStarred(email.id, !email.isStarred);
                   _enqueueGmailUpdate(!email.isStarred ? 'star' : 'unstar', email.id);
                 },
@@ -4083,13 +2068,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     final prev = email.folderLabel;
                     // Optimistic UI update first
-                    if (_selectedFolder != 'TRASH') {
-                      ref.read(emailListProvider.notifier).removeMessage(email.id);
-                    } else {
-                      ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
-                    }
+                    HomeScreenHelpers.updateFolderOptimistic(
+                      ref: ref,
+                      messageId: email.id,
+                      currentFolder: _selectedFolder,
+                      targetFolder: 'TRASH',
+                    );
                     // Database update in background
-                    unawaited(MessageRepository().updateFolderNoPrev(email.id, 'TRASH'));
+                    unawaited(_messageRepository.updateFolderNoPrev(email.id, 'TRASH'));
                     _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
                   }
                 },
@@ -4097,62 +2083,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     final prev = email.folderLabel;
                     // Optimistic UI update first
-                    if (_selectedFolder != 'ARCHIVE') {
-                      ref.read(emailListProvider.notifier).removeMessage(email.id);
-                    } else {
-                      ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
-                    }
+                    HomeScreenHelpers.updateFolderOptimistic(
+                      ref: ref,
+                      messageId: email.id,
+                      currentFolder: _selectedFolder,
+                      targetFolder: 'ARCHIVE',
+                    );
                     // Database update in background
-                    unawaited(MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE'));
+                    unawaited(_messageRepository.updateFolderNoPrev(email.id, 'ARCHIVE'));
                     _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
                   }
                 },
                 onMoveToLocalFolder: (email) async {
-                  final folder = await showDialog<String>(
-                    context: context,
-                    builder: (context) => Dialog(
-                      child: Container(
-                        width: 400,
-                        height: 500,
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Row(
-                              children: [
-                                const Text(
-                                  'Move to Folder',
-                                  style: TextStyle(
-                                    fontSize: 20,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const Spacer(),
-                                IconButton(
-                                  icon: const Icon(Icons.close),
-                                  onPressed: () => Navigator.of(context).pop(),
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 16),
-                            Expanded(
-                              child: LocalFolderTree(
-                                selectedFolder: null,
-                                selectedBackgroundColor: ActionMailTheme.alertColor.withValues(alpha: 0.2),
-                                onFolderSelected: (folderPath) {
-                                  Navigator.of(context).pop(folderPath);
-                                },
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  );
+                  final folder = await MoveToFolderDialog.show(context);
                   if (folder != null) {
-                    await _saveEmailToFolder(folder, email);
+                    if (_isLocalFolder) {
+                      // Moving between local folders
+                      await _moveLocalEmailToFolder(folder, email);
+                    } else {
+                      // Saving from Gmail to local folder
+                      await _saveEmailToFolder(folder, email);
+                    }
                   }
                 },
                 onRestore: (email) async {
@@ -4160,9 +2111,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     // Optimistic: remove from current view immediately; background restore will adjust
                     ref.read(emailListProvider.notifier).removeMessage(email.id);
                     unawaited(() async {
-                      await MessageRepository().restoreToPrev(email.id);
+            await _messageRepository.restoreToPrev(email.id);
                       if (_selectedAccountId != null) {
-                        final updated = await MessageRepository()
+              final updated = await _messageRepository
                             .getByIds(_selectedAccountId!, [email.id]);
                         final restored = updated[email.id];
                         if (restored != null) {
@@ -4176,12 +2127,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 onMoveToInbox: (email) async {
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     // Optimistic UI update first
-                    if (_selectedFolder != 'INBOX') {
-                      ref.read(emailListProvider.notifier).removeMessage(email.id);
-                    } else {
-                      ref.read(emailListProvider.notifier).setFolder(email.id, 'INBOX');
-                    }
-                    unawaited(MessageRepository().updateFolderWithPrev(
+                    HomeScreenHelpers.updateFolderOptimistic(
+                      ref: ref,
+                      messageId: email.id,
+                      currentFolder: _selectedFolder,
+                      targetFolder: 'INBOX',
+                    );
+                    unawaited(_messageRepository.updateFolderWithPrev(
                       email.id,
                       'INBOX',
                       prevFolderLabel: email.folderLabel,
@@ -4205,41 +2157,100 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                   });
                 },
                 onEmailAction: (email) async {
+                  // Read directly from database FIRST - this is the source of truth
+                  // Don't trust provider state as it may be stale
+                  var currentEmail = email;
+                  try {
+                    final dbEmail = await _messageRepository.getById(email.id);
+                    if (dbEmail != null) {
+                      // Use database value as source of truth for action data
+                      if (kDebugMode) {
+                        debugPrint('[USER_ACTION] READ_BEFORE_DIALOG messageId=${email.id}');
+                        debugPrint('[USER_ACTION] Provider actionText=${email.actionInsightText}, hasAction=${email.hasAction}');
+                        debugPrint('[USER_ACTION] DB actionText=${dbEmail.actionInsightText}, hasAction=${dbEmail.hasAction}');
+                      }
+                      // Use DB values for action fields - DB is source of truth
+                      currentEmail = currentEmail.copyWith(
+                        actionDate: dbEmail.actionDate,
+                        actionInsightText: dbEmail.actionInsightText,
+                        actionComplete: dbEmail.actionComplete,
+                        hasAction: dbEmail.hasAction,
+                      );
+                    }
+                  } catch (e) {
+                    debugPrint('[HomeScreen] Error reading email from DB: $e');
+                    // Fallback to provider state if DB read fails
+                    final emailList = ref.read(emailListProvider);
+                    currentEmail = emailList.maybeWhen(
+                      data: (emails) => emails.firstWhere(
+                        (e) => e.id == email.id,
+                        orElse: () => email,
+                      ),
+                      orElse: () => email,
+                    );
+                  }
+                  
+                  if (!context.mounted) return;
+                  
                   final result = await ActionEditDialog.show(
                     context,
-                    initialDate: email.actionDate,
-                    initialText: email.actionInsightText,
-                    allowRemove: email.hasAction,
+                    initialDate: currentEmail.actionDate,
+                    initialText: currentEmail.actionInsightText,
+                    initialComplete: currentEmail.actionComplete,
+                    allowRemove: currentEmail.hasAction,
                   );
 
-                  if (result != null) {
+                    if (result != null) {
                     final removed = result.removed;
                     final actionDate = removed ? null : result.actionDate;
                     final actionText = removed
                         ? null
                         : (result.actionText != null && result.actionText!.isNotEmpty ? result.actionText : null);
-                    final hasActionNow = !removed && (actionDate != null || (actionText != null && actionText.isNotEmpty));
+                    // Source of truth: actionInsightText determines if action exists
+                    final hasActionNow = !removed && (actionText != null && actionText.isNotEmpty);
                     final bool? markedComplete = result.actionComplete;
 
                     final currentComplete = hasActionNow
-                        ? (markedComplete ?? email.actionComplete)
+                        ? (markedComplete ?? currentEmail.actionComplete)
                         : false;
 
-                    await MessageRepository().updateAction(email.id, actionDate, actionText, null, currentComplete);
+                    // Debug: Print email enum actionText before update
+                    if (kDebugMode) {
+                      debugPrint('[USER_ACTION] EDIT messageId=${currentEmail.id}');
+                      debugPrint('[USER_ACTION] Email enum actionText=${currentEmail.actionInsightText}, hasAction=${currentEmail.hasAction}');
+                    }
+
+                    await _messageRepository.updateAction(currentEmail.id, actionDate, actionText, null, currentComplete);
                     ref.read(emailListProvider.notifier).setAction(
-                      email.id,
+                      currentEmail.id,
                       actionDate,
                       actionText,
                       actionComplete: currentComplete,
                     );
 
+                    // Debug: Read back from DB to verify
+                    if (kDebugMode) {
+                      try {
+                        final dbEmail = await _messageRepository.getById(currentEmail.id);
+                        debugPrint('[USER_ACTION] DB actionText=${dbEmail?.actionInsightText}, hasAction=${dbEmail?.hasAction}');
+                      } catch (e) {
+                        debugPrint('[USER_ACTION] Error reading from DB: $e');
+                      }
+                    }
+
                     final syncEnabled = await _firebaseSync.isSyncEnabled();
                     if (syncEnabled && _selectedAccountId != null) {
                       try {
-                        await _firebaseSync.syncEmailMeta(email.id,
+                        if (kDebugMode) {
+                          debugPrint('[USER_ACTION] SYNC_TO_FIREBASE messageId=${currentEmail.id}, actionText=$actionText, hasAction=$hasActionNow');
+                        }
+                        await _firebaseSync.syncEmailMeta(
+                          currentEmail.id,
                           actionDate: actionDate,
                           actionInsightText: actionText,
-                          actionComplete: currentComplete);
+                          actionComplete: currentComplete,
+                          clearAction: !hasActionNow,
+                        );
                       } catch (e) {
                         debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
                       }
@@ -4260,93 +2271,31 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // Tile view (original implementation)
     return emailListAsync.when(
       data: (emails) {
-        // Apply filters in-memory for current folder result set
-        final filtered = emails.where((m) {
-          // Local state filter (null means no filter, Personal/Business means filter)
-          if (_selectedLocalState != null) {
-            if (m.localTagPersonal != _selectedLocalState) return false;
-          }
-          // Gmail category filter (AND across selected categories)
-          if (_selectedCategories.isNotEmpty) {
-            final hasAny =
-                m.gmailCategories.any((c) => _selectedCategories.contains(c));
-            if (!hasAny) return false;
-          }
-          // Email state single-select filter
-          if (_stateFilter != null) {
-            switch (_stateFilter) {
-              case 'Unread':
-                if (m.isRead) return false;
-                break;
-              case 'Starred':
-                if (!m.isStarred) return false;
-                break;
-              case 'Important':
-                if (!m.isImportant) return false;
-                break;
-            }
-          }
-          // Action summary filter
-          if (_selectedActionFilter != null) {
-            // Only include messages that have an action
-            if (!m.hasAction) return false;
-            // Exclude completed actions
-            if (m.actionComplete) return false;
-            switch (_selectedActionFilter) {
-              case AppConstants.filterToday:
-                if (m.actionDate == null) return false;
-                final now = DateTime.now();
-                final today = DateTime(now.year, now.month, now.day);
-                final local = m.actionDate!.toLocal();
-                final d = DateTime(local.year, local.month, local.day);
-                if (d != today) return false;
-                break;
-              case AppConstants.filterUpcoming:
-                if (m.actionDate == null) return false;
-                final now = DateTime.now();
-                final today = DateTime(now.year, now.month, now.day);
-                final local = m.actionDate!.toLocal();
-                final d = DateTime(local.year, local.month, local.day);
-                if (!d.isAfter(today)) return false;
-                break;
-              case AppConstants.filterOverdue:
-                if (m.actionDate == null) return false;
-                final now = DateTime.now();
-                final today = DateTime(now.year, now.month, now.day);
-                final local = m.actionDate!.toLocal();
-                final d = DateTime(local.year, local.month, local.day);
-                if (!d.isBefore(today)) return false;
-                break;
-              case AppConstants.filterPossible:
-                if (m.actionDate != null) return false;
-                break;
-            }
-          }
-          // Search filter
-          if (_searchQuery.isNotEmpty) {
-            final query = _searchQuery;
-            final matchesSubject = m.subject.toLowerCase().contains(query);
-            final matchesFrom = m.from.toLowerCase().contains(query);
-            final matchesTo = m.to.toLowerCase().contains(query);
-            final matchesSnippet =
-                (m.snippet ?? '').toLowerCase().contains(query);
-            if (!matchesSubject &&
-                !matchesFrom &&
-                !matchesTo &&
-                !matchesSnippet) {
-              return false;
-            }
-          }
-          return true;
-        }).toList();
+        // Apply filters using helper function
+        final filtered = HomeEmailListFilter.filterEmails(
+          emails: emails,
+          selectedLocalState: _selectedLocalState,
+          stateFilter: _stateFilter,
+          selectedCategories: _selectedCategories,
+          selectedActionFilter: _selectedActionFilter,
+          searchQuery: _searchQuery,
+        );
 
-        final filterBanner = _buildFilterBanner(context);
+        final filterBanner = HomeFilterBanner(
+          selectedLocalState: _selectedLocalState,
+          selectedActionFilter: _selectedActionFilter,
+          stateFilter: _stateFilter,
+          selectedCategories: _selectedCategories,
+          searchQuery: _searchQuery,
+          searchController: _searchController,
+          onClearFilters: _clearAllFilters,
+        );
 
         final content = Column(
           children: [
             if (isLoadingLocal || isSyncing)
               const LinearProgressIndicator(minHeight: 2),
-            if (filterBanner != null) filterBanner,
+            filterBanner,
             Expanded(
               child: RefreshIndicator(
                 onRefresh: () async {
@@ -4392,7 +2341,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                         _isLocalFolder ? _selectedFolder : null,
                                     onMarkRead: () async {
                                       if (!message.isRead && !_isLocalFolder) {
-                                        await MessageRepository()
+                                        await _messageRepository
                                             .updateRead(message.id, true);
                                         ref
                                             .read(emailListProvider.notifier)
@@ -4407,7 +2356,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onMarkRead: () async {
                               if (!message.isRead) {
-                                await MessageRepository()
+                                await _messageRepository
                                     .updateRead(message.id, true);
                                 ref
                                     .read(emailListProvider.notifier)
@@ -4416,7 +2365,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               }
                             },
                             onStarToggle: (newValue) async {
-                              await MessageRepository()
+                              await _messageRepository
                                   .updateStarred(message.id, newValue);
                               ref
                                   .read(emailListProvider.notifier)
@@ -4426,7 +2375,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onLocalStateChanged: (state) async {
                               // Persist local tag for this message
-                              await MessageRepository()
+                              await _messageRepository
                                   .updateLocalTag(message.id, state);
 
                               // Sync to Firebase if enabled (only if changed from initial value)
@@ -4453,7 +2402,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               // locally from emailMeta changes on other devices
                               final senderEmail = _extractEmail(message.from);
                               if (senderEmail.isNotEmpty) {
-                                await MessageRepository()
+                                await _messageRepository
                                     .setSenderDefaultLocalTag(
                                         senderEmail, state);
                               }
@@ -4465,22 +2414,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onTrash: () async {
                               // Optimistic UI update first
-                              if (_selectedFolder != 'TRASH') {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .removeMessage(message.id);
-                              } else {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .setFolder(message.id, 'TRASH');
-                              }
+                              HomeScreenHelpers.updateFolderOptimistic(
+                                ref: ref,
+                                messageId: message.id,
+                                currentFolder: _selectedFolder,
+                                targetFolder: 'TRASH',
+                              );
                               final src = message.folderLabel.toUpperCase();
                               if (src == 'ARCHIVE') {
-                                unawaited(MessageRepository()
+                                unawaited(_messageRepository
                                     .updateFolderNoPrev(message.id, 'TRASH'));
                               } else {
                                 unawaited(
-                                    MessageRepository().updateFolderWithPrev(
+                                    _messageRepository.updateFolderWithPrev(
                                   message.id,
                                   'TRASH',
                                   prevFolderLabel: message.folderLabel,
@@ -4501,22 +2447,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onArchive: () async {
                               // Optimistic UI update first
-                              if (_selectedFolder != 'ARCHIVE') {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .removeMessage(message.id);
-                              } else {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .setFolder(message.id, 'ARCHIVE');
-                              }
+                              HomeScreenHelpers.updateFolderOptimistic(
+                                ref: ref,
+                                messageId: message.id,
+                                currentFolder: _selectedFolder,
+                                targetFolder: 'ARCHIVE',
+                              );
                               final src = message.folderLabel.toUpperCase();
                               if (src == 'TRASH') {
-                                unawaited(MessageRepository()
+                                unawaited(_messageRepository
                                     .updateFolderNoPrev(message.id, 'ARCHIVE'));
                               } else {
                                 unawaited(
-                                    MessageRepository().updateFolderWithPrev(
+                                    _messageRepository.updateFolderWithPrev(
                                   message.id,
                                   'ARCHIVE',
                                   prevFolderLabel: message.folderLabel,
@@ -4529,17 +2472,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onMoveToInbox: () async {
                               // Optimistic UI update first
-                              if (_selectedFolder != 'INBOX') {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .removeMessage(message.id);
-                              } else {
-                                ref
-                                    .read(emailListProvider.notifier)
-                                    .setFolder(message.id, 'INBOX');
-                              }
+                              HomeScreenHelpers.updateFolderOptimistic(
+                                ref: ref,
+                                messageId: message.id,
+                                currentFolder: _selectedFolder,
+                                targetFolder: 'INBOX',
+                              );
                               unawaited(
-                                  MessageRepository().updateFolderWithPrev(
+                                  _messageRepository.updateFolderWithPrev(
                                 message.id,
                                 'INBOX',
                                 prevFolderLabel: message.folderLabel,
@@ -4552,10 +2492,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                   .read(emailListProvider.notifier)
                                   .removeMessage(message.id);
                               unawaited(() async {
-                                await MessageRepository()
+                                await _messageRepository
                                     .restoreToPrev(message.id);
                                 if (_selectedAccountId != null) {
-                                  final updated = await MessageRepository()
+                                  final updated = await _messageRepository
                                       .getByIds(
                                           _selectedAccountId!, [message.id]);
                                   final restored = updated[message.id];
@@ -4587,13 +2527,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                     )
                                   : null;
 
-                              await MessageRepository().updateAction(
-                                  message.id, date, text, null, actionComplete);
+                              await _messageRepository.updateAction(message.id, date, text, null, actionComplete);
                               ref.read(emailListProvider.notifier).setAction(
                                   message.id, date, text,
                                   actionComplete: actionComplete);
-                              final hasActionNow = date != null ||
-                                  (text != null && text.isNotEmpty);
+                              // Use actionInsightText only as source of truth
+                              final hasActionNow = text != null && text.isNotEmpty;
 
                               // Record feedback for ML training
                               final userAction = date != null || text != null
@@ -4635,21 +2574,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                   await _firebaseSync.syncEmailMeta(
                                     message.id,
                                     actionDate: hasActionNow ? date : null,
-                                    actionInsightText:
-                                        hasActionNow ? text : null,
-                                    actionComplete:
-                                        hasActionNow ? actionComplete : null,
+                                    actionInsightText: hasActionNow ? text : null,
+                                    actionComplete: hasActionNow ? actionComplete : null,
                                     clearAction: !hasActionNow,
                                   );
                                 }
                               }
                             },
                             onActionCompleted: () async {
-                              await MessageRepository()
-                                  .updateAction(message.id, null, null);
-                              ref
-                                  .read(emailListProvider.notifier)
-                                  .setAction(message.id, null, null);
+                              await _messageRepository.updateAction(message.id, null, null);
+                              ref.read(emailListProvider.notifier).setAction(message.id, null, null);
                             },
                           );
                         },
@@ -4706,7 +2640,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     try {
       // Batch update in database
-      await MessageRepository().batchUpdateRead(messageIds, true);
+      await _messageRepository.batchUpdateRead(messageIds, true);
 
       // Update UI state for all messages
       for (final messageId in messageIds) {
@@ -4937,115 +2871,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   }
 
 
-  List<String> _activeFilterLabels() {
-    final labels = <String>[];
-
-    if (_selectedLocalState != null) {
-      labels.add('${_selectedLocalState!} Emails');
-    }
-
-    if (_selectedActionFilter != null) {
-      final actionLabel = () {
-        switch (_selectedActionFilter) {
-          case AppConstants.filterToday:
-            return AppConstants.actionSummaryToday;
-          case AppConstants.filterUpcoming:
-            return 'Future';
-          case AppConstants.filterOverdue:
-            return AppConstants.actionSummaryOverdue;
-          case AppConstants.filterPossible:
-            return AppConstants.filterPossible;
-          default:
-            return AppConstants.actionSummaryAll;
-        }
-      }();
-      labels.add('Action: $actionLabel');
-    }
-
-    if (_stateFilter != null) {
-      labels.add(_stateFilter!);
-    }
-
-    if (_selectedCategories.isNotEmpty) {
-      final names = _selectedCategories
-          .map((c) => AppConstants.categoryDisplayNames[c] ?? c)
-          .join(', ');
-      labels.add('Categories: $names');
-    }
-
-    if (_searchQuery.isNotEmpty) {
-      final raw = _searchController.text.trim();
-      if (raw.isNotEmpty) {
-        labels.add('Search: "$raw"');
-      } else {
-        labels.add('Search filters applied');
-      }
-    }
-
-    return labels;
-  }
-
-  Widget? _buildFilterBanner(BuildContext context) {
-    final labels = _activeFilterLabels();
-    if (labels.isEmpty) return null;
-
-    final theme = Theme.of(context);
-    final textColor = const Color(0xFF333333);
-    final bannerColor = ActionMailTheme.alertColor.withValues(alpha: 0.5);
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        color: bannerColor,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              alignment: WrapAlignment.start,
-              runAlignment: WrapAlignment.center,
-              children: labels
-                  .map(
-                    (label) => Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: textColor.withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        label,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: textColor,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  )
-                  .toList(),
-            ),
-          ),
-          const SizedBox(width: 12),
-          TextButton(
-            onPressed: _clearAllFilters,
-            style: TextButton.styleFrom(
-              foregroundColor: textColor,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              minimumSize: const Size(0, 0),
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-            child: const Text('Clear filters'),
-          ),
-        ],
-      ),
-    );
-  }
+  // Filter banner widget moved to HomeFilterBanner
 
   void _clearAllFilters() {
     setState(() {
@@ -5060,407 +2886,69 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     FocusScope.of(context).unfocus();
   }
 
-  void _handleMenuSelection(String value) async {
-    switch (value) {
-      case 'Compose':
-        if (_selectedAccountId != null) {
-          showDialog(
-            context: context,
-            builder: (ctx) => ComposeEmailDialog(
-              accountId: _selectedAccountId!,
-              mode: ComposeEmailMode.newEmail,
-            ),
-          );
-        }
-        break;
-
-      case 'Refresh':
-        if (_selectedAccountId != null) {
-          final accountInfo = _accounts.firstWhere(
-            (acc) => acc.id == _selectedAccountId,
-            orElse: () => GoogleAccount(
-              id: _selectedAccountId!,
-              email: 'Unknown',
-              displayName: '',
-              photoUrl: null,
-              accessToken: '',
-              refreshToken: null,
-              tokenExpiryMs: null,
-              idToken: '',
-            ),
-          );
-          final authenticated = await _ensureAccountAuthenticated(
-            _selectedAccountId!,
-            accountEmail: accountInfo.email,
-          );
-          if (!authenticated) {
-            // Check if it's a network error
-            final auth = GoogleAuthService();
-            final isNetworkError = auth.isLastErrorNetworkError(_selectedAccountId!) == true;
-            if (isNetworkError) {
-              // Show network error dialog
-              if (mounted) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: true,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Network Issue'),
-                    content: const Text('There\'s a network issue. Please try again later.'),
-                    actions: [
-                      FilledButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('OK'),
-                      ),
-                    ],
-                  ),
-                );
-              }
-            }
-            break;
-          }
-          ref
-              .read(emailListProvider.notifier)
-              .refresh(_selectedAccountId!, folderLabel: _selectedFolder);
-        }
-        break;
-
-      case 'Settings':
-        showDialog(
-          context: context,
-          builder: (ctx) => const AccountsSettingsDialog(),
-        );
-        break;
-
-      case 'Actions':
-        showDialog(
-          context: context,
-          builder: (_) => ActionsSummaryWindow(),
-        );
-        break;
-
-      case 'Attachments':
-        showDialog(
-          context: context,
-          builder: (_) => const AttachmentsWindow(),
-        );
-        break;
-
-      case 'Subscriptions':
-        if (_selectedAccountId != null) {
-          showDialog(
-            context: context,
-            builder: (_) => SubscriptionsWindow(accountId: _selectedAccountId!),
-          );
-        }
-        break;
-
-      case 'Shopping':
-        showDialog(
-          context: context,
-          builder: (_) => const ShoppingWindow(),
-        );
-        break;
-    }
-  }
-
-  List<PopupMenuEntry<String>> _buildPopupMenuItems(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-
-    List<PopupMenuEntry<String>> items = [
-      PopupMenuItem(
-        value: 'Compose',
-        child: Row(
-          children: [
-            Icon(Icons.edit_outlined, size: 18, color: cs.onSurface),
-            const SizedBox(width: 12),
-            Text('Compose',
-                style: TextStyle(color: cs.onSurface, fontSize: 13)),
-          ],
-        ),
-      ),
-      PopupMenuItem(
-        value: 'Refresh',
-        child: Row(
-          children: [
-            Icon(Icons.refresh, size: 18, color: cs.onSurface),
-            const SizedBox(width: 12),
-            Text('Refresh',
-                style: TextStyle(color: cs.onSurface, fontSize: 13)),
-          ],
-        ),
-      ),
-      PopupMenuItem(
-        value: 'Settings',
-        child: Row(
-          children: [
-            Icon(Icons.settings_outlined, size: 18, color: cs.onSurface),
-            const SizedBox(width: 12),
-            Text('Settings',
-                style: TextStyle(color: cs.onSurface, fontSize: 13)),
-          ],
-        ),
-      ),
-      const PopupMenuDivider(),
-      PopupMenuItem(
-        value: 'Actions',
-        child: Row(
-          children: [
-            Icon(Icons.dashboard_outlined, size: 18, color: cs.onSurface),
-            const SizedBox(width: 12),
-            Text('Actions',
-                style: TextStyle(color: cs.onSurface, fontSize: 13)),
-          ],
-        ),
-      ),
-    ];
-
-    // Dynamically add windows except ones handled above
-    items.addAll(
-      AppConstants.allFunctionWindows
-          .where((window) =>
-              window != AppConstants.windowActions &&
-              window != AppConstants.windowActionsSummary)
-          .map((window) {
-        IconData icon;
-
-        switch (window) {
-          case AppConstants.windowAttachments:
-            icon = Icons.attach_file;
-            break;
-          case AppConstants.windowSubscriptions:
-            icon = Icons.subscriptions;
-            break;
-          case AppConstants.windowShopping:
-            icon = Icons.shopping_bag;
-            break;
-          default:
-            icon = Icons.info_outline;
-        }
-
-        return PopupMenuItem(
-          value: window,
-          child: Row(
-            children: [
-              Icon(icon, size: 18, color: cs.onSurface),
-              const SizedBox(width: 12),
-              Text(window, style: TextStyle(color: cs.onSurface, fontSize: 13)),
-            ],
-          ),
-        );
-      }),
-    );
-
-    return items;
-  }
+  // Menu button widget moved to HomeMenuButton
 
   /// Configuration for status buttons based on folder (same as GridEmailList)
-  _StatusButtonConfig _getStatusButtonConfig(String folder) {
-    final upperFolder = folder.toUpperCase();
-    switch (upperFolder) {
-      case 'INBOX':
-        return _StatusButtonConfig(
-          showPersonalBusiness: true,
-          showStar: true,
-          showMove: true,
-          showArchive: true,
-          showTrash: true,
-          moveLabel: 'Move',
-          moveTooltip: 'Move',
-        );
-      case 'SENT':
-        return _StatusButtonConfig(
-          showPersonalBusiness: false,
-          showStar: false,
-          showMove: false,
-          showArchive: false,
-          showTrash: true,
-          moveLabel: 'Move',
-          moveTooltip: 'Move',
-        );
-      case 'SPAM':
-        return _StatusButtonConfig(
-          showPersonalBusiness: false,
-          showStar: false,
-          showMove: true,
-          showArchive: false,
-          showTrash: true,
-          moveLabel: 'Move to Inbox',
-          moveTooltip: 'Move to Inbox',
-        );
-      case 'TRASH':
-        return _StatusButtonConfig(
-          showPersonalBusiness: false,
-          showStar: false,
-          showMove: true,
-          showArchive: false,
-          showTrash: false,
-          moveLabel: 'Restore',
-          moveTooltip: 'Restore',
-        );
-      case 'ARCHIVE':
-        return _StatusButtonConfig(
-          showPersonalBusiness: false,
-          showStar: false,
-          showMove: true,
-          showArchive: false,
-          showTrash: true,
-          moveLabel: 'Restore',
-          moveTooltip: 'Restore',
-        );
-      default:
-        // Default to all enabled (for unknown folders)
-        return _StatusButtonConfig(
-          showPersonalBusiness: true,
-          showStar: true,
-          showMove: true,
-          showArchive: true,
-          showTrash: true,
-          moveLabel: 'Move',
-          moveTooltip: 'Move',
-        );
-    }
-  }
+  // _getStatusButtonConfig moved to HomeBulkActionsAppBar widget
 
-  Widget _buildBulkActionButtonsAppBar(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final cs = theme.colorScheme;
-    final emailListAsync = ref.watch(emailListProvider);
-    final config = _getStatusButtonConfig(_selectedFolder);
-    
-    // Get selected emails
-    final selectedEmails = emailListAsync.when(
-      data: (emails) => emails.where((e) => _tableSelectedEmailIds.contains(e.id)).toList(),
-      loading: () => <MessageIndex>[],
-      error: (_, __) => <MessageIndex>[],
-    );
-
-    if (selectedEmails.isEmpty) {
-      return const SizedBox.shrink();
-    }
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          decoration: BoxDecoration(
-            color: cs.primaryContainer.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Text(
-            '$_tableSelectedCount',
-            style: theme.textTheme.labelSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              fontSize: 11,
-              color: cs.onPrimaryContainer,
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        // Personal/Business Switch - show as two buttons
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.person_outline,
-          'Personal',
-          config.showPersonalBusiness ? () => _applyBulkPersonalBusiness(selectedEmails, 'Personal', ref) : null,
-          enabled: config.showPersonalBusiness,
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.business_center,
-          'Business',
-          config.showPersonalBusiness ? () => _applyBulkPersonalBusiness(selectedEmails, 'Business', ref) : null,
-          enabled: config.showPersonalBusiness,
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.star_outline,
-          'Star',
-          config.showStar ? () => _applyBulkStar(selectedEmails, ref) : null,
-          enabled: config.showStar,
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.folder_outlined,
-          config.moveTooltip,
-          config.showMove ? () => _applyBulkMove(selectedEmails, ref) : null,
-          enabled: config.showMove,
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.archive_outlined,
-          'Archive',
-          config.showArchive ? () => _applyBulkArchive(selectedEmails, ref) : null,
-          enabled: config.showArchive,
-        ),
-        const SizedBox(width: 4),
-        _buildBulkActionButtonAppBar(
-          context,
-          Icons.delete_outline,
-          'Trash',
-          config.showTrash ? () => _applyBulkTrash(selectedEmails, ref) : null,
-          enabled: config.showTrash,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBulkActionButtonAppBar(
-    BuildContext context,
-    IconData icon,
-    String tooltip,
-    VoidCallback? onPressed, {
-    bool enabled = true,
-  }) {
-    final theme = Theme.of(context);
-    return Tooltip(
-      message: tooltip,
-      child: IconButton(
-        icon: Icon(icon, size: 18),
-        onPressed: onPressed,
-        color: enabled
-            ? theme.appBarTheme.foregroundColor
-            : theme.appBarTheme.foregroundColor?.withValues(alpha: 0.3),
-        padding: EdgeInsets.zero,
-        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-        tooltip: tooltip,
-      ),
-    );
-  }
+  // Bulk action buttons widget moved to HomeBulkActionsAppBar
 
   Future<void> _applyBulkPersonalBusiness(List<MessageIndex> emails, String tag, WidgetRef ref) async {
+    // Check Firebase sync once before the loop (performance optimization)
+    final syncEnabled = await _firebaseSync.isSyncEnabled();
+    
+    // Batch UI updates first for better perceived performance
     for (final email in emails) {
-      await MessageRepository().updateLocalTag(email.id, tag);
       ref.read(emailListProvider.notifier).setLocalTag(email.id, tag);
+    }
+    
+    // Process database updates and sync in background
+    final syncFutures = <Future<void>>[];
+    final senderTags = <String, String>{}; // Deduplicate sender tag updates
+    
+    for (final email in emails) {
+      // Database update
+      unawaited(_messageRepository.updateLocalTag(email.id, tag));
       
-      final syncEnabled = await _firebaseSync.isSyncEnabled();
+      // Collect Firebase sync operations
       if (syncEnabled) {
-        try {
-          await _firebaseSync.syncEmailMeta(email.id, localTagPersonal: tag);
-        } catch (e) {
-          debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
-        }
+        syncFutures.add(
+          _firebaseSync.syncEmailMeta(email.id, localTagPersonal: tag)
+              .catchError((e) => debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e')),
+        );
       }
       
+      // Collect sender tags for batch update (deduplicated)
       final senderEmail = _extractEmail(email.from);
       if (senderEmail.isNotEmpty) {
-        await MessageRepository().setSenderDefaultLocalTag(senderEmail, tag);
+        senderTags[senderEmail] = tag;
       }
     }
+    
+    // Batch sender tag updates (one per unique sender)
+    for (final entry in senderTags.entries) {
+      unawaited(_messageRepository.setSenderDefaultLocalTag(entry.key, entry.value));
+    }
+    
+    // Wait for all Firebase syncs to complete
+    await Future.wait(syncFutures);
+    
     // Clear selection after bulk action
     _clearBulkSelection();
   }
 
   Future<void> _applyBulkStar(List<MessageIndex> emails, WidgetRef ref) async {
+    // Batch UI updates first for better perceived performance
     for (final email in emails) {
-      await MessageRepository().updateStarred(email.id, !email.isStarred);
       ref.read(emailListProvider.notifier).setStarred(email.id, !email.isStarred);
       _enqueueGmailUpdate(!email.isStarred ? 'star' : 'unstar', email.id);
     }
+    
+    // Batch database updates in background
+    for (final email in emails) {
+      unawaited(_messageRepository.updateStarred(email.id, !email.isStarred));
+    }
+    
     // Clear selection after bulk action
     _clearBulkSelection();
   }
@@ -5474,12 +2962,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       for (final email in emails) {
         if (_selectedAccountId != null) {
           // Optimistic UI update first
-          if (_selectedFolder != 'INBOX') {
-            ref.read(emailListProvider.notifier).removeMessage(email.id);
-          } else {
-            ref.read(emailListProvider.notifier).setFolder(email.id, 'INBOX');
-          }
-          unawaited(MessageRepository().updateFolderWithPrev(
+          HomeScreenHelpers.updateFolderOptimistic(
+            ref: ref,
+            messageId: email.id,
+            currentFolder: _selectedFolder,
+            targetFolder: 'INBOX',
+          );
+          unawaited(_messageRepository.updateFolderWithPrev(
             email.id,
             'INBOX',
             prevFolderLabel: email.folderLabel,
@@ -5496,9 +2985,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           // Optimistic: remove from current view immediately; background restore will adjust
           ref.read(emailListProvider.notifier).removeMessage(email.id);
           unawaited(() async {
-            await MessageRepository().restoreToPrev(email.id);
+            await _messageRepository.restoreToPrev(email.id);
             if (_selectedAccountId != null) {
-              final updated = await MessageRepository()
+              final updated = await _messageRepository
                   .getByIds(_selectedAccountId!, [email.id]);
               final restored = updated[email.id];
               if (restored != null) {
@@ -5514,53 +3003,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
     
     // Default: Move to local folder (show folder selection dialog)
-    final folder = await showDialog<String>(
-      context: context,
-      builder: (context) => Dialog(
-        child: Container(
-          width: 400,
-          height: 500,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  const Text(
-                    'Move to Folder',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.of(context).pop(),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Expanded(
-                child: LocalFolderTree(
-                  selectedFolder: null,
-                  selectedBackgroundColor: ActionMailTheme.alertColor.withValues(alpha: 0.2),
-                  onFolderSelected: (folderPath) {
-                    Navigator.of(context).pop(folderPath);
-                  },
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
+    final folder = await MoveToFolderDialog.show(context);
     
     if (folder != null) {
       for (final email in emails) {
-        await _saveEmailToFolder(folder, email);
+        if (_isLocalFolder) {
+          // Moving between local folders
+          await _moveLocalEmailToFolder(folder, email);
+        } else {
+          // Saving from Gmail to local folder
+          await _saveEmailToFolder(folder, email);
+        }
       }
     }
     setState(() {
@@ -5595,11 +3048,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     
     // Optimistic UI updates first
     for (final email in emails) {
-      if (_selectedFolder != 'ARCHIVE') {
-        ref.read(emailListProvider.notifier).removeMessage(email.id);
-      } else {
-        ref.read(emailListProvider.notifier).setFolder(email.id, 'ARCHIVE');
-      }
+      HomeScreenHelpers.updateFolderOptimistic(
+        ref: ref,
+        messageId: email.id,
+        currentFolder: _selectedFolder,
+        targetFolder: 'ARCHIVE',
+      );
     }
     // Clear selection immediately after optimistic update
     _clearBulkSelection();
@@ -5607,7 +3061,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // Database updates in background
     for (final email in emails) {
       final prev = email.folderLabel;
-      unawaited(MessageRepository().updateFolderNoPrev(email.id, 'ARCHIVE'));
+      unawaited(_messageRepository.updateFolderNoPrev(email.id, 'ARCHIVE'));
       _enqueueGmailUpdate('archive:${prev.toUpperCase()}', email.id);
     }
   }
@@ -5642,11 +3096,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     
     // Optimistic UI updates first
     for (final email in emails) {
-      if (_selectedFolder != 'TRASH') {
-        ref.read(emailListProvider.notifier).removeMessage(email.id);
-      } else {
-        ref.read(emailListProvider.notifier).setFolder(email.id, 'TRASH');
-      }
+      HomeScreenHelpers.updateFolderOptimistic(
+        ref: ref,
+        messageId: email.id,
+        currentFolder: _selectedFolder,
+        targetFolder: 'TRASH',
+      );
     }
     // Clear selection immediately after optimistic update
     _clearBulkSelection();
@@ -5654,7 +3109,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // Database updates in background
     for (final email in emails) {
       final prev = email.folderLabel;
-      unawaited(MessageRepository().updateFolderNoPrev(email.id, 'TRASH'));
+      unawaited(_messageRepository.updateFolderNoPrev(email.id, 'TRASH'));
       _enqueueGmailUpdate('trash:${prev.toUpperCase()}', email.id);
     }
   }
@@ -5665,4 +3120,67 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       _tableSelectedCount = 0;
     });
   }
+
+  void _showLocalFoldersDialog(BuildContext context) {
+    final theme = Theme.of(context);
+    final appBarBg = theme.appBarTheme.backgroundColor ?? theme.colorScheme.primary;
+    final appBarFg = theme.appBarTheme.foregroundColor ?? theme.colorScheme.onPrimary;
+    
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+        child: SizedBox(
+          width: 400,
+          height: 600,
+          child: Column(
+            children: [
+              // Header
+              Material(
+                color: appBarBg,
+                child: Container(
+                  height: 48,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Local Folders',
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          color: appBarFg,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        icon: Icon(Icons.close, color: appBarFg),
+                        onPressed: () => Navigator.of(dialogContext).pop(),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              // Folder tree
+              Expanded(
+                child: LocalFolderTree(
+                  selectedFolder: _isLocalFolder ? _selectedFolder : null,
+                  onFolderSelected: (folderPath) async {
+                    Navigator.of(dialogContext).pop();
+                    setState(() {
+                      _selectedFolder = folderPath;
+                      _isLocalFolder = true;
+                    });
+                    await _loadFolderEmails(folderPath, true);
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
+
