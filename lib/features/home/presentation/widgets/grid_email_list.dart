@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:domail/constants/app_constants.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -5,6 +6,7 @@ import 'package:domail/data/models/message_index.dart';
 import 'package:intl/intl.dart';
 import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:domail/features/home/presentation/widgets/domain_icon.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Table-style email list with action focus
 /// 
@@ -99,6 +101,26 @@ class _GridEmailListState extends State<GridEmailList> {
   bool _showSearchField = false;
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _horizontalScrollController = ScrollController();
+  
+  // Column width state - column index -> width
+  // Columns: 0=checkbox, 1=date, 2=sender, 3=subject (flexible), 4=action, 5=status
+  Map<int, double> _columnWidths = {};
+  bool _columnWidthsLoaded = false;
+  static const String _prefsKeyColumnWidths = 'table_view_column_widths';
+  static const double _minColumnWidth = 75.0;
+  
+  // Drag state for column resizing
+  double? _resizeStartX;
+  double? _resizeStartWidth;
+  int? _resizingColumnIndex;
+  
+  // Default column widths
+  static const double _defaultCheckboxWidth = 30.0;
+  static const double _defaultDateWidth = 70.0;
+  static const double _defaultSenderWidth = 200.0;
+  static const double _defaultSubjectWidth = 300.0; // Subject column default width
+  static const double _defaultActionDetailsWidth = 250.0;
+  static const double _defaultStatusWidth = 172.0; // Will be overridden by IntrinsicColumnWidth, but used for calculations
 
   // Get current selection - use external if provided, otherwise use internal
   Set<String> get _currentSelectedIds {
@@ -106,6 +128,63 @@ class _GridEmailListState extends State<GridEmailList> {
       return widget.selectedEmailIds!;
     }
     return _selectedEmailIds;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadColumnWidths();
+  }
+
+  Future<void> _loadColumnWidths() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_prefsKeyColumnWidths);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> decoded = Map<String, dynamic>.from(
+          (jsonDecode(saved) as Map).map((k, v) => MapEntry(k.toString(), v)),
+        );
+        setState(() {
+          _columnWidths = decoded.map((k, v) => MapEntry(int.parse(k), (v as num).toDouble()));
+          _columnWidthsLoaded = true;
+        });
+      } catch (e) {
+        // If parsing fails, use defaults
+        _initializeDefaultColumnWidths();
+      }
+    } else {
+      _initializeDefaultColumnWidths();
+    }
+  }
+
+  void _initializeDefaultColumnWidths() {
+    setState(() {
+      _columnWidths = {
+        0: _defaultCheckboxWidth,
+        1: _defaultDateWidth,
+        2: _defaultSenderWidth,
+        4: _defaultActionDetailsWidth,
+        5: _defaultStatusWidth,
+      };
+      _columnWidthsLoaded = true;
+    });
+  }
+
+  Future<void> _saveColumnWidths() async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = jsonEncode(_columnWidths.map((k, v) => MapEntry(k.toString(), v)));
+    await prefs.setString(_prefsKeyColumnWidths, encoded);
+  }
+
+  double _getColumnWidth(int columnIndex, double defaultWidth) {
+    return _columnWidths[columnIndex] ?? defaultWidth;
+  }
+
+  void _updateColumnWidth(int columnIndex, double newWidth) {
+    setState(() {
+      _columnWidths[columnIndex] = newWidth.clamp(_minColumnWidth, double.infinity);
+    });
+    _saveColumnWidths();
   }
 
   @override
@@ -759,16 +838,22 @@ class _GridEmailListState extends State<GridEmailList> {
       );
     }
 
+    // Wait for column widths to load before building table
+    if (!_columnWidthsLoaded) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
     return LayoutBuilder(
       builder: (context, constraints) {
         // Detect small screen for compact layout
         final isSmallScreen = MediaQuery.of(context).size.width < 1200;
         
-        // Calculate column widths - use fixed widths for better control
-        final checkboxWidth = 30.0;
-        final dateWidth = 70.0;
-        final senderWidth = 200.0;
-        final actionDetailsWidth = 250.0;
+        // Get column widths from saved preferences or use defaults
+        final checkboxWidth = _getColumnWidth(0, _defaultCheckboxWidth);
+        final dateWidth = _getColumnWidth(1, _defaultDateWidth);
+        final senderWidth = _getColumnWidth(2, _defaultSenderWidth);
+        final subjectWidth = _getColumnWidth(3, _defaultSubjectWidth); // Subject is now resizable
+        final actionDetailsWidth = _getColumnWidth(4, _defaultActionDetailsWidth);
         // Status width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
         // Using IntrinsicColumnWidth to automatically size based on content
         // This adapts to ~172px on large screens and ~280px on mobile (where IconButtons need 48px tap targets)
@@ -776,15 +861,15 @@ class _GridEmailListState extends State<GridEmailList> {
         // TO REVERT: Replace IntrinsicColumnWidth() with FixedColumnWidth(statusWidth) below
         // and uncomment the statusWidth calculation:
         // final statusWidth = isSmallScreen ? 280.0 : 172.0;
-        // final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth + statusWidth;
+        // final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + subjectWidth + actionDetailsWidth + statusWidth;
         
-        // Note: statusWidth not used when using IntrinsicColumnWidth, but kept for reference
-        final statusWidth = 172.0; // Reference only - not used with IntrinsicColumnWidth
-        // Subject & Snippet - minimum width, but can expand
-        final subjectMinWidth = 300.0;
-        // Calculate fixed columns width without status (status is flexible)
-        final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth;
-        final totalMinWidth = fixedColumnsWidth + subjectMinWidth;
+        // Estimate status width for calculations (actual will be determined by IntrinsicColumnWidth at layout time)
+        // Status width varies: ~172px on large screens, ~280px on mobile (IconButton tap targets)
+        final estimatedStatusWidth = isSmallScreen ? 280.0 : 172.0;
+        
+        // Calculate fixed columns width (subject is now fixed/resizable, status is flexible)
+        final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + subjectWidth + actionDetailsWidth;
+        final totalMinWidth = fixedColumnsWidth + estimatedStatusWidth;
         
         // Calculate available width - account for horizontal padding (16 * 2 = 32)
         final hasValidConstraints = constraints.maxWidth.isFinite && 
@@ -795,22 +880,8 @@ class _GridEmailListState extends State<GridEmailList> {
             ? constraints.maxWidth - 32.0  // Account for horizontal padding
             : totalMinWidth;
         
-        // Estimate status width for calculations (actual will be determined by IntrinsicColumnWidth at layout time)
-        // Status width varies: ~172px on large screens, ~280px on mobile (IconButton tap targets)
-        final estimatedStatusWidth = isSmallScreen ? 280.0 : 172.0;
-        
-        // Calculate subject column width based on available space
-        // Account for estimated status width so subject doesn't take all remaining space
-        // Allow subject width to use minimum or expand to fit available space
-        // When screen is large, use available space; when small, use minimum and allow scrolling
-        final availableForSubject = availableWidth - fixedColumnsWidth - estimatedStatusWidth;
-        final subjectWidth = availableForSubject >= subjectMinWidth 
-            ? availableForSubject 
-            : subjectMinWidth;
-        
         // Calculate actual table width from all column widths
-        // Note: With IntrinsicColumnWidth for status and FlexColumnWidth for subject,
-        // the actual table width will be determined at layout time
+        // Note: With IntrinsicColumnWidth for status, the actual status width will be determined at layout time
         final actualTableWidth = checkboxWidth + 
             dateWidth + 
             senderWidth + 
@@ -848,10 +919,9 @@ class _GridEmailListState extends State<GridEmailList> {
                           0: FixedColumnWidth(checkboxWidth),
                           1: FixedColumnWidth(dateWidth),
                           2: FixedColumnWidth(senderWidth),
-                          3: FlexColumnWidth(), // Subject & Snippet - flexible width with minimum (enforced via subjectWidth calculation)
-                          // TO REVERT: Change above line to: 3: FixedColumnWidth(subjectWidth),
-                          4: FixedColumnWidth(actionDetailsWidth),
-                          5: IntrinsicColumnWidth(), // Status column - flexible width based on content
+                          3: FixedColumnWidth(subjectWidth), // Subject & Snippet - now resizable
+                          4: FixedColumnWidth(actionDetailsWidth), // Action Details - not resizable
+                          5: IntrinsicColumnWidth(), // Status column - flexible width based on content (not resizable)
                           // TO REVERT: Change above line to: 5: FixedColumnWidth(statusWidth),
                         },
                         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
@@ -869,47 +939,39 @@ class _GridEmailListState extends State<GridEmailList> {
                                 ),
                               ),
                               TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: Text(
-                                    'Date',
-                                    style: theme.textTheme.labelMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
+                                child: _buildResizableHeaderCell(
+                                  context: context,
+                                  theme: theme,
+                                  label: 'Date',
+                                  columnIndex: 1,
+                                  currentWidth: dateWidth,
                                 ),
                               ),
                               TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: Text(
-                                    widget.selectedFolder == AppConstants.folderSent ? 'To' : 'Sender',
-                                    style: theme.textTheme.labelMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
+                                child: _buildResizableHeaderCell(
+                                  context: context,
+                                  theme: theme,
+                                  label: widget.selectedFolder == AppConstants.folderSent ? 'To' : 'Sender',
+                                  columnIndex: 2,
+                                  currentWidth: senderWidth,
                                 ),
                               ),
                               TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: Text(
-                                    'Subject & Snippet',
-                                    style: theme.textTheme.labelMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
+                                child: _buildResizableHeaderCell(
+                                  context: context,
+                                  theme: theme,
+                                  label: 'Subject & Snippet',
+                                  columnIndex: 3,
+                                  currentWidth: subjectWidth,
                                 ),
                               ),
                               TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: Text(
-                                    'Action Details',
-                                    style: theme.textTheme.labelMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
+                                child: _buildResizableHeaderCell(
+                                  context: context,
+                                  theme: theme,
+                                  label: 'Action Details',
+                                  columnIndex: 4,
+                                  currentWidth: actionDetailsWidth,
                                 ),
                               ),
                               TableCell(
@@ -937,6 +999,71 @@ class _GridEmailListState extends State<GridEmailList> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildResizableHeaderCell({
+    required BuildContext context,
+    required ThemeData theme,
+    required String label,
+    required int columnIndex,
+    required double currentWidth,
+  }) {
+    return Stack(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        // Drag handle on the right edge
+        Positioned(
+          right: 0,
+          top: 0,
+          bottom: 0,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.resizeColumn,
+            child: GestureDetector(
+              onPanStart: (details) {
+                setState(() {
+                  _resizeStartX = details.globalPosition.dx;
+                  _resizeStartWidth = currentWidth;
+                  _resizingColumnIndex = columnIndex;
+                });
+              },
+              onPanUpdate: (details) {
+                if (_resizeStartX != null && _resizeStartWidth != null && _resizingColumnIndex == columnIndex) {
+                  final delta = details.globalPosition.dx - _resizeStartX!;
+                  final newWidth = (_resizeStartWidth! + delta).clamp(_minColumnWidth, double.infinity);
+                  _updateColumnWidth(columnIndex, newWidth);
+                }
+              },
+              onPanEnd: (_) {
+                setState(() {
+                  _resizeStartX = null;
+                  _resizeStartWidth = null;
+                  _resizingColumnIndex = null;
+                });
+              },
+              child: Container(
+                width: 4,
+                color: Colors.transparent,
+                child: Container(
+                  margin: const EdgeInsets.symmetric(vertical: 4),
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.outline.withValues(alpha: 0.3),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -1293,28 +1420,36 @@ class _GridEmailListState extends State<GridEmailList> {
                 }
               });
             },
-            child: Container(
-              width: 18,
-              height: 18,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: isSelected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outlineVariant.withValues(alpha: 0.9),
-                  width: isSelected ? 0 : 1.5,
+            child: Center(
+              child: Container(
+                // Minimum 48x48 tap target on small screens for accessibility
+                width: MediaQuery.of(context).size.width < 1200 ? 48.0 : 18.0,
+                height: MediaQuery.of(context).size.width < 1200 ? 48.0 : 18.0,
+                alignment: Alignment.center,
+                child: Container(
+                  width: 18,
+                  height: 18,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: isSelected
+                          ? theme.colorScheme.primary
+                          : theme.colorScheme.outlineVariant.withValues(alpha: 0.9),
+                      width: isSelected ? 0 : 1.5,
+                    ),
+                    color: isSelected
+                        ? theme.colorScheme.primary.withValues(alpha: 0.15)
+                        : Colors.transparent,
+                  ),
+                  child: isSelected
+                      ? Icon(
+                          Icons.check,
+                          size: 12,
+                          color: theme.colorScheme.primary,
+                        )
+                      : null,
                 ),
-                color: isSelected
-                    ? theme.colorScheme.primary.withValues(alpha: 0.15)
-                    : Colors.transparent,
               ),
-              child: isSelected
-                  ? Icon(
-                      Icons.check,
-                      size: 12,
-                      color: theme.colorScheme.primary,
-                    )
-                  : null,
             ),
           ),
         ),
