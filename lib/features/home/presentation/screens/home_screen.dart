@@ -1,3 +1,4 @@
+import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:domail/shared/widgets/app_dropdown.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -935,7 +936,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                         child: Text(
                           AppConstants.appName,
                           style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: Theme.of(context).appBarTheme.foregroundColor,
+                            color: ActionMailTheme.alertColor,
                             fontWeight: FontWeight.w500,
                           ),
                         ),

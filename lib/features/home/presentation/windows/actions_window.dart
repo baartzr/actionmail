@@ -274,7 +274,7 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
           ? ActionResult(
               actionDate: actionDate ?? DateTime.now(),
               confidence: 1.0, // User-provided actions have max confidence
-              insightText: actionText ?? '',
+              insightText: actionText!, // actionText is guaranteed non-null when hasActionNow is true
             )
           : null;
        

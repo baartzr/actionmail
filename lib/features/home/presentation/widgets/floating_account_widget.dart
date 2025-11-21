@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -30,6 +31,8 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
   bool _positionLoaded = false;
 
   static const String _prefsKeyPosition = 'floating_account_widget_position';
+
+  bool get _isDesktop => Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
   @override
   void initState() {
@@ -90,6 +93,20 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
     _savePosition();
   }
 
+  void _handleTap() {
+    if (!_isDragging && !_isDesktop) {
+      setState(() => _isExpanded = !_isExpanded);
+    }
+  }
+
+  void _handleAccountSelected(String accountId) {
+    widget.onAccountSelected(accountId);
+    // Close on mobile after account selection
+    if (!_isDesktop && _isExpanded) {
+      setState(() => _isExpanded = false);
+    }
+  }
+
   Widget _buildContent() {
     if (widget.accounts.isEmpty) {
       return const SizedBox.shrink();
@@ -102,7 +119,40 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
 
     final unreadCount = widget.accountUnreadCounts[selectedAccount.id] ?? 0;
 
-    return MouseRegion(
+    Widget content = AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeInOut,
+      width: _isExpanded ? 280 : 48,
+      constraints: BoxConstraints(
+        minHeight: 48,
+        maxHeight: _isExpanded ? 400 : 48,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: GestureDetector(
+          onPanStart: _handlePanStart,
+          onPanUpdate: _handlePanUpdate,
+          onPanEnd: _handlePanEnd,
+          onTap: _isDesktop ? null : _handleTap,
+          child: _isExpanded ? _buildExpanded() : _buildCollapsed(selectedAccount, unreadCount),
+        ),
+      ),
+    );
+
+    // Wrap with MouseRegion for desktop hover behavior
+    if (_isDesktop) {
+      content = MouseRegion(
         onEnter: (_) {
           if (!_isDragging) {
             setState(() => _isExpanded = true);
@@ -113,36 +163,11 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
             setState(() => _isExpanded = false);
           }
         },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeInOut,
-          width: _isExpanded ? 280 : 48,
-          constraints: BoxConstraints(
-            minHeight: 48,
-            maxHeight: _isExpanded ? 400 : 48,
-          ),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.2),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: GestureDetector(
-              onPanStart: _handlePanStart,
-              onPanUpdate: _handlePanUpdate,
-              onPanEnd: _handlePanEnd,
-              child: _isExpanded ? _buildExpanded() : _buildCollapsed(selectedAccount, unreadCount),
-            ),
-          ),
-        ),
+        child: content,
       );
+    }
+
+    return content;
   }
 
   @override
@@ -150,6 +175,46 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
     // Don't render until position is loaded (to avoid flashing at wrong position)
     if (!_positionLoaded) {
       return const SizedBox.shrink();
+    }
+    
+    // On mobile, when expanded, add a transparent overlay to detect taps outside
+    if (!_isDesktop && _isExpanded && widget.accounts.isNotEmpty) {
+      return Stack(
+        children: [
+          // Full-screen transparent overlay to detect taps outside
+          Positioned.fill(
+            child: GestureDetector(
+              onTap: () {
+                setState(() => _isExpanded = false);
+              },
+              child: Container(
+                color: Colors.transparent,
+              ),
+            ),
+          ),
+          // The actual widget (positioned above overlay to capture taps)
+          Positioned(
+            left: _position.dx,
+            top: _position.dy,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                // Prevent tap from propagating to overlay
+                // Taps on widget itself should not close it
+              },
+              child: Material(
+                elevation: 8,
+                shadowColor: Colors.black.withValues(alpha: 0.3),
+                color: Colors.transparent,
+                child: IgnorePointer(
+                  ignoring: widget.accounts.isEmpty,
+                  child: _buildContent(),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
     }
     
     // Always return Positioned widget to ensure it's in the Stack
@@ -289,7 +354,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
 
               return InkWell(
                 onTap: () {
-                  widget.onAccountSelected(account.id);
+                  _handleAccountSelected(account.id);
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),

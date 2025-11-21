@@ -6,7 +6,7 @@ import 'package:domail/constants/app_constants.dart';
 import 'package:intl/intl.dart';
 import 'package:domail/shared/widgets/app_switch_button.dart';
 import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
-import 'package:domail/services/domain_icon_service.dart';
+import 'package:domail/features/home/presentation/widgets/domain_icon.dart';
 
 /// Email tile widget with action insight line
 class EmailTile extends StatefulWidget {
@@ -458,7 +458,7 @@ class _EmailTileState extends State<EmailTile> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          _DomainIcon(email: iconEmail),
+                          DomainIcon(email: iconEmail),
                           const SizedBox(width: 12),
                           Flexible(
                             fit: FlexFit.loose,
@@ -1112,89 +1112,6 @@ class _EmailTileState extends State<EmailTile> {
     } else {
       return DateFormat('dd-MMM').format(localDate);
     }
-  }
-}
-
-class _DomainIcon extends StatefulWidget {
-  final String email;
-  const _DomainIcon({required this.email});
-
-  @override
-  State<_DomainIcon> createState() => _DomainIconState();
-}
-
-class _DomainIconState extends State<_DomainIcon> {
-  ImageProvider? _iconProvider;
-  bool _loading = true;
-  String? _lastEmail;
-  final _service = DomainIconService();
-
-  @override
-  void initState() {
-    super.initState();
-    _lastEmail = widget.email;
-    _loadIcon();
-  }
-
-  @override
-  void didUpdateWidget(_DomainIcon oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.email != widget.email) {
-      _lastEmail = widget.email;
-      _loadIcon();
-    }
-  }
-
-  Future<void> _loadIcon() async {
-    setState(() {
-      _loading = true;
-      _iconProvider = null;
-    });
-    final provider = await _service.getDomainIcon(widget.email);
-    if (mounted && widget.email == _lastEmail) {
-      setState(() {
-        _iconProvider = provider;
-        _loading = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final domain = _service.extractDomain(widget.email);
-    final letter = domain.isNotEmpty ? domain[0].toUpperCase() : '?';
-    
-    if (_iconProvider != null && !_loading) {
-      return CircleAvatar(
-        radius: 12,
-        backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-        child: ClipOval(
-          child: Image(
-            image: _iconProvider!,
-            width: 24,
-            height: 24,
-            fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) {
-              // Fallback to letter if image fails to load
-              return CircleAvatar(
-                radius: 12,
-                backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-                foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
-                child: Text(letter, style: Theme.of(context).textTheme.labelSmall),
-              );
-            },
-          ),
-        ),
-      );
-    }
-
-    // Fallback to letter avatar
-    return CircleAvatar(
-      radius: 12,
-      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
-      foregroundColor: Theme.of(context).colorScheme.onSurfaceVariant,
-      child: Text(letter, style: Theme.of(context).textTheme.labelSmall),
-    );
   }
 }
 

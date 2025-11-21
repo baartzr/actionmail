@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:intl/intl.dart';
 import 'package:domail/app/theme/actionmail_theme.dart';
+import 'package:domail/features/home/presentation/widgets/domain_icon.dart';
 
 /// Table-style email list with action focus
 /// 
@@ -768,12 +769,21 @@ class _GridEmailListState extends State<GridEmailList> {
         final dateWidth = 70.0;
         final senderWidth = 200.0;
         final actionDetailsWidth = 250.0;
-        // Adjust status width for small screens (smaller buttons = less space needed)
-        // Personal/Business buttons (~50px) + 4 icon buttons (20px each) + spacing (2px * 5) ≈ 152px for small, 172px for normal
-        final statusWidth = isSmallScreen ? 152.0 : 172.0; // Width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
+        // Status width to accommodate all status buttons (Personal/Business switch + 4 icon buttons)
+        // Using IntrinsicColumnWidth to automatically size based on content
+        // This adapts to ~172px on large screens and ~280px on mobile (where IconButtons need 48px tap targets)
+        // 
+        // TO REVERT: Replace IntrinsicColumnWidth() with FixedColumnWidth(statusWidth) below
+        // and uncomment the statusWidth calculation:
+        // final statusWidth = isSmallScreen ? 280.0 : 172.0;
+        // final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth + statusWidth;
+        
+        // Note: statusWidth not used when using IntrinsicColumnWidth, but kept for reference
+        final statusWidth = 172.0; // Reference only - not used with IntrinsicColumnWidth
         // Subject & Snippet - minimum width, but can expand
         final subjectMinWidth = 300.0;
-        final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth + statusWidth;
+        // Calculate fixed columns width without status (status is flexible)
+        final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + actionDetailsWidth;
         final totalMinWidth = fixedColumnsWidth + subjectMinWidth;
         
         // Calculate available width - account for horizontal padding (16 * 2 = 32)
@@ -785,22 +795,28 @@ class _GridEmailListState extends State<GridEmailList> {
             ? constraints.maxWidth - 32.0  // Account for horizontal padding
             : totalMinWidth;
         
+        // Estimate status width for calculations (actual will be determined by IntrinsicColumnWidth at layout time)
+        // Status width varies: ~172px on large screens, ~280px on mobile (IconButton tap targets)
+        final estimatedStatusWidth = isSmallScreen ? 280.0 : 172.0;
+        
         // Calculate subject column width based on available space
+        // Account for estimated status width so subject doesn't take all remaining space
         // Allow subject width to use minimum or expand to fit available space
         // When screen is large, use available space; when small, use minimum and allow scrolling
-        final availableForSubject = availableWidth - fixedColumnsWidth;
+        final availableForSubject = availableWidth - fixedColumnsWidth - estimatedStatusWidth;
         final subjectWidth = availableForSubject >= subjectMinWidth 
             ? availableForSubject 
             : subjectMinWidth;
         
         // Calculate actual table width from all column widths
-        // This must match the sum of all column widths exactly
+        // Note: With IntrinsicColumnWidth for status and FlexColumnWidth for subject,
+        // the actual table width will be determined at layout time
         final actualTableWidth = checkboxWidth + 
             dateWidth + 
             senderWidth + 
             subjectWidth + 
             actionDetailsWidth + 
-            statusWidth;
+            estimatedStatusWidth; // Estimated - actual will be determined by IntrinsicColumnWidth
         
         // Determine if table exceeds available width and needs scrolling
         // Compare with small tolerance for floating point precision
@@ -832,9 +848,11 @@ class _GridEmailListState extends State<GridEmailList> {
                           0: FixedColumnWidth(checkboxWidth),
                           1: FixedColumnWidth(dateWidth),
                           2: FixedColumnWidth(senderWidth),
-                          3: FixedColumnWidth(subjectWidth), // Subject & Snippet - expands with available space
+                          3: FlexColumnWidth(), // Subject & Snippet - flexible width with minimum (enforced via subjectWidth calculation)
+                          // TO REVERT: Change above line to: 3: FixedColumnWidth(subjectWidth),
                           4: FixedColumnWidth(actionDetailsWidth),
-                          5: FixedColumnWidth(statusWidth),
+                          5: IntrinsicColumnWidth(), // Status column - flexible width based on content
+                          // TO REVERT: Change above line to: 5: FixedColumnWidth(statusWidth),
                         },
                         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
                         children: [
@@ -1004,6 +1022,10 @@ class _GridEmailListState extends State<GridEmailList> {
       senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
     }
 
+    final iconEmail = senderEmail.isNotEmpty
+        ? senderEmail
+        : (isSentFolder ? email.to : email.from);
+
     // Determine row background color
     final rowColor = email.isRead
         ? theme.colorScheme.surfaceContainerLow.withValues(alpha: 0.3)
@@ -1092,34 +1114,43 @@ class _GridEmailListState extends State<GridEmailList> {
             onTap: () => widget.onEmailTap?.call(email),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child: Column(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    isSentFolder && allRecipients.isNotEmpty
-                        ? allRecipients.join(', ')
-                        : (senderName.isNotEmpty ? senderName : senderEmail),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
-                      fontSize: 12,
+                  DomainIcon(email: iconEmail),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          isSentFolder && allRecipients.isNotEmpty
+                              ? allRecipients.join(', ')
+                              : (senderName.isNotEmpty ? senderName : senderEmail),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
+                            fontSize: 12,
+                          ),
+                          maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (!isSentFolder && senderName.isNotEmpty) ...[
+                          const SizedBox(height: 1),
+                          Text(
+                            senderEmail,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                              fontSize: 10,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
                     ),
-                    maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (!isSentFolder && senderName.isNotEmpty) ...[
-                    const SizedBox(height: 1),
-                    Text(
-                      senderEmail,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-                        fontSize: 10,
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -1217,6 +1248,10 @@ class _GridEmailListState extends State<GridEmailList> {
       senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
     }
 
+    final iconEmail = senderEmail.isNotEmpty
+        ? senderEmail
+        : (isSentFolder ? email.to : email.from);
+
     // Determine row background color
     final rowColor = email.isRead
         ? theme.colorScheme.surfaceContainerLow.withValues(alpha: 0.3)
@@ -1301,33 +1336,42 @@ class _GridEmailListState extends State<GridEmailList> {
         DataCell(
           GestureDetector(
             onTap: () => widget.onEmailTap?.call(email),
-            child: Column(
+            child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  isSentFolder && allRecipients.isNotEmpty
-                      ? allRecipients.join(', ')
-                      : (senderName.isNotEmpty ? senderName : senderEmail),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
-                    fontSize: 12,
+                DomainIcon(email: iconEmail),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        isSentFolder && allRecipients.isNotEmpty
+                            ? allRecipients.join(', ')
+                            : (senderName.isNotEmpty ? senderName : senderEmail),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                        maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (!isSentFolder && senderName.isNotEmpty) ...[
+                        const SizedBox(height: 1),
+                        Text(
+                          senderEmail,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
+                            fontSize: 10,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ],
                   ),
-                  maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
-                if (!isSentFolder && senderName.isNotEmpty) ...[
-                  const SizedBox(height: 1),
-                  Text(
-                    senderEmail,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
-                      fontSize: 10,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ],
               ],
             ),
           ),

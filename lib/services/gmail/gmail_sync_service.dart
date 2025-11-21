@@ -827,61 +827,154 @@ class GmailSyncService {
     // Priority: match links where unsubscribe text is the direct content of the anchor tag
     // Common variations: unsubscribe, unsub, opt-out, opt out, optout, opt_out, click here to unsubscribe, unsubscribe click here
     final patterns = [
-      // mailto: links - these are legitimate unsubscribe links
-      RegExp(r'''mailto:[^\s"\'<>]*(?:unsubscribe|unsub|opt[-_]?out|optout)[^\s"\'<>]*''', caseSensitive: false),
+      // Pattern 0: mailto: links - these are legitimate unsubscribe links (highest priority)
+      (RegExp(r'''mailto:[^\s"\'<>]*(?:unsubscribe|unsub|opt[-_]?out|optout)[^\s"\'<>]*''', caseSensitive: false), 100),
       
       // Pattern 1: Direct match - unsubscribe text is the main/only text in the anchor tag
       // Matches: <a href="url">Unsubscribe</a>, <a href="url">Opt-out</a>
       // Also matches: "click here to unsubscribe" (prefix) and "unsubscribe click here" (suffix)
       // This is the most reliable pattern - the text is directly in the anchor tag
-      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:[^<]*<[^>]*>)*\s*(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)\s+click\s+here)[^<]*</a>''', caseSensitive: false),
+      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:[^<]*<[^>]*>)*\s*(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)\s+click\s+here)[^<]*</a>''', caseSensitive: false), 80),
       
       // Pattern 2: Unsubscribe text with optional "click here" or "here" as prefix or suffix
       // Matches: <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
-      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:(?:click\s+here|here)[^<]*(?:to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)|(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*(?:click\s+here|here))[^<]*</a>''', caseSensitive: false),
+      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:(?:click\s+here|here)[^<]*(?:to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)|(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*(?:click\s+here|here))[^<]*</a>''', caseSensitive: false), 60),
       
       // Pattern 3: Button-style with unsubscribe text (with click here as prefix or suffix)
       // Matches: <a href="url" class="button">Unsubscribe</a>, <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
-      RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,200}?(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout)\s+click\s+here)[\s\S]{0,200}?</a>''', caseSensitive: false),
+      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,200}?(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout)\s+click\s+here)[\s\S]{0,200}?</a>''', caseSensitive: false), 40),
     ];
     
-    // Try to find the most specific match first (direct unsubscribe text in anchor)
-    for (final body in bodies) {
-      // Try patterns in order of specificity
-      for (final pattern in patterns) {
-        final matches = pattern.allMatches(body);
-        for (final match in matches) {
-          String? link;
-          if (match.groupCount >= 1) {
-            link = match.group(1);
-          } else {
-            link = match.group(0);
-          }
-          
-          if (link != null && link.isNotEmpty) {
-            // Decode HTML entities
-            final decodedLink = link
-                .replaceAll('&amp;', '&')
-                .replaceAll('&lt;', '<')
-                .replaceAll('&gt;', '>')
-                .replaceAll('&quot;', '"')
-                .replaceAll('&#39;', "'")
-                .replaceAll('%26', '&') // URL-encoded &
+    // Helper function to process a match and return (link, score, anchorText, isExactMatch)
+    ({String link, int score, String? anchorText, bool isExactMatch})? processMatch(
+      RegExpMatch match,
+      int patternIndex,
+      int baseScore,
+    ) {
+      String? link;
+      if (match.groupCount >= 1) {
+        link = match.group(1);
+      } else {
+        link = match.group(0);
+      }
+      
+      if (link == null || link.isEmpty) return null;
+      
+      // Decode HTML entities
+      final decodedLink = link
+          .replaceAll('&amp;', '&')
+          .replaceAll('&lt;', '<')
+          .replaceAll('&gt;', '>')
+          .replaceAll('&quot;', '"')
+          .replaceAll('&#39;', "'")
+          .replaceAll('%26', '&') // URL-encoded &
+          .trim();
+      
+      // Only consider valid URLs
+      if (!decodedLink.startsWith('http://') && 
+          !decodedLink.startsWith('https://') && 
+          !decodedLink.startsWith('mailto:')) {
+        return null;
+      }
+      
+      // Extract anchor text for scoring
+      String? anchorText;
+      bool isExactMatch = false;
+      if (patternIndex > 0) { // Not mailto pattern
+        try {
+          final fullMatch = match.group(0) ?? '';
+          // Extract content between > and </a>, handling nested tags
+          final anchorMatch = RegExp(r'>([\s\S]*?)</a>', caseSensitive: false).firstMatch(fullMatch);
+          if (anchorMatch != null) {
+            // Strip HTML tags to get plain text
+            anchorText = anchorMatch.group(1)
+                ?.replaceAll(RegExp(r'<[^>]+>'), ' ') // Remove HTML tags
+                .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
                 .trim();
             
-            // Only return if it's a valid URL
-            if (decodedLink.startsWith('http://') || 
-                decodedLink.startsWith('https://') || 
-                decodedLink.startsWith('mailto:')) {
-              debugPrint('[Phase2] Found unsubscribe link: $decodedLink');
-              return decodedLink;
+            // Check for exact "Unsubscribe" match
+            if (anchorText != null && anchorText.toLowerCase() == 'unsubscribe') {
+              isExactMatch = true;
             }
+          }
+        } catch (_) {}
+      } else {
+        // mailto links are considered exact matches
+        isExactMatch = true;
+      }
+      
+      // Calculate score based on multiple factors
+      int score = baseScore;
+      
+      // Bonus for exact "Unsubscribe" text (case-insensitive)
+      if (anchorText != null) {
+        final lowerText = anchorText.toLowerCase();
+        if (lowerText == 'unsubscribe') {
+          score += 30; // Highest bonus for exact match
+        } else if (lowerText.contains('unsubscribe') && !lowerText.contains('click')) {
+          score += 20; // Bonus for "unsubscribe" without "click here"
+        } else if (lowerText.contains('unsubscribe')) {
+          score += 10; // Smaller bonus for "unsubscribe" with other text
+        }
+      }
+      
+      // Bonus for unsubscribe-related keywords in URL
+      final lowerLink = decodedLink.toLowerCase();
+      if (lowerLink.contains('unsubscribe') || 
+          lowerLink.contains('unsub') || 
+          lowerLink.contains('optout') || 
+          lowerLink.contains('opt-out') ||
+          lowerLink.contains('opt_out')) {
+        score += 15;
+      }
+      
+      // Penalty for common non-unsubscribe URLs (homepage, etc.)
+      if (lowerLink.contains('/home') || 
+          lowerLink.contains('/index') ||
+          lowerLink.endsWith('/') ||
+          lowerLink.endsWith('/home.php') ||
+          lowerLink.endsWith('/index.php')) {
+        score -= 20;
+      }
+      
+      return (link: decodedLink, score: score, anchorText: anchorText, isExactMatch: isExactMatch);
+    }
+    
+    // Single pass: collect candidates, but return early if we find an exact match
+    final candidates = <({String link, int score, String? anchorText})>[];
+    
+    for (final body in bodies) {
+      for (var patternIndex = 0; patternIndex < patterns.length; patternIndex++) {
+        final (pattern, baseScore) = patterns[patternIndex];
+        final matches = pattern.allMatches(body);
+        
+        for (final match in matches) {
+          final result = processMatch(match, patternIndex, baseScore);
+          if (result != null) {
+            // If we find an exact match, return immediately (most efficient)
+            if (result.isExactMatch) {
+              debugPrint('[Phase2] Found exact unsubscribe match: ${result.link} (score: ${result.score}, anchor: "${result.anchorText ?? 'N/A'}")');
+              return result.link;
+            }
+            // Otherwise, collect for later scoring
+            candidates.add((link: result.link, score: result.score, anchorText: result.anchorText));
           }
         }
       }
     }
-    debugPrint('[Phase2] No unsubscribe link found in email body');
-    return null;
+    
+    if (candidates.isEmpty) {
+      debugPrint('[Phase2] No unsubscribe link found in email body');
+      return null;
+    }
+    
+    // Sort by score (highest first) and return the best match
+    candidates.sort((a, b) => b.score.compareTo(a.score));
+    final bestMatch = candidates.first;
+    
+    debugPrint('[Phase2] Found ${candidates.length} unsubscribe link candidates. Best match: ${bestMatch.link} (score: ${bestMatch.score}, anchor: "${bestMatch.anchorText ?? 'N/A'}")');
+    
+    return bestMatch.link;
   }
 
   Future<void> phase1Tagging(String accountId, List<GmailMessage> gmailMessages) async {
