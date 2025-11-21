@@ -27,6 +27,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
   bool _isDragging = false;
   Offset? _dragStartPosition;
   Offset? _dragStartOffset;
+  bool _positionLoaded = false;
 
   static const String _prefsKeyPosition = 'floating_account_widget_position';
 
@@ -40,10 +41,18 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
     final prefs = await SharedPreferences.getInstance();
     final x = prefs.getDouble('${_prefsKeyPosition}_x');
     final y = prefs.getDouble('${_prefsKeyPosition}_y');
-    if (x != null && y != null) {
+    if (x != null && y != null && x >= 0 && y >= 0) {
       if (mounted) {
         setState(() {
           _position = Offset(x, y);
+          _positionLoaded = true;
+        });
+      }
+    } else {
+      // Ensure default position is set if no saved position
+      if (mounted) {
+        setState(() {
+          _positionLoaded = true;
         });
       }
     }
@@ -81,8 +90,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
     _savePosition();
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildContent() {
     if (widget.accounts.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -94,10 +102,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
 
     final unreadCount = widget.accountUnreadCounts[selectedAccount.id] ?? 0;
 
-    return Positioned(
-      left: _position.dx,
-      top: _position.dy,
-      child: MouseRegion(
+    return MouseRegion(
         onEnter: (_) {
           if (!_isDragging) {
             setState(() => _isExpanded = true);
@@ -121,7 +126,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
             borderRadius: BorderRadius.circular(8),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.2),
+                color: Colors.black.withValues(alpha: 0.2),
                 blurRadius: 8,
                 offset: const Offset(0, 2),
               ),
@@ -136,6 +141,29 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
               child: _isExpanded ? _buildExpanded() : _buildCollapsed(selectedAccount, unreadCount),
             ),
           ),
+        ),
+      );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Don't render until position is loaded (to avoid flashing at wrong position)
+    if (!_positionLoaded) {
+      return const SizedBox.shrink();
+    }
+    
+    // Always return Positioned widget to ensure it's in the Stack
+    // _buildContent will handle empty accounts
+    return Positioned(
+      left: _position.dx,
+      top: _position.dy,
+      child: Material(
+        elevation: 8,
+        shadowColor: Colors.black.withValues(alpha: 0.3),
+        color: Colors.transparent,
+        child: IgnorePointer(
+          ignoring: widget.accounts.isEmpty,
+          child: _buildContent(),
         ),
       ),
     );
@@ -214,7 +242,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
           decoration: BoxDecoration(
             border: Border(
               bottom: BorderSide(
-                color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+                color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
                 width: 1,
               ),
             ),
@@ -252,7 +280,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
               height: 1,
               indent: 12,
               endIndent: 12,
-              color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+              color: Theme.of(context).colorScheme.outline.withValues(alpha: 0.2),
             ),
             itemBuilder: (context, index) {
               final account = widget.accounts[index];
@@ -266,7 +294,7 @@ class _FloatingAccountWidgetState extends State<FloatingAccountWidget> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   color: isSelected
-                      ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3)
+                      ? Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.3)
                       : Colors.transparent,
                   child: Row(
                     children: [

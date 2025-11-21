@@ -877,7 +877,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       },
       onHandleReauthNeeded: _handleReauthNeeded,
       onRefreshAccountUnreadCountLocal: _refreshAccountUnreadCountLocal,
-      child: _buildScaffold(context),
+      child: Stack(
+        clipBehavior: Clip.none,
+        fit: StackFit.expand,
+        children: [
+          _buildScaffold(context),
+          // Floating account widget - above everything including AppBar
+          FloatingAccountWidget(
+            accounts: _accounts,
+            selectedAccountId: _selectedAccountId,
+            accountUnreadCounts: _accountUnreadCounts,
+            onAccountSelected: (accountId) async {
+              await _handleAccountSelected(accountId);
+            },
+          ),
+        ],
+      ),
     );
   }
 
@@ -1204,15 +1219,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       ),
                     ],
           );
-          },
-        ),
-        // Floating account widget
-        FloatingAccountWidget(
-          accounts: _accounts,
-          selectedAccountId: _selectedAccountId,
-          accountUnreadCounts: _accountUnreadCounts,
-          onAccountSelected: (accountId) async {
-            await _handleAccountSelected(accountId);
           },
         ),
       ],

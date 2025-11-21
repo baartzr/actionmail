@@ -270,11 +270,11 @@ class _ActionsWindowState extends ConsumerState<ActionsWindow> {
       }
        
       // Record feedback for ML training
-      final userAction = hasActionNow && actionText != null
+      final userAction = hasActionNow
           ? ActionResult(
               actionDate: actionDate ?? DateTime.now(),
               confidence: 1.0, // User-provided actions have max confidence
-              insightText: actionText!,
+              insightText: actionText ?? '',
             )
           : null;
        
