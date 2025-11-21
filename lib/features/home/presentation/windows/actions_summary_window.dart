@@ -14,6 +14,7 @@ import 'package:domail/services/sync/firebase_sync_service.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
+import 'package:domail/app/theme/actionmail_theme.dart';
 
 class ActionsSummaryWindow extends ConsumerStatefulWidget {
   const ActionsSummaryWindow({super.key});
@@ -126,7 +127,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
               });
             },
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
@@ -201,76 +202,84 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     final totalActions = overdue.length + todayList.length + upcoming.length;
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 20.0),
+      padding: const EdgeInsets.only(bottom: 12.0),
       child: Card(
         elevation: 2,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         child: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.all(10.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Account header with icon
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(6),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.primaryContainer,
-                      borderRadius: BorderRadius.circular(6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: ActionMailTheme.alertColor.withValues(alpha: 0.35),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.primaryContainer,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Icon(
+                        Icons.account_circle,
+                        color: Theme.of(context).colorScheme.onPrimaryContainer,
+                        size: 14,
+                      ),
                     ),
-                    child: Icon(
-                      Icons.account_circle,
-                      color: Theme.of(context).colorScheme.onPrimaryContainer,
-                      size: 18,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          account.email,
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            account.email,
+                            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 13,
+                                ),
                           ),
-                        ),
-                        Text(
-                          '$totalActions ${totalActions == 1 ? 'action' : 'actions'}',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
-                            fontSize: 11,
+                          Text(
+                            '$totalActions ${totalActions == 1 ? 'action' : 'actions'}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  fontSize: 10,
+                                ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 8),
               if (totalActions == 0)
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                   decoration: BoxDecoration(
                     color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
-                    borderRadius: BorderRadius.circular(10),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                   child: Row(
                     children: [
                       Icon(
                         Icons.check_circle_outline,
-                        size: 18,
+                        size: 14,
                         color: Theme.of(context).colorScheme.secondary,
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: 6),
                       Expanded(
                         child: Text(
                           'No pending actions for this account.',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                 color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                fontSize: 11,
                               ),
                         ),
                       ),
@@ -285,9 +294,9 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                   Icons.warning_amber_rounded,
                   Theme.of(context).colorScheme.error,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 ...overdue.map((msg) => _buildActionItem(msg, Theme.of(context).colorScheme.errorContainer)),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
               ],
               
               // Today section
@@ -297,9 +306,9 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                   Icons.today,
                   Theme.of(context).colorScheme.primary,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 ...todayList.map((msg) => _buildActionItem(msg, Theme.of(context).colorScheme.primaryContainer)),
-                const SizedBox(height: 12),
+                const SizedBox(height: 8),
               ],
               
               // Upcoming section
@@ -309,7 +318,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                   Icons.upcoming,
                   Theme.of(context).colorScheme.secondary,
                 ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 ...upcoming.map((msg) => _buildActionItem(msg, Theme.of(context).colorScheme.secondaryContainer)),
               ],
             ],
@@ -323,20 +332,20 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     return Row(
       children: [
         Container(
-          padding: const EdgeInsets.all(4),
+          padding: const EdgeInsets.all(3),
           decoration: BoxDecoration(
             color: color.withValues(alpha: 0.2),
-            borderRadius: BorderRadius.circular(6),
+            borderRadius: BorderRadius.circular(4),
           ),
-          child: Icon(icon, size: 16, color: color),
+          child: Icon(icon, size: 12, color: color),
         ),
-        const SizedBox(width: 6),
+        const SizedBox(width: 5),
         Text(
           title,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
             fontWeight: FontWeight.w600,
             color: color,
-            fontSize: 14,
+            fontSize: 11,
           ),
         ),
       ],
@@ -352,15 +361,15 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
     final isComplete = _completionState[message.id] ?? false;
     
     return Padding(
-      padding: const EdgeInsets.only(bottom: 6.0),
+      padding: const EdgeInsets.only(bottom: 4.0),
       child: GestureDetector(
         onTap: () => _openEditActionDialog(message),
         onDoubleTap: () => _openEmail(message),
         child: Container(
-          padding: const EdgeInsets.all(8.0),
+          padding: const EdgeInsets.all(6.0),
           decoration: BoxDecoration(
             color: backgroundColor.withValues(alpha: 0.3),
-            borderRadius: BorderRadius.circular(8),
+            borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: backgroundColor.withValues(alpha: 0.5),
               width: 1,
@@ -371,13 +380,13 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
             children: [
               Container(
                 width: 3,
-                height: 32,
+                height: 24,
                 decoration: BoxDecoration(
                   color: backgroundColor,
                   borderRadius: BorderRadius.circular(1.5),
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -387,15 +396,15 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                       children: [
                         Icon(
                           Icons.email_outlined,
-                          size: 13,
+                          size: 11,
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
-                        const SizedBox(width: 5),
+                        const SizedBox(width: 4),
                         Expanded(
                           child: Text(
                             message.subject,
                             style: TextStyle(
-                              fontSize: 12,
+                              fontSize: 11,
                               fontWeight: FontWeight.w600,
                               color: Theme.of(context).colorScheme.onSurface,
                             ),
@@ -405,16 +414,16 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     // Action text (Edit text removed)
                     Row(
                       children: [
                         Icon(
                           Icons.event_note,
-                          size: 12,
+                          size: 10,
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
-                        const SizedBox(width: 5),
+                        const SizedBox(width: 4),
                         Expanded(
                           child: Text(
                             [
@@ -424,10 +433,10 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                                 actionDateStr,
                             ].where((s) => s.isNotEmpty).join(' • '),
                             style: TextStyle(
-                              fontSize: 11,
+                              fontSize: 10,
                               color: Theme.of(context).colorScheme.onSurface,
                             ),
-                            maxLines: 2,
+                            maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
@@ -436,20 +445,20 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               // Complete button - minus icon changes to tick when complete
               Material(
                 color: Colors.transparent,
                 child: InkWell(
-                  borderRadius: BorderRadius.circular(16),
+                  borderRadius: BorderRadius.circular(12),
                   onTap: () => _toggleComplete(message),
                   child: Container(
-                    width: 24,
-                    height: 24,
+                    width: 20,
+                    height: 20,
                     alignment: Alignment.center,
                     child: Icon(
                       isComplete ? Icons.check : Icons.remove,
-                      size: 20,
+                      size: 16,
                       color: isComplete 
                           ? Theme.of(context).colorScheme.primary
                           : Theme.of(context).colorScheme.onSurfaceVariant,

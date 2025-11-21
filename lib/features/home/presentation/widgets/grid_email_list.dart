@@ -865,7 +865,7 @@ class _GridEmailListState extends State<GridEmailList> {
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                                   child: Text(
-                                    'Sender',
+                                    widget.selectedFolder == AppConstants.folderSent ? 'To' : 'Sender',
                                     style: theme.textTheme.labelMedium?.copyWith(
                                       fontWeight: FontWeight.w600,
                                     ),
@@ -979,10 +979,30 @@ class _GridEmailListState extends State<GridEmailList> {
     final today = DateTime(now.year, now.month, now.day);
     final isOverdue = email.actionDate != null && email.actionDate!.isBefore(today);
 
-    // Extract sender name and email
-    final fromMatch = RegExp(r'^(.+?)\s*<(.+?)>$').firstMatch(email.from);
-    final senderName = fromMatch?.group(1)?.trim() ?? '';
-    final senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
+    // Check if we're in SENT folder
+    final isSentFolder = widget.selectedFolder == AppConstants.folderSent;
+    
+    // Extract sender/recipient name and email
+    String senderName = '';
+    String senderEmail = '';
+    List<String> allRecipients = [];
+    
+    if (isSentFolder) {
+      // Parse all recipients from the "to" field
+      final recipients = _parseAddressList(email.to);
+      allRecipients = recipients.map((r) => r.name.isNotEmpty ? r.name : r.email).toList();
+      if (recipients.isNotEmpty) {
+        senderName = recipients.first.name.isNotEmpty ? recipients.first.name : '';
+        senderEmail = recipients.first.email.isNotEmpty ? recipients.first.email : email.to;
+      } else {
+        senderEmail = email.to;
+      }
+    } else {
+      // Extract sender from "from" field
+      final fromMatch = RegExp(r'^(.+?)\s*<(.+?)>$').firstMatch(email.from);
+      senderName = fromMatch?.group(1)?.trim() ?? '';
+      senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
+    }
 
     // Determine row background color
     final rowColor = email.isRead
@@ -1078,15 +1098,17 @@ class _GridEmailListState extends State<GridEmailList> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    senderName.isNotEmpty ? senderName : senderEmail,
+                    isSentFolder && allRecipients.isNotEmpty
+                        ? allRecipients.join(', ')
+                        : (senderName.isNotEmpty ? senderName : senderEmail),
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
                       fontSize: 12,
                     ),
-                    maxLines: 1,
+                    maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  if (senderName.isNotEmpty) ...[
+                  if (!isSentFolder && senderName.isNotEmpty) ...[
                     const SizedBox(height: 1),
                     Text(
                       senderEmail,
@@ -1170,10 +1192,30 @@ class _GridEmailListState extends State<GridEmailList> {
     final today = DateTime(now.year, now.month, now.day);
     final isOverdue = email.actionDate != null && email.actionDate!.isBefore(today);
 
-    // Extract sender name and email
-    final fromMatch = RegExp(r'^(.+?)\s*<(.+?)>$').firstMatch(email.from);
-    final senderName = fromMatch?.group(1)?.trim() ?? '';
-    final senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
+    // Check if we're in SENT folder
+    final isSentFolder = widget.selectedFolder == AppConstants.folderSent;
+    
+    // Extract sender/recipient name and email
+    String senderName = '';
+    String senderEmail = '';
+    List<String> allRecipients = [];
+    
+    if (isSentFolder) {
+      // Parse all recipients from the "to" field
+      final recipients = _parseAddressList(email.to);
+      allRecipients = recipients.map((r) => r.name.isNotEmpty ? r.name : r.email).toList();
+      if (recipients.isNotEmpty) {
+        senderName = recipients.first.name.isNotEmpty ? recipients.first.name : '';
+        senderEmail = recipients.first.email.isNotEmpty ? recipients.first.email : email.to;
+      } else {
+        senderEmail = email.to;
+      }
+    } else {
+      // Extract sender from "from" field
+      final fromMatch = RegExp(r'^(.+?)\s*<(.+?)>$').firstMatch(email.from);
+      senderName = fromMatch?.group(1)?.trim() ?? '';
+      senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
+    }
 
     // Determine row background color
     final rowColor = email.isRead
@@ -1255,7 +1297,7 @@ class _GridEmailListState extends State<GridEmailList> {
           ),
         ),
 
-        // Sender column
+        // Sender/To column
         DataCell(
           GestureDetector(
             onTap: () => widget.onEmailTap?.call(email),
@@ -1264,15 +1306,17 @@ class _GridEmailListState extends State<GridEmailList> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  senderName.isNotEmpty ? senderName : senderEmail,
+                  isSentFolder && allRecipients.isNotEmpty
+                      ? allRecipients.join(', ')
+                      : (senderName.isNotEmpty ? senderName : senderEmail),
                   style: theme.textTheme.bodySmall?.copyWith(
                     fontWeight: email.isRead ? FontWeight.normal : FontWeight.w600,
                     fontSize: 12,
                   ),
-                  maxLines: 1,
+                  maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
                   overflow: TextOverflow.ellipsis,
                 ),
-                if (senderName.isNotEmpty) ...[
+                if (!isSentFolder && senderName.isNotEmpty) ...[
                   const SizedBox(height: 1),
                   Text(
                     senderEmail,
@@ -1873,6 +1917,42 @@ class _GridEmailListState extends State<GridEmailList> {
       // Dates beyond a week - show formatted date
       return DateFormat('MMM d, yyyy').format(localDate);
     }
+  }
+
+  // Parse address list from comma-separated string (handles names with emails)
+  List<({String name, String email})> _parseAddressList(String addresses) {
+    final results = <({String name, String email})>[];
+    final parts = addresses.split(RegExp(r',(?![^<]*>)')); // Split on commas not inside < >
+    for (final part in parts) {
+      final trimmed = part.trim();
+      if (trimmed.isEmpty) continue;
+      final parsed = _parseSingleAddress(trimmed);
+      if (parsed.name.isEmpty && parsed.email.isEmpty) continue;
+      results.add(parsed);
+    }
+    if (results.isEmpty) {
+      final parsed = _parseSingleAddress(addresses);
+      if (parsed.name.isNotEmpty || parsed.email.isNotEmpty) {
+        results.add(parsed);
+      }
+    }
+    return results;
+  }
+
+  // Parse single address (handles both "Name <email>" and "email" formats)
+  ({String name, String email}) _parseSingleAddress(String input) {
+    final emailRegex = RegExp(r'<([^>]+)>');
+    final match = emailRegex.firstMatch(input);
+    if (match != null) {
+      final email = match.group(1)!.trim();
+      final name = input.replaceAll(match.group(0)!, '').trim();
+      return (name: name.replaceAll('"', ''), email: email);
+    }
+    final trimmed = input.trim();
+    if (trimmed.contains('@')) {
+      return (name: '', email: trimmed);
+    }
+    return (name: trimmed, email: trimmed);
   }
 }
 

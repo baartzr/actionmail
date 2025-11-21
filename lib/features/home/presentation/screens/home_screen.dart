@@ -42,6 +42,7 @@ import 'package:domail/features/home/presentation/widgets/home_menu_button.dart'
 import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
 import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart';
 import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
+import 'package:domail/features/home/presentation/widgets/floating_account_widget.dart';
 
 /// Main home screen for ActionMail
 /// Displays email list with filters and action management
@@ -1124,8 +1125,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         ),
       ),
     ),
-    body: LayoutBuilder(
-        builder: (context, constraints) {
+    body: Stack(
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
           final isDesktop = constraints.maxWidth >= 900;
           final viewMode = ref.watch(viewModeProvider);
           final leftWidth = (constraints.maxWidth * 0.20).clamp(200.0, 360.0);
@@ -1201,9 +1204,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       ),
                     ],
           );
-        },
-      ),
-    );
+          },
+        ),
+        // Floating account widget
+        FloatingAccountWidget(
+          accounts: _accounts,
+          selectedAccountId: _selectedAccountId,
+          accountUnreadCounts: _accountUnreadCounts,
+          onAccountSelected: (accountId) async {
+            await _handleAccountSelected(accountId);
+          },
+        ),
+      ],
+    ),
+  );
   }
 
   // Left panel widget moved to HomeLeftPanel
