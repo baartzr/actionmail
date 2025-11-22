@@ -45,7 +45,7 @@ class _HomeLeftPanelState extends ConsumerState<HomeLeftPanel> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.6);
     final highlightBorderColor =
         ActionMailTheme.alertColor.withValues(alpha: 1);
     const accountSelectedBorderColor = Color(0xFF00695C);

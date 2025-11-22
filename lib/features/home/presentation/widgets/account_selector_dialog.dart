@@ -105,7 +105,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
     return LayoutBuilder(
       builder: (context, constraints) {
         return AppWindowDialog(
-          title: 'Select Account',
+          title: 'Account Summary',
           size: isMobile ? AppWindowSize.large : AppWindowSize.small,
           height: isMobile ? null : MediaQuery.of(context).size.height * 0.8,
           bodyPadding: EdgeInsets.zero,
@@ -148,7 +148,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                           child: Padding(
                                             padding: const EdgeInsets.symmetric(vertical: 2),
                                             child: Row(
-                                              crossAxisAlignment: CrossAxisAlignment.start,
+                                              crossAxisAlignment: CrossAxisAlignment.center,
                                               children: [
                                                 Expanded(
                                                   child: Column(
@@ -178,14 +178,20 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                                     ],
                                                   ),
                                                 ),
-                                                if (isSelected) ...[
-                                                  const SizedBox(width: 6),
+                                                const SizedBox(width: 6),
+                                                ...[ if (isSelected) ...[
                                                   Icon(
                                                     Icons.check,
                                                     size: 18,
                                                     color: cs.primary.withValues(alpha: 0.7),
                                                   ),
-                                                ],
+                                                ] else ...[
+                                                  Icon(
+                                                    Icons.swap_horiz,
+                                                    size: 18,
+                                                    color: cs.primary.withValues(alpha: 0.7),
+                                                  ),
+                                                ]],
                                               ],
                                             ),
                                           ),
@@ -193,6 +199,8 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                         // Row 2: SignOut icon + text + Remove icon + text
                                         const SizedBox(height: 8),
                                         Row(
+                                          mainAxisAlignment: MainAxisAlignment.start,
+                                          crossAxisAlignment: CrossAxisAlignment.center,
                                           children: [
                                             InkWell(
                                               onTap: () => _handleSignOut(account.id),
@@ -227,6 +235,7 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                                                 child: Row(
                                                   mainAxisSize: MainAxisSize.min,
+                                                  crossAxisAlignment: CrossAxisAlignment.center,
                                                   children: [
                                                     Icon(
                                                       Icons.delete_outline,
@@ -250,29 +259,6 @@ class _AccountSelectorDialogState extends State<AccountSelectorDialog> {
                                       ],
                                     ),
                                   ),
-                                  // Switch icon button in top right corner for inactive accounts
-                                  if (!isSelected)
-                                    Positioned(
-                                      top: 8,
-                                      right: 8,
-                                      child: Material(
-                                        color: Colors.transparent,
-                                        child: InkWell(
-                                          onTap: () {
-                                            Navigator.of(context).pop(account.id);
-                                          },
-                                          borderRadius: BorderRadius.circular(20),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(4),
-                                            child: Icon(
-                                              Icons.switch_account,
-                                              size: 20,
-                                              color: cs.primary,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
                                 ],
                               ),
                             ),

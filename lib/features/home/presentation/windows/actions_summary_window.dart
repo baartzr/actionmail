@@ -112,7 +112,7 @@ class _ActionsSummaryWindowState extends ConsumerState<ActionsSummaryWindow> {
   @override
   Widget build(BuildContext context) {
     return AppWindowDialog(
-      title: 'Actions Summary',
+      title: 'Action Summary',
       size: AppWindowSize.large,
       bodyPadding: const EdgeInsets.all(16.0),
       child: Column(

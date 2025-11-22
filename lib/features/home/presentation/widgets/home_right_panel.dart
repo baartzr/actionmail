@@ -26,7 +26,7 @@ class HomeRightPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.2);
+    final highlightColor = ActionMailTheme.alertColor.withValues(alpha: 0.6);
 
     if (isCollapsed) {
       return Container(
