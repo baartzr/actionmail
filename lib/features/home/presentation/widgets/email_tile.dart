@@ -513,14 +513,14 @@ class _EmailTileState extends State<EmailTile> {
                 ),
 
                 // Row 3: Snippet (one row collapsed, full when expanded)
-                if (widget.message.snippet != null) ...[
+                if (widget.message.snippet != null && _expanded) ...[
                   const SizedBox(height: 4),
                   Text(
                     _decodeHtmlEntities(widget.message.snippet!),
                     style: theme.textTheme.bodySmall?.copyWith(
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
-                    maxLines: _expanded ? null : 1,
+                    //maxLines: _expanded ? null : 1,
                     overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
                   ),
                 ],
@@ -867,7 +867,7 @@ class _EmailTileState extends State<EmailTile> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Material(
-            color: isPersonal ? cs.primary : cs.surface,
+            color: isPersonal ? cs.surfaceDim : cs.surface,
             borderRadius: BorderRadius.circular(8),
             child: InkWell(
               borderRadius: BorderRadius.circular(8),
@@ -884,13 +884,14 @@ class _EmailTileState extends State<EmailTile> {
                 child: Icon(
                   isPersonal ? Icons.person : Icons.person_outline,
                   size: 20,
-                  color: isPersonal ? cs.onPrimary : cs.onSurface,
+                  //color: isPersonal ? cs.onPrimary : cs.onSurface,
+                  color: cs.onSurface,
                 ),
               ),
             ),
           ),
           Material(
-            color: isBusiness ? cs.primary : cs.surface,
+            color: isBusiness ? cs.surfaceDim : cs.surface,
             borderRadius: BorderRadius.circular(8),
             child: InkWell(
               borderRadius: BorderRadius.circular(8),
@@ -907,7 +908,8 @@ class _EmailTileState extends State<EmailTile> {
                 child: Icon(
                   isBusiness ? Icons.business_center : Icons.business_center_outlined,
                   size: 20,
-                  color: isBusiness ? cs.onPrimary : cs.onSurface,
+                  //color: isBusiness ? cs.onPrimary : cs.onSurface,
+                  color: cs.onSurface,
                 ),
               ),
             ),

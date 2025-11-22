@@ -668,9 +668,10 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
             ? currentMessage.actionInsightText
             : actionText; // If preserveExisting=false, this will be null (explicitly removing action)
 
-        final newActionComplete = preserveExisting && actionComplete == null
-            ? currentMessage.actionComplete
-            : (actionComplete ?? currentMessage.actionComplete);
+        // Handle actionComplete: if explicitly provided (even if false), use it
+        // If null and preserveExisting=true, keep current value
+        // If null and preserveExisting=false, keep current value (don't change it)
+        final newActionComplete = actionComplete ?? currentMessage.actionComplete;
 
         // Source of truth: actionInsightText determines if action exists
         final hasAction = newActionText != null && newActionText.isNotEmpty;
@@ -680,9 +681,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
 
         if (kDebugMode) {
           debugPrint('[PROVIDER] setAction messageId=$messageId');
-          debugPrint('[PROVIDER] Input: actionText=$actionText, preserveExisting=$preserveExisting');
-          debugPrint('[PROVIDER] Current: actionText=${currentMessage.actionInsightText}, hasAction=${currentMessage.hasAction}');
-          debugPrint('[PROVIDER] Result: newActionText=$newActionText, hasAction=$hasAction');
+          debugPrint('[PROVIDER] Input: actionText=$actionText, actionComplete=$actionComplete, preserveExisting=$preserveExisting');
+          debugPrint('[PROVIDER] Current: actionText=${currentMessage.actionInsightText}, actionComplete=${currentMessage.actionComplete}, hasAction=${currentMessage.hasAction}');
+          debugPrint('[PROVIDER] Result: newActionText=$newActionText, finalActionComplete=$finalActionComplete, hasAction=$hasAction');
         }
 
         // Handle null explicitly - copyWith treats null as "not provided", so we need to manually construct

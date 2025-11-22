@@ -775,21 +775,21 @@ class FirebaseSyncService {
       final localHasAction = localActionText != null && localActionText.isNotEmpty;
       
       if (kDebugMode) {
-        _logFirebaseSync('[FIREBASE_SYNC_ACTION] messageId=$messageId, firebase=$firebaseActionText, local=$localActionText');
+        _logFirebaseSync('[FIREBASE_SYNC_ACTION] messageId=$messageId, firebaseText=$firebaseActionText, localText=$localActionText, firebaseComplete=$firebaseActionComplete, localComplete=$localActionComplete');
       }
       
       bool needsUpdate = false;
       
       // Update actionInsightText based on Firebase state
       if (!firebaseHasAction && !localHasAction) {
-        // Both are null - already in sync
+        // Both are null - action text is in sync, but check other fields
         if (kDebugMode) {
-          _logFirebaseSync('[FIREBASE_SYNC_ACTION] NO_CHANGE messageId=$messageId (both null)');
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] actionText in sync (both null)');
         }
       } else if (firebaseHasAction && localHasAction && firebaseActionText == localActionText) {
-        // Both have same action text - already in sync
+        // Both have same action text - text is in sync, but check other fields
         if (kDebugMode) {
-          _logFirebaseSync('[FIREBASE_SYNC_ACTION] NO_CHANGE messageId=$messageId (same text: $firebaseActionText)');
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] actionText in sync (same text: $firebaseActionText)');
         }
       } else if (!firebaseHasAction && localHasAction) {
         // Firebase removed action - remove locally
@@ -814,24 +814,40 @@ class FirebaseSyncService {
       // Update actionDate if Firebase has it and different
       if (hasFirebaseActionDate && firebaseActionDate?.toIso8601String() != localActionDate?.toIso8601String()) {
         needsUpdate = true;
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] actionDate changed: firebase=$firebaseActionDate, local=$localActionDate');
+        }
       }
       
-      // Update complete if key present and different
+      // Update complete if key present and different (check this even if action text is the same)
       if (hasFirebaseActionComplete && firebaseActionComplete != localActionComplete) {
         needsUpdate = true;
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] actionComplete changed: firebase=$firebaseActionComplete, local=$localActionComplete');
+        }
+      }
+      
+      if (!needsUpdate) {
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] NO_CHANGE messageId=$messageId (all fields in sync)');
+        }
+        return; // No changes needed
       }
       
       if (needsUpdate) {
+        // Determine final values: use Firebase values when provided, otherwise preserve local values
         final finalActionDate = !firebaseHasAction 
-            ? null
-            : (hasFirebaseActionDate ? firebaseActionDate : localActionDate);
-        final finalActionText = firebaseActionText;
+            ? null  // No action in Firebase - clear date
+            : (hasFirebaseActionDate ? firebaseActionDate : localActionDate);  // Use Firebase date if provided, else preserve local
+        final finalActionText = !firebaseHasAction 
+            ? null  // No action in Firebase - clear text
+            : firebaseActionText;  // Use Firebase text (we know it's not null because firebaseHasAction is true)
         final finalActionComplete = !firebaseHasAction 
-            ? false
-            : (hasFirebaseActionComplete ? firebaseActionComplete : localActionComplete);
+            ? false  // No action in Firebase - set complete to false
+            : (hasFirebaseActionComplete ? firebaseActionComplete : localActionComplete);  // Use Firebase complete if provided, else preserve local
         
         if (kDebugMode) {
-          _logFirebaseSync('[FIREBASE_SYNC_ACTION] DB_UPDATE messageId=$messageId, actionText=$finalActionText');
+          _logFirebaseSync('[FIREBASE_SYNC_ACTION] DB_UPDATE messageId=$messageId, actionText=$finalActionText, actionComplete=$finalActionComplete');
         }
         
         await repo.updateAction(

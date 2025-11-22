@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:domail/constants/app_constants.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:domail/data/models/message_index.dart';
@@ -190,6 +191,22 @@ class _GridEmailListState extends State<GridEmailList> {
   @override
   void didUpdateWidget(GridEmailList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    
+    // Force rebuild if emails list changed (to catch actionComplete updates)
+    if (widget.emails.length != oldWidget.emails.length ||
+        widget.emails.any((email) {
+          final oldEmail = oldWidget.emails.firstWhere(
+            (e) => e.id == email.id,
+            orElse: () => email,
+          );
+          return email.actionComplete != oldEmail.actionComplete ||
+                 email.actionInsightText != oldEmail.actionInsightText ||
+                 email.actionDate != oldEmail.actionDate;
+        })) {
+      // Emails changed - force rebuild
+      setState(() {});
+    }
+    
     // Sync internal selection with external when external selection changes
     if (widget.selectedEmailIds != null) {
       final oldSet = oldWidget.selectedEmailIds;
@@ -915,6 +932,8 @@ class _GridEmailListState extends State<GridEmailList> {
                     child: SingleChildScrollView(
                       scrollDirection: Axis.vertical,
                       child: Table(
+                        // Key ensures table rebuilds when emails change (especially actionComplete)
+                        key: ValueKey('email_table_${widget.emails.length}_${widget.emails.fold<int>(0, (sum, e) => sum ^ (e.id.hashCode ^ (e.actionComplete ? 1 : 0)))}'),
                         columnWidths: {
                           0: FixedColumnWidth(checkboxWidth),
                           1: FixedColumnWidth(dateWidth),
@@ -1328,7 +1347,10 @@ class _GridEmailListState extends State<GridEmailList> {
             onTap: () => widget.onEmailAction?.call(email),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              child: _buildActionDetails(context, theme, email, isOverdue),
+              child: KeyedSubtree(
+                key: ValueKey('action_${email.id}_${email.actionComplete}'),
+                child: _buildActionDetails(context, theme, email, isOverdue),
+              ),
             ),
           ),
         ),
@@ -1563,6 +1585,10 @@ class _GridEmailListState extends State<GridEmailList> {
   }
 
   Widget _buildActionDetails(BuildContext context, ThemeData theme, MessageIndex email, bool isOverdue) {
+    if (kDebugMode) {
+      debugPrint('[GRID_ACTION_BUILD] messageId=${email.id}, hasAction=${email.hasAction}, actionComplete=${email.actionComplete}, actionText=${email.actionInsightText}');
+    }
+    
     if (!email.hasAction) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1598,18 +1624,25 @@ class _GridEmailListState extends State<GridEmailList> {
 
     final actionText = email.actionInsightText ?? '';
     final isComplete = email.actionComplete;
+    
+    if (kDebugMode && email.hasAction) {
+      debugPrint('[GRID_ACTION] messageId=${email.id}, actionComplete=$isComplete, actionText=$actionText');
+    }
 
+    // Priority: Complete > Overdue > Action
+    // If complete, show COMPLETE even if overdue
+    final displayStatus = isComplete ? 'COMPLETE' : (isOverdue ? 'OVERDUE' : 'ACTION');
+    final statusColor = isComplete 
+        ? Colors.green 
+        : (isOverdue ? Colors.red : Colors.orange);
+    
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: isOverdue
-            ? Colors.red.shade50
-            : (isComplete ? Colors.green.shade50 : Colors.orange.shade50),
+        color: statusColor.shade50,
         borderRadius: BorderRadius.circular(6),
         border: Border.all(
-          color: isOverdue
-              ? Colors.red.shade300
-              : (isComplete ? Colors.green.shade300 : Colors.orange.shade300),
+          color: statusColor.shade300,
           width: 1,
         ),
       ),
@@ -1623,29 +1656,21 @@ class _GridEmailListState extends State<GridEmailList> {
               Icon(
                 Icons.lightbulb,
                 size: 12,
-                color: isOverdue
-                    ? Colors.red.shade700
-                    : (isComplete ? Colors.green.shade700 : Colors.orange.shade700),
+                color: statusColor.shade700,
               ),
               const SizedBox(width: 4),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                 decoration: BoxDecoration(
-                  color: isOverdue
-                      ? Colors.red.shade200
-                      : (isComplete ? Colors.green.shade200 : Colors.orange.shade200),
+                  color: statusColor.shade200,
                   borderRadius: BorderRadius.circular(3),
                 ),
                 child: Text(
-                  isOverdue
-                      ? 'OVERDUE'
-                      : (isComplete ? 'COMPLETE' : 'ACTION'),
+                  displayStatus,
                   style: TextStyle(
                     fontSize: 9,
                     fontWeight: FontWeight.w700,
-                    color: isOverdue
-                        ? Colors.red.shade900
-                        : (isComplete ? Colors.green.shade900 : Colors.orange.shade900),
+                    color: statusColor.shade900,
                     letterSpacing: 0.3,
                   ),
                 ),
@@ -1658,9 +1683,7 @@ class _GridEmailListState extends State<GridEmailList> {
               actionText,
               style: theme.textTheme.labelSmall?.copyWith(
                 fontWeight: FontWeight.w500,
-                color: isOverdue
-                    ? Colors.red.shade900
-                    : (isComplete ? Colors.green.shade900 : Colors.orange.shade900),
+                color: statusColor.shade900,
                 fontSize: 10,
               ),
               maxLines: 2,
@@ -1672,9 +1695,7 @@ class _GridEmailListState extends State<GridEmailList> {
             Text(
               _formatActionDate(email.actionDate!, DateTime.now()),
               style: theme.textTheme.labelSmall?.copyWith(
-                color: isOverdue
-                    ? Colors.red.shade700
-                    : (isComplete ? Colors.green.shade700 : Colors.orange.shade700),
+                color: statusColor.shade700,
                 fontWeight: FontWeight.w600,
                 fontSize: 9,
               ),
