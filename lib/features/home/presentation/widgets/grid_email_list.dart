@@ -1694,36 +1694,54 @@ class _GridEmailListState extends State<GridEmailList> {
           ],
           if (email.actionDate != null) ...[
             const SizedBox(height: 3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _formatActionDate(email.actionDate!, DateTime.now()),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: statusColor.shade700,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 9,
-                  ),
+            RichText(
+              text: TextSpan(
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: statusColor.shade700,
+                  fontWeight: FontWeight.w600,
+                  fontSize: 9,
                 ),
-                const SizedBox(width: 8),
-                MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    onTap: () {
-                      widget.onActionCompleteToggle?.call(email);
-                    },
-                    child: Text(
-                      'Mark as ${isComplete ? 'Incomplete' : 'Complete'}',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: statusColor.shade700,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 9,
+                children: [
+                  // Date text
+                  TextSpan(
+                    text: _formatActionDate(email.actionDate!, DateTime.now()),
+                  ),
+
+                  // Dot separator
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Text('•'),
+                    ),
+                  ),
+
+                  // Clickable "Mark as ..." link
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () {
+                          widget.onActionCompleteToggle?.call(email);
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 2),
+                          child: Text(
+                            'Mark as ${isComplete ? 'Incomplete' : 'Complete'}',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: statusColor.shade700,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 9,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+            )
           ],
         ],
       ),

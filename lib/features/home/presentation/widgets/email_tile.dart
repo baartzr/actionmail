@@ -365,199 +365,183 @@ class _EmailTileState extends State<EmailTile> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             child: Stack(
-            children: [
-              if (_revealDir == 1)
-                Positioned.fill(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: SizedBox(
-                      width: revealTarget,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: _buildLeftActions(context),
+              children: [
+                if (_revealDir == 1)
+                  Positioned.fill(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: SizedBox(
+                        width: revealTarget,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: _buildLeftActions(context),
+                        ),
                       ),
                     ),
                   ),
-                ),
-              if (_revealDir == -1)
-                Positioned.fill(
-                  child: Align(
-                    alignment: Alignment.centerRight,
-                    child: SizedBox(
-                      width: revealTarget,
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: _buildRightActions(context),
+                if (_revealDir == -1)
+                  Positioned.fill(
+                    child: Align(
+                      alignment: Alignment.centerRight,
+                      child: SizedBox(
+                        width: revealTarget,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          child: _buildRightActions(context),
+                        ),
                       ),
                     ),
                   ),
-                ),
 
-              // Foreground card that slides by 40% based on direction
-              AnimatedSlide(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOutCubic,
-                offset: _revealDir == -1
-                    ? const Offset(-0.4, 0)
-                    : _revealDir == 1
-                        ? const Offset(0.4, 0)
-                        : Offset.zero,
-                child: Card(
-                  margin: EdgeInsets.zero,
-                  elevation: 0,
-                  color: widget.message.isRead 
-                      ? theme.colorScheme.primaryContainer.withValues(alpha: 0.4)
-                      : theme.colorScheme.surfaceContainerLow,
-                  clipBehavior: Clip.antiAlias,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(
-                      color: const Color(0xFF00897B).withValues(alpha: 0.4), // Darker teal border
-                      width: 0.5,
+                // Foreground card that slides by 40% based on direction
+                AnimatedSlide(
+                  duration: const Duration(milliseconds: 200),
+                  curve: Curves.easeOutCubic,
+                  offset: _revealDir == -1
+                      ? const Offset(-0.4, 0)
+                      : _revealDir == 1
+                          ? const Offset(0.4, 0)
+                          : Offset.zero,
+                  child: Card(
+                    margin: EdgeInsets.zero,
+                    elevation: 0,
+                    color: widget.message.isRead
+                        ? theme.colorScheme.primaryContainer.withValues(alpha: 0.4)
+                        : theme.colorScheme.surfaceContainerLow,
+                    clipBehavior: Clip.antiAlias,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: BorderSide(
+                        color: const Color(0xFF00897B).withValues(alpha: 0.4), // Darker teal border
+                        width: 0.5,
+                      ),
                     ),
-                  ),
-                  child: _buildDraggableWrapper(
-                    context,
-                    child: GestureDetector(
-                      onTap: () {
-                        if (_revealDir != 0) {
+                    child: _buildDraggableWrapper(
+                      context,
+                      child: GestureDetector(
+                        onTap: () {
+                          if (_revealDir != 0) {
+                            setState(() {
+                              _revealDir = 0;
+                            });
+                            return;
+                          }
+                          // Update state immediately for instant response
+                          final wasExpanded = _expanded;
                           setState(() {
-                            _revealDir = 0;
+                            _expanded = !_expanded;
                           });
-                          return;
-                        }
-                        // Update state immediately for instant response
-                        final wasExpanded = _expanded;
-                        setState(() {
-                          _expanded = !_expanded;
-                        });
-                        // Mark as read when expanded (not when collapsing)
-                        if (!wasExpanded && _expanded && !widget.message.isRead && widget.onMarkRead != null) {
-                          widget.onMarkRead!();
-                        }
-                      },
-                      onDoubleTap: () {
-                        // Double tap to open email viewer
-                        if (widget.onTap != null) widget.onTap!();
-                      },
-                      child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        splashColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
-                        highlightColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.05),
-                    child: Padding(
-                      padding: const EdgeInsets.all(12.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                // Row 1: Leading domain icon, sender name/email (left), category switch, date (right pinned)
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    Expanded(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          DomainIcon(email: iconEmail),
-                          const SizedBox(width: 12),
-                          Flexible(
-                            fit: FlexFit.loose,
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  titleText,
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    fontWeight: widget.message.isRead
-                                        ? FontWeight.normal
-                                        : FontWeight.bold,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                Text(
-                                  subtitleText,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                        ],
-                      ),
-                    ),
-                    Text(
-                      _formatDate(widget.message.internalDate, now),
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 6),
-
-                // Row 2: Subject
-                Text(
-                  _decodeHtmlEntities(widget.message.subject),
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight:
-                        widget.message.isRead ? FontWeight.normal : FontWeight.w600,
-                  ),
-                  maxLines: _expanded ? 3 : 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-
-                // Row 3: Snippet (one row collapsed, full when expanded)
-                if (widget.message.snippet != null && _expanded) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    _decodeHtmlEntities(widget.message.snippet!),
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    //maxLines: _expanded ? null : 1,
-                    overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                  ),
-                ],
-
-                // Email Full View button and 4 info buttons (always visible)
-                ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      TextButton.icon(
-                        onPressed: () {
-                          // Open email viewer
+                          // Mark as read when expanded (not when collapsing)
+                          if (!wasExpanded && _expanded && !widget.message.isRead && widget.onMarkRead != null) {
+                            widget.onMarkRead!();
+                          }
+                        },
+                        onDoubleTap: () {
+                          // Double tap to open email viewer
                           if (widget.onTap != null) widget.onTap!();
                         },
-                        icon: Icon(
-                          Icons.open_in_new,
-                          size: 16,
-                          color: theme.colorScheme.primary,
-                        ),
-                        label: Text(
-                          'Full View',
-                          style: TextStyle(color: theme.colorScheme.primary),
-                        ),
-                        style: TextButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          textStyle: theme.textTheme.labelSmall,
+                        child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          splashColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
+                          highlightColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.05),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // Row 1: Leading domain icon, sender name/email (left), category switch, date (right pinned)
+                            Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Expanded(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            DomainIcon(email: iconEmail),
+                            const SizedBox(width: 12),
+                            Flexible(
+                              fit: FlexFit.loose,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    titleText,
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                      fontWeight: widget.message.isRead
+                                          ? FontWeight.normal
+                                          : FontWeight.bold,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    subtitleText,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
                         ),
                       ),
-                      const Spacer(),
-                      if (widget.isLocalFolder && widget.onRestoreToInbox != null) ...[
+                      Text(
+                        _formatDate(widget.message.internalDate, now),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+
+                            const SizedBox(height: 6),
+
+                            // Row 2: Subject
+                            Text(
+                    _decodeHtmlEntities(widget.message.subject),
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      fontWeight:
+                          widget.message.isRead ? FontWeight.normal : FontWeight.w600,
+                    ),
+                    maxLines: _expanded ? 3 : 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+
+                            // Row 3: Snippet (one row collapsed, full when expanded)
+                            if (widget.message.snippet != null && _expanded) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      _decodeHtmlEntities(widget.message.snippet!),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      //maxLines: _expanded ? null : 1,
+                      overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                    ),
+                  ],
+
+                            // Email Full View button and 4 info buttons (always visible)
+                            ...[
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
                         TextButton.icon(
-                          onPressed: widget.onRestoreToInbox,
-                          icon: Icon(Icons.move_to_inbox, size: 16, color: theme.colorScheme.primary),
+                          onPressed: () {
+                            // Open email viewer
+                            if (widget.onTap != null) widget.onTap!();
+                          },
+                          icon: Icon(
+                            Icons.open_in_new,
+                            size: 16,
+                            color: theme.colorScheme.primary,
+                          ),
                           label: Text(
-                            'Restore to Inbox',
+                            'Full View',
                             style: TextStyle(color: theme.colorScheme.primary),
                           ),
                           style: TextButton.styleFrom(
@@ -567,181 +551,195 @@ class _EmailTileState extends State<EmailTile> {
                             textStyle: theme.textTheme.labelSmall,
                           ),
                         ),
-                        const SizedBox(width: 8),
-                      ],
-                      // Action line toggle button
-                      IconButton(
-                        iconSize: 20,
-                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: Icon(
-                          _showActionLine ? Icons.visibility : Icons.visibility_off,
-                          color: _showActionLine
-                              ? theme.colorScheme.primary
-                              : theme.colorScheme.onSurfaceVariant,
-                        ),
-                        onPressed: () {
-                          setState(() {
-                            _showActionLine = !_showActionLine;
-                          });
-                        },
-                        tooltip: _showActionLine ? 'Hide action' : 'Show action',
-                      ),
-                      const SizedBox(width: 4),
-                      _buildCategoryIconSwitch(context),
-                      const SizedBox(width: 4),
-                      IconButton(
-                        iconSize: 20,
-                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: Icon(
-                          _starred ? Icons.star : Icons.star_border,
-                          color: _starred
-                              ? theme.colorScheme.primary
-                              : theme.colorScheme.onSurfaceVariant,
-                        ),
-                        onPressed: _handleStarToggle,
-                        tooltip: AppConstants.emailStateStarred,
-                      ),
-                      const SizedBox(width: 4),
-                      IconButton(
-                        iconSize: 20,
-                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                        icon: Icon(
-                          Icons.delete_outline,
-                          color: theme.colorScheme.error,
-                        ),
-                        onPressed: widget.onTrash,
-                        tooltip: AppConstants.swipeActionTrash,
-                      ),
-                    ],
-                  ),
-                ],
-
-                // Action row - show in all folders, but disable when not in INBOX
-                if (_showActionLine) ...[
-                  const SizedBox(height: 8),
-                  Opacity(
-                    opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
-                    child: Row(
-                      children: [
-                        Icon(
-                          Icons.lightbulb_outline,
-                          size: 16,
-                          color: isOverdue
-                              ? theme.colorScheme.error
-                              : theme.colorScheme.secondary,
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Builder(
-                            builder: (context) {
-                              final isInbox = widget.message.folderLabel == 'INBOX';
-                              final baseStyle = theme.textTheme.bodySmall?.copyWith(
-                                color: isOverdue
-                                    ? theme.colorScheme.error
-                                    : theme.colorScheme.onSurfaceVariant,
-                                fontStyle: FontStyle.italic,
-                              );
-
-                              // Show full action UI
-                              if (!widget.message.hasAction) {
-                                return GestureDetector(
-                                  onTap: isInbox ? _openEditActionDialog : null,
-                                  behavior: HitTestBehavior.opaque,
-                                  child: RichText(
-                                    text: TextSpan(
-                                      style: baseStyle,
-                                      children: [
-                                        const TextSpan(text: 'No action set. '),
-                                        TextSpan(
-                                          text: 'Add Action',
-                                          style: theme.textTheme.bodySmall?.copyWith(
-                                            color: isInbox
-                                                ? theme.colorScheme.secondary
-                                                : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                            decoration: TextDecoration.none,
-                                            fontStyle: FontStyle.normal,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                );
-                              }
-                              else {
-                                // With action: show [date] action text and [Edit, Complete/Incomplete toggle]
-                                //final display = _actionText ?? '';
-                                final display = _actionText;
-                                final dateLabel = _actionDate != null
-                                    ? _formatActionDate(_actionDate!, DateTime
-                                    .now())
-                                    : null;
-                                final isComplete = _actionComplete;
-                                return GestureDetector(
-                                  onTap: isInbox ? _openEditActionDialog : null,
-                                  behavior: HitTestBehavior.opaque,
-                                  child: RichText(
-                                    text: TextSpan(
-                                      style: baseStyle,
-                                      children: [
-                                        if (isComplete) const TextSpan(text: 'COMPLETE:  '),
-                                        TextSpan(text: display),
-                                        if (dateLabel != null) ...[
-                                          const TextSpan(text: '  •  '),
-                                          TextSpan(text: dateLabel),
-                                        ],
-                                        const TextSpan(text: '  '),
-                                        TextSpan(
-                                          text: isComplete
-                                              ? 'Mark as Incomplete'
-                                              : 'Mark as Complete',
-                                          style: theme.textTheme.bodySmall
-                                              ?.copyWith(
-                                            color: isInbox
-                                                ? theme.colorScheme.tertiary
-                                                : theme.colorScheme
-                                                .onSurfaceVariant.withValues(
-                                                alpha: 0.5),
-                                            decoration: TextDecoration.none,
-                                            fontStyle: FontStyle.normal,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                          recognizer: isInbox
-                                              ? (TapGestureRecognizer()
-                                            ..onTap = () {
-                                              _handleMarkActionComplete();
-                                            })
-                                              : null,
-                                        ),
-                                      ],
-                                    ),
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                );
-                              }
-                            },
+                        const Spacer(),
+                        if (widget.isLocalFolder && widget.onRestoreToInbox != null) ...[
+                          TextButton.icon(
+                            onPressed: widget.onRestoreToInbox,
+                            icon: Icon(Icons.move_to_inbox, size: 16, color: theme.colorScheme.primary),
+                            label: Text(
+                              'Restore to Inbox',
+                              style: TextStyle(color: theme.colorScheme.primary),
+                            ),
+                            style: TextButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              textStyle: theme.textTheme.labelSmall,
+                            ),
                           ),
+                          const SizedBox(width: 8),
+                        ],
+                        // Action line toggle button
+                        IconButton(
+                          iconSize: 20,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          icon: Icon(
+                            _showActionLine ? Icons.visibility : Icons.visibility_off,
+                            color: _showActionLine
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                          onPressed: () {
+                            setState(() {
+                              _showActionLine = !_showActionLine;
+                            });
+                          },
+                          tooltip: _showActionLine ? 'Hide action' : 'Show action',
+                        ),
+                        const SizedBox(width: 4),
+                        _buildCategoryIconSwitch(context),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          iconSize: 20,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          icon: Icon(
+                            _starred ? Icons.star : Icons.star_border,
+                            color: _starred
+                                ? theme.colorScheme.primary
+                                : theme.colorScheme.onSurfaceVariant,
+                          ),
+                          onPressed: _handleStarToggle,
+                          tooltip: AppConstants.emailStateStarred,
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          iconSize: 20,
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          icon: Icon(
+                            Icons.delete_outline,
+                            color: theme.colorScheme.error,
+                          ),
+                          onPressed: widget.onTrash,
+                          tooltip: AppConstants.swipeActionTrash,
                         ),
                       ],
                     ),
-                  ),
-                ],
-                    ],
+                  ],
+
+                            // Action row - show in all folders, but disable when not in INBOX
+                            if (_showActionLine) ...[
+                    const SizedBox(height: 8),
+                    Opacity(
+                      opacity: widget.message.folderLabel == 'INBOX' ? 1.0 : 0.5,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(
+                            Icons.lightbulb_outline,
+                            size: 16,
+                            color: isOverdue
+                                ? theme.colorScheme.error
+                                : theme.colorScheme.secondary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Builder(
+                              builder: (context) {
+                                final isInbox = widget.message.folderLabel == 'INBOX';
+                                final baseStyle = theme.textTheme.bodySmall?.copyWith(
+                                  color: isOverdue
+                                      ? theme.colorScheme.error
+                                      : theme.colorScheme.onSurfaceVariant,
+                                  fontStyle: FontStyle.italic,
+                                );
+
+                                // Show full action UI
+                                if (!widget.message.hasAction) {
+                                  return GestureDetector(
+                                    onTap: isInbox ? _openEditActionDialog : null,
+                                    behavior: HitTestBehavior.opaque,
+                                    child: RichText(
+                                      text: TextSpan(
+                                        style: baseStyle,
+                                        children: [
+                                          const TextSpan(text: 'No action set. '),
+                                          TextSpan(
+                                            text: 'Add Action',
+                                            style: theme.textTheme.bodySmall?.copyWith(
+                                              color: isInbox
+                                                  ? theme.colorScheme.secondary
+                                                  : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                              decoration: TextDecoration.none,
+                                              fontStyle: FontStyle.normal,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  );
+                                }
+                                else {
+                                  // With action: show [date] action text and [Edit, Complete/Incomplete toggle]
+                                  //final display = _actionText ?? '';
+                                  final display = _actionText;
+                                  final dateLabel = _actionDate != null
+                                      ? _formatActionDate(_actionDate!, DateTime
+                                      .now())
+                                      : null;
+                                  final isComplete = _actionComplete;
+                                  return GestureDetector(
+                                    onTap: isInbox ? _openEditActionDialog : null,
+                                    behavior: HitTestBehavior.opaque,
+                                    child: RichText(
+                                      text: TextSpan(
+                                        style: baseStyle,
+                                        children: [
+                                          if (isComplete) const TextSpan(text: 'COMPLETE:  '),
+                                          TextSpan(text: display),
+                                          if (dateLabel != null) ...[
+                                            const TextSpan(text: '  •  '),
+                                            TextSpan(text: dateLabel),
+                                          ],
+                                          const TextSpan(text: '  •  '),
+                                          WidgetSpan(
+                                            alignment: PlaceholderAlignment.top,
+                                            child: MouseRegion(
+                                              cursor: isInbox ? SystemMouseCursors.click : SystemMouseCursors.basic,
+                                              child: GestureDetector(
+                                                behavior: HitTestBehavior.translucent,
+                                                onTap: isInbox ? _handleMarkActionComplete : null,
+                                                child: Text(
+                                                  isComplete ? 'Mark as Incomplete' : 'Mark as Complete',
+                                                  style: theme.textTheme.bodySmall?.copyWith(
+                                                    color: isInbox
+                                                        ? theme.colorScheme.tertiary
+                                                        : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                          ],
+                        ),
+                      ),
+                        ),
+                      ),
+                    ),
+                    ),
                   ),
                 ),
-                      ),
-                    ),
-                  ),
-                    ),
-              ),
+              ],
             ),
-          ],
-        ),
-      ),
-    );
+          ),
+        );
       },
     );
   }
