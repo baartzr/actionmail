@@ -30,6 +30,7 @@ class GridEmailList extends StatefulWidget {
   final ValueChanged<Set<String>>? onFiltersChanged;
   final Set<String> activeFilters;
   final ValueChanged<MessageIndex>? onPersonalBusinessToggle;
+  final ValueChanged<MessageIndex>? onActionCompleteToggle;
   final ValueChanged<MessageIndex>? onStarToggle;
   final ValueChanged<MessageIndex>? onTrash;
   final ValueChanged<MessageIndex>? onArchive;
@@ -57,6 +58,7 @@ class GridEmailList extends StatefulWidget {
     this.onFiltersChanged,
     this.activeFilters = const {},
     this.onPersonalBusinessToggle,
+    this.onActionCompleteToggle,
     this.onStarToggle,
     this.onTrash,
     this.onArchive,
@@ -1692,13 +1694,35 @@ class _GridEmailListState extends State<GridEmailList> {
           ],
           if (email.actionDate != null) ...[
             const SizedBox(height: 3),
-            Text(
-              _formatActionDate(email.actionDate!, DateTime.now()),
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: statusColor.shade700,
-                fontWeight: FontWeight.w600,
-                fontSize: 9,
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  _formatActionDate(email.actionDate!, DateTime.now()),
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: statusColor.shade700,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 9,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                MouseRegion(
+                  cursor: SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: () {
+                      widget.onActionCompleteToggle?.call(email);
+                    },
+                    child: Text(
+                      'Mark as ${isComplete ? 'Incomplete' : 'Complete'}',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: statusColor.shade700,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ],

@@ -641,7 +641,7 @@ class _EmailTileState extends State<EmailTile> {
                                     : theme.colorScheme.onSurfaceVariant,
                                 fontStyle: FontStyle.italic,
                               );
-                              
+
                               // Show full action UI
                               if (!widget.message.hasAction) {
                                 return GestureDetector(
@@ -655,7 +655,7 @@ class _EmailTileState extends State<EmailTile> {
                                         TextSpan(
                                           text: 'Add Action',
                                           style: theme.textTheme.bodySmall?.copyWith(
-                                            color: isInbox 
+                                            color: isInbox
                                                 ? theme.colorScheme.secondary
                                                 : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
                                             decoration: TextDecoration.none,
@@ -670,46 +670,58 @@ class _EmailTileState extends State<EmailTile> {
                                   ),
                                 );
                               }
-                            // With action: show [date] action text and [Edit, Complete/Incomplete toggle]
-                            final display = _actionText ?? '';
-                            final dateLabel = _actionDate != null
-                                ? _formatActionDate(_actionDate!, DateTime.now())
-                                : null;
-                            final isComplete = _actionComplete;
-                              return GestureDetector(
-                                onTap: isInbox ? _openEditActionDialog : null,
-                                behavior: HitTestBehavior.opaque,
-                                child: RichText(
-                                  text: TextSpan(
-                                    style: baseStyle,
-                                    children: [
-                                      if (display.isNotEmpty) TextSpan(text: display),
-                                      if (display.isNotEmpty && dateLabel != null) const TextSpan(text: '  •  '),
-                                      if (dateLabel != null) TextSpan(text: dateLabel),
-                                      const TextSpan(text: '  '),
-                                      TextSpan(
-                                        text: isComplete ? 'Status: Complete' : 'Status: Incomplete',
-                                        style: theme.textTheme.bodySmall?.copyWith(
-                                          color: isInbox 
-                                              ? theme.colorScheme.tertiary
-                                              : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.5),
-                                          decoration: TextDecoration.none,
-                                          fontStyle: FontStyle.normal,
-                                          fontWeight: FontWeight.w600,
+                              else {
+                                // With action: show [date] action text and [Edit, Complete/Incomplete toggle]
+                                //final display = _actionText ?? '';
+                                final display = _actionText;
+                                final dateLabel = _actionDate != null
+                                    ? _formatActionDate(_actionDate!, DateTime
+                                    .now())
+                                    : null;
+                                final isComplete = _actionComplete;
+                                return GestureDetector(
+                                  onTap: isInbox ? _openEditActionDialog : null,
+                                  behavior: HitTestBehavior.opaque,
+                                  child: RichText(
+                                    text: TextSpan(
+                                      style: baseStyle,
+                                      children: [
+                                        if (isComplete) const TextSpan(text: 'COMPLETE:  '),
+                                        TextSpan(text: display),
+                                        if (dateLabel != null) ...[
+                                          const TextSpan(text: '  •  '),
+                                          TextSpan(text: dateLabel),
+                                        ],
+                                        const TextSpan(text: '  '),
+                                        TextSpan(
+                                          text: isComplete
+                                              ? 'Mark as Incomplete'
+                                              : 'Mark as Complete',
+                                          style: theme.textTheme.bodySmall
+                                              ?.copyWith(
+                                            color: isInbox
+                                                ? theme.colorScheme.tertiary
+                                                : theme.colorScheme
+                                                .onSurfaceVariant.withValues(
+                                                alpha: 0.5),
+                                            decoration: TextDecoration.none,
+                                            fontStyle: FontStyle.normal,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          recognizer: isInbox
+                                              ? (TapGestureRecognizer()
+                                            ..onTap = () {
+                                              _handleMarkActionComplete();
+                                            })
+                                              : null,
                                         ),
-                                        recognizer: isInbox 
-                                            ? (TapGestureRecognizer()
-                                              ..onTap = () {
-                                                _handleMarkActionComplete();
-                                              })
-                                            : null,
-                                      ),
-                                    ],
+                                      ],
+                                    ),
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              );
+                                );
+                              }
                             },
                           ),
                         ),

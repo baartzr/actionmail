@@ -2278,6 +2278,42 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     }
                   }
                 },
+                onActionCompleteToggle: (email) async {
+                  // Toggle actionComplete status
+                  final newComplete = !email.actionComplete;
+                  
+                  // Update database
+                  await _messageRepository.updateAction(
+                    email.id,
+                    email.actionDate,
+                    email.actionInsightText,
+                    null, // confidence
+                    newComplete,
+                  );
+                  
+                  // Update provider state
+                  ref.read(emailListProvider.notifier).setAction(
+                    email.id,
+                    email.actionDate,
+                    email.actionInsightText,
+                    actionComplete: newComplete,
+                  );
+                  
+                  // Sync to Firebase if enabled
+                  final syncEnabled = await _firebaseSync.isSyncEnabled();
+                  if (syncEnabled && _selectedAccountId != null) {
+                    try {
+                      await _firebaseSync.syncEmailMeta(
+                        email.id,
+                        actionDate: email.actionDate,
+                        actionInsightText: email.actionInsightText,
+                        actionComplete: newComplete,
+                      );
+                    } catch (e) {
+                      debugPrint('[HomeScreen] ERROR in syncEmailMeta for toggle: $e');
+                    }
+                  }
+                },
               );
             },
           );
