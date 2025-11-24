@@ -25,6 +25,8 @@ import 'package:open_file/open_file.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:domail/services/sms/sms_message_converter.dart';
+import 'package:domail/services/sms/pushbullet_sms_sender.dart';
 
 const int _maxInlineImageCount = 0; // 0 means no limit
 const int _maxInlineImageTotalBytes = 0; // 0 means no limit
@@ -104,6 +106,8 @@ class _PendingSentMessage {
   final String from;
   bool isSent; // true when send completes, false while sending
   final TextEditingController? textController; // For editable messages
+  final bool isSms;
+  final String? smsPhoneNumber;
 
   _PendingSentMessage({
     required this.threadId,
@@ -114,6 +118,8 @@ class _PendingSentMessage {
     required this.from,
     this.isSent = false,
     this.textController,
+    this.isSms = false,
+    this.smsPhoneNumber,
   });
   
   bool get isEditable => !isSent && textController != null;
@@ -189,6 +195,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   
   // Pending sent messages (in-memory only, cleared on window close or when real message arrives)
   final List<_PendingSentMessage> _pendingSentMessages = [];
+  final PushbulletSmsSender _smsSender = PushbulletSmsSender();
   Timer? _conversationRefreshTimer;
   final ScrollController _conversationScrollController = ScrollController();
   
@@ -1741,6 +1748,17 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleReply() async {
+    final isSmsThread = _isSmsConversation();
+    if (!_isConversationMode && isSmsThread) {
+      _toggleConversationMode();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Conversation mode enabled for SMS replies')),
+        );
+      }
+      return;
+    }
+
     // In conversation mode, create an empty message bubble at the top
     if (_isConversationMode) {
       // Find the last received email (not sent by user) to get the "To" address
@@ -1766,11 +1784,24 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       // Fallback to current message if no received message found
       final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
       
-      // Use the sender of the last received email as the "To" address
-      final to = _extractEmail(messageToReplyTo.from);
-      final subject = messageToReplyTo.subject.startsWith('Re:') 
-          ? messageToReplyTo.subject 
-          : 'Re: ${messageToReplyTo.subject}';
+      final isSmsReply = SmsMessageConverter.isSmsMessage(messageToReplyTo);
+      final smsPhone = isSmsReply ? _extractSmsPhone(messageToReplyTo) : null;
+      if (isSmsReply && (smsPhone == null || smsPhone.isEmpty)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unable to determine SMS recipient')),
+          );
+        }
+        return;
+      }
+
+      // Use the sender of the last received email/SMS as the "To" address
+      final to = isSmsReply ? smsPhone! : _extractEmail(messageToReplyTo.from);
+      final subject = isSmsReply
+          ? 'SMS to $to'
+          : messageToReplyTo.subject.startsWith('Re:')
+              ? messageToReplyTo.subject
+              : 'Re: ${messageToReplyTo.subject}';
       final threadId = messageToReplyTo.threadId.isNotEmpty ? messageToReplyTo.threadId : '';
       
       // Get account email for "From" field
@@ -1785,9 +1816,11 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         subject: subject,
         body: '', // Empty - will be filled when user types
         sentDate: DateTime.now(),
-        from: fromEmail,
+        from: isSmsReply && fromEmail.isNotEmpty ? '$fromEmail (SMS)' : fromEmail,
         isSent: false,
         textController: textController,
+        isSms: isSmsReply,
+        smsPhoneNumber: smsPhone,
       );
       
       setState(() {
@@ -1823,6 +1856,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleReplyAll() {
+    if (_isSmsConversation()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Reply all is not available for SMS conversations')),
+        );
+      }
+      return;
+    }
     final to = _extractEmail(_currentMessage.from);
     // TODO: Extract all recipients from the email
     final subject = _currentMessage.subject.startsWith('Re:') 
@@ -1840,6 +1881,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleForward() {
+    if (_isSmsConversation()) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Forward is not available for SMS conversations')),
+        );
+      }
+      return;
+    }
     final subject = _currentMessage.subject.startsWith('Fwd:') 
         ? _currentMessage.subject 
         : 'Fwd: ${_currentMessage.subject}';
@@ -1990,6 +2039,21 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     return senderEmail == accountEmail;
   }
 
+  bool _isSmsConversation() {
+    if (SmsMessageConverter.isSmsMessage(_currentMessage)) {
+      return true;
+    }
+    return _threadMessages.any(SmsMessageConverter.isSmsMessage);
+  }
+
+  String _extractSmsPhone(MessageIndex message) {
+    final match = RegExp(r'<([^>]+)>').firstMatch(message.from);
+    if (match != null) {
+      return match.group(1)!.trim();
+    }
+    return message.from.trim();
+  }
+
 
   String _wrapPlainAsHtml(String plain) {
     return '<pre style="white-space: pre-wrap; font-family: inherit;">${_escapeHtml(plain)}</pre>';
@@ -2060,17 +2124,28 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                 ),
                                 const SizedBox(height: 8),
                                 Text(
-                                  'To: ${pending.to}',
+                                  pending.isSms
+                                      ? 'SMS to ${pending.smsPhoneNumber ?? pending.to}'
+                                      : 'To: ${pending.to}',
                                   style: theme.textTheme.bodySmall?.copyWith(color: metaColor),
                                 ),
                                 const SizedBox(height: 12),
-                                Text(
-                                  pending.subject,
-                                  style: theme.textTheme.titleMedium?.copyWith(
-                                    color: textColor,
-                                    fontWeight: FontWeight.w600,
+                                if (!pending.isSms)
+                                  Text(
+                                    pending.subject,
+                                    style: theme.textTheme.titleMedium?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  )
+                                else
+                                  Text(
+                                    'Reply via SMS',
+                                    style: theme.textTheme.titleMedium?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
                                   ),
-                                ),
                               ],
                             ),
                           ),
@@ -2221,6 +2296,11 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       return;
     }
 
+    if (pending.isSms) {
+      await _sendPendingSms(pending, text);
+      return;
+    }
+
     // Find the message to reply to
     MessageIndex? lastReceivedMessage;
     final accountEmail = _accountEmail?.toLowerCase() ?? '';
@@ -2314,6 +2394,50 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to send message: $e')),
+      );
+    }
+  }
+
+  Future<void> _sendPendingSms(_PendingSentMessage pending, String text) async {
+    final phone = pending.smsPhoneNumber ?? pending.to;
+    if (phone.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing SMS recipient number')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSendingInlineReply = true;
+      pending.isSent = false;
+    });
+
+    try {
+      await _smsSender.sendSms(
+        accountId: widget.accountId,
+        phoneNumber: phone,
+        message: text,
+      );
+      if (!mounted) return;
+      setState(() {
+        pending.isSent = true;
+        _isSendingInlineReply = false;
+      });
+      await _refreshConversation(showLoading: false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('SMS sent via Pushbullet')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        pending.isSent = false;
+        _isSendingInlineReply = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send SMS: $e')),
       );
     }
   }
@@ -2800,6 +2924,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isSmsThread = _isSmsConversation();
     return Shortcuts(
       shortcuts: <LogicalKeySet, Intent>{
         LogicalKeySet(LogicalKeyboardKey.escape): DoNothingIntent(),
@@ -2908,18 +3033,20 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               }
             },
             itemBuilder: (context) => [
-              const PopupMenuItem<_ReplyMenuAction>(
+              PopupMenuItem<_ReplyMenuAction>(
                 value: _ReplyMenuAction.reply,
-                child: Text('Reply'),
+                child: Text(isSmsThread ? 'Reply via SMS' : 'Reply'),
               ),
-              const PopupMenuItem<_ReplyMenuAction>(
-                value: _ReplyMenuAction.replyAll,
-                child: Text('Reply all'),
-              ),
-              const PopupMenuItem<_ReplyMenuAction>(
-                value: _ReplyMenuAction.forward,
-                child: Text('Forward'),
-              ),
+              if (!isSmsThread)
+                const PopupMenuItem<_ReplyMenuAction>(
+                  value: _ReplyMenuAction.replyAll,
+                  child: Text('Reply all'),
+                ),
+              if (!isSmsThread)
+                const PopupMenuItem<_ReplyMenuAction>(
+                  value: _ReplyMenuAction.forward,
+                  child: Text('Forward'),
+                ),
             ],
         ),
         Builder(

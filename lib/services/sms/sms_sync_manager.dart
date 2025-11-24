@@ -6,6 +6,7 @@ import 'package:domail/services/sms/pushbullet_message_parser.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/models/message_index.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
 
 /// Main manager for SMS sync functionality
 /// Orchestrates WebSocket connection, message parsing, and storage
@@ -16,10 +17,13 @@ class SmsSyncManager {
 
   final SmsSyncService _syncService = SmsSyncService();
   final MessageRepository _messageRepository = MessageRepository();
+  final GoogleAuthService _googleAuthService = GoogleAuthService();
   
   PushbulletWebSocketService? _webSocketService;
   bool _isRunning = false;
   Timer? _checkStateTimer;
+  String? _activeAccountId;
+  String? _activeAccountEmail;
 
   /// Callback when a new SMS message is received and saved
   void Function(MessageIndex message)? onSmsReceived;
@@ -43,6 +47,21 @@ class SmsSyncManager {
       debugPrint('[SmsSyncManager] No access token available');
       return;
     }
+
+    final accountId = await _syncService.getAccountId();
+    if (accountId == null || accountId.isEmpty) {
+      debugPrint('[SmsSyncManager] No account selected for SMS sync');
+      return;
+    }
+
+    final account = await _googleAuthService.getAccountById(accountId);
+    if (account == null) {
+      debugPrint('[SmsSyncManager] Selected account is no longer available');
+      return;
+    }
+
+    _activeAccountId = account.id;
+    _activeAccountEmail = account.email;
 
     _isRunning = true;
     debugPrint('[SmsSyncManager] Starting SMS sync...');
@@ -74,6 +93,8 @@ class SmsSyncManager {
 
     _checkStateTimer?.cancel();
     _checkStateTimer = null;
+    _activeAccountId = null;
+    _activeAccountEmail = null;
 
     await _webSocketService?.disconnect();
     _webSocketService = null;
@@ -84,20 +105,34 @@ class SmsSyncManager {
     try {
       // Check if this is an SMS event
       if (!PushbulletMessageParser.isSmsEvent(event)) {
+        debugPrint('[SmsSyncManager] Ignoring non-SMS event: ${PushbulletMessageParser.describeEvent(event)}');
         return;
       }
 
       // Parse SMS event
       final smsEvent = PushbulletMessageParser.parseSmsEvent(event);
       if (smsEvent == null || !smsEvent.isValid) {
-        debugPrint('[SmsSyncManager] Invalid SMS event');
+        debugPrint('[SmsSyncManager] Invalid SMS event payload: ${PushbulletMessageParser.describeEvent(event)}');
         return;
       }
 
       debugPrint('[SmsSyncManager] Received SMS from ${smsEvent.phoneNumber}');
 
+      if (smsEvent.deviceId != null && smsEvent.deviceId!.isNotEmpty) {
+        unawaited(_syncService.setDeviceId(smsEvent.deviceId!));
+      }
+
+      if (_activeAccountId == null || _activeAccountEmail == null) {
+        debugPrint('[SmsSyncManager] Missing active account context, ignoring SMS event');
+        return;
+      }
+
       // Convert to MessageIndex
-      final message = SmsMessageConverter.toMessageIndex(smsEvent);
+      final message = SmsMessageConverter.toMessageIndex(
+        smsEvent,
+        accountId: _activeAccountId!,
+        accountEmail: _activeAccountEmail!,
+      );
 
       // Save to repository
       _saveSmsMessage(message);
@@ -178,6 +213,20 @@ class SmsSyncManager {
     if (token == null || token.isEmpty) {
       debugPrint('[SmsSyncManager] Token missing, stopping...');
       await stop();
+      return;
+    }
+
+    final accountId = await _syncService.getAccountId();
+    if (accountId == null || accountId.isEmpty) {
+      debugPrint('[SmsSyncManager] Account id missing, stopping...');
+      await stop();
+      return;
+    }
+
+    if (_activeAccountId != accountId) {
+      debugPrint('[SmsSyncManager] Account changed, restarting sync...');
+      await stop();
+      await start();
       return;
     }
 

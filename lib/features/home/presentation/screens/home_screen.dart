@@ -43,6 +43,7 @@ import 'package:domail/features/home/presentation/widgets/home_menu_button.dart'
 import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
 import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart';
 import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
+import 'package:domail/services/sms/sms_sync_manager.dart';
 import 'package:domail/features/home/presentation/widgets/floating_account_widget.dart';
 
 /// Main home screen for ActionMail
@@ -80,16 +81,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
   // Cached service instances to avoid repeated instantiation
   late final MessageRepository _messageRepository = MessageRepository();
+  late final SmsSyncManager _smsSyncManager = SmsSyncManager();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _smsSyncManager.onSmsReceived = _handleSmsReceived;
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _smsSyncManager.onSmsReceived = null;
     _unreadCountRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
@@ -111,6 +115,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         }
       });
     }
+  }
+
+  void _handleSmsReceived(MessageIndex message) {
+    if (!mounted) return;
+    if (_selectedAccountId == null || message.accountId != _selectedAccountId) {
+      return;
+    }
+    if (_isLocalFolder || _selectedFolder != AppConstants.folderInbox) {
+      return;
+    }
+    // Refresh the current inbox to include the new SMS message
+    ref.read(emailListProvider.notifier).refresh(
+          _selectedAccountId!,
+          folderLabel: _selectedFolder,
+        );
   }
 
   /// Check if re-authentication completed successfully after app resume
@@ -671,13 +690,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         );
 
     final hasActionNow = text != null && text.isNotEmpty;
-    final userAction = hasActionNow
-        ? ActionResult(
-            actionDate: date ?? DateTime.now(),
-            confidence: 1.0,
-            insightText: text!,
-          )
-        : null;
+      final userAction = hasActionNow
+          ? ActionResult(
+              actionDate: date ?? DateTime.now(),
+              confidence: 1.0,
+              insightText: text,
+            )
+          : null;
 
     final feedbackType = _determineFeedbackType(originalAction, userAction);
     if (feedbackType != null) {

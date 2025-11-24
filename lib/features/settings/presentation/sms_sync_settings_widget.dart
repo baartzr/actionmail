@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:domail/services/sms/sms_sync_service.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
+import 'package:domail/services/auth/google_auth_service.dart';
 
 /// Widget for SMS sync settings
 /// Allows users to enable/disable SMS sync and enter their Pushbullet access token
@@ -14,11 +15,14 @@ class SmsSyncSettingsWidget extends StatefulWidget {
 
 class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
   final SmsSyncService _smsSyncService = SmsSyncService();
+  final GoogleAuthService _authService = GoogleAuthService();
   final TextEditingController _tokenController = TextEditingController();
   bool _isLoading = false;
   bool _isTokenVisible = false;
   bool? _syncEnabled;
   bool? _hasToken;
+  List<GoogleAccount> _accounts = [];
+  String? _selectedAccountId;
 
   @override
   void initState() {
@@ -35,11 +39,17 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
   Future<void> _loadState() async {
     setState(() => _isLoading = true);
     try {
+      final loadAccountsFuture = _authService.loadAccounts();
       final enabled = await _smsSyncService.isSyncEnabled();
       final hasToken = await _smsSyncService.hasToken();
       final token = await _smsSyncService.getToken();
+      final accountId = await _smsSyncService.getAccountId();
+      final accounts = await loadAccountsFuture;
+      final hasStoredAccount = accountId != null && accounts.any((acc) => acc.id == accountId);
       
       setState(() {
+        _accounts = accounts;
+        _selectedAccountId = hasStoredAccount ? accountId : null;
         _syncEnabled = enabled;
         _hasToken = hasToken;
         if (token != null) {
@@ -113,8 +123,21 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
       return;
     }
 
+    if (_selectedAccountId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Select the email account that owns this token'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
+      await _smsSyncService.setAccountId(_selectedAccountId!);
       await _smsSyncService.setToken(token);
       
       // If sync is enabled, restart the sync manager with new token
@@ -177,9 +200,11 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
       setState(() => _isLoading = true);
       try {
         await _smsSyncService.clearToken();
+        await _smsSyncService.clearAccountId();
         _tokenController.clear();
         setState(() {
           _hasToken = false;
+          _selectedAccountId = null;
           _isLoading = false;
         });
         
@@ -202,6 +227,37 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
           );
         }
       }
+    }
+  }
+
+  void _onAccountChanged(String? accountId) {
+    setState(() {
+      _selectedAccountId = accountId;
+    });
+    _persistAccountSelection(accountId);
+  }
+
+  Future<void> _persistAccountSelection(String? accountId) async {
+    try {
+      if (accountId == null) {
+        await _smsSyncService.clearAccountId();
+      } else {
+        await _smsSyncService.setAccountId(accountId);
+      }
+
+      if (_syncEnabled == true && _hasToken == true) {
+        final smsManager = SmsSyncManager();
+        await smsManager.stop();
+        await smsManager.start();
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error updating SMS account selection: $e'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
     }
   }
 
@@ -284,6 +340,67 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
+              const SizedBox(height: 12),
+              Text(
+                'Choose which email account this token belongs to',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_accounts.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: theme.colorScheme.surface,
+                    border: Border.all(color: theme.colorScheme.outlineVariant),
+                  ),
+                  child: Text(
+                    'Add an email account first to link Pushbullet SMS sync.',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                )
+              else
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedAccountId,
+                  hint: const Text('Select account'),
+                  items: _accounts
+                      .map(
+                        (acc) => DropdownMenuItem(
+                          value: acc.id,
+                          child: Text(
+                            '${acc.displayName} • ${acc.email}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  selectedItemBuilder: (ctx) => _accounts
+                      .map(
+                        (acc) => Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '${acc.displayName} • ${acc.email}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  isExpanded: true,
+                  onChanged: _isLoading ? null : _onAccountChanged,
+                  decoration: InputDecoration(
+                    hintText: 'Select account',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    filled: true,
+                    fillColor: theme.colorScheme.surface,
+                  ),
+                ),
               const SizedBox(height: 8),
               TextField(
                 controller: _tokenController,

@@ -95,6 +95,11 @@ class PushbulletWebSocketService {
         // Pushbullet sends different message types
         // We're interested in 'push' events with type 'mirror' (SMS notifications)
         if (data['type'] == 'push') {
+          final push = data['push'] as Map<String, dynamic>?;
+          final pushType = push?['type'];
+          final notification = push?['notification'] as Map<String, dynamic>?;
+          final notificationType = notification?['type'];
+          debugPrint('[PushbulletWS] Received push event: pushType=$pushType notificationType=$notificationType');
           onEvent?.call(data);
         } else if (data['type'] == 'tickle') {
           // Tickle events indicate something changed, but we get the actual data via push

@@ -5,26 +5,33 @@ import 'package:uuid/uuid.dart';
 /// Converts Pushbullet SMS events to MessageIndex format
 /// Creates a consistent message structure for SMS messages in the inbox
 class SmsMessageConverter {
-  static const String _smsAccountId = 'sms_pushbullet';
-  static const String _smsAccountEmail = 'SMS';
   static const Uuid _uuid = Uuid();
 
   /// Convert a Pushbullet SMS event to MessageIndex
-  static MessageIndex toMessageIndex(PushbulletSmsEvent smsEvent) {
+  /// Requires the account context the SMS should belong to
+  static MessageIndex toMessageIndex(
+    PushbulletSmsEvent smsEvent, {
+    required String accountId,
+    required String accountEmail,
+  }) {
     if (!smsEvent.isValid) {
       throw ArgumentError('SMS event is not valid');
     }
 
+    final phoneNumber = smsEvent.phoneNumber!;
+
     // Generate a unique ID for this SMS message
     // Use notification ID if available, otherwise generate UUID
-    final messageId = smsEvent.notificationId ?? 
-        'sms_${_uuid.v4()}';
+    final messageId = smsEvent.notificationId ?? 'sms_${_uuid.v4()}';
     
     // Use phone number as thread ID (group messages by sender)
-    final threadId = 'sms_thread_${_normalizePhoneNumber(smsEvent.phoneNumber!)}';
-
-    // Use phone number as sender (from field)
-    final from = smsEvent.phoneNumber!;
+    final threadId = 'sms_thread_${_normalizePhoneNumber(phoneNumber)}';
+    
+    // Use phone number as sender (from field) while keeping contact name (if available)
+    final contactName = smsEvent.title;
+    final from = contactName != null && contactName.trim().isNotEmpty
+        ? '$contactName <$phoneNumber>'
+        : phoneNumber;
     
     // For SMS, "to" is typically the user's phone number
     // We'll use a placeholder or extract from device info if available
@@ -44,8 +51,8 @@ class SmsMessageConverter {
     return MessageIndex(
       id: messageId,
       threadId: threadId,
-      accountId: _smsAccountId,
-      accountEmail: _smsAccountEmail,
+      accountId: accountId,
+      accountEmail: accountEmail,
       internalDate: internalDate,
       from: from,
       to: to,
@@ -73,13 +80,7 @@ class SmsMessageConverter {
 
   /// Check if a MessageIndex is an SMS message
   static bool isSmsMessage(MessageIndex message) {
-    return message.accountId == _smsAccountId;
+    return message.threadId.startsWith('sms_thread_') || message.id.startsWith('sms_');
   }
-
-  /// Get the SMS account ID
-  static String get smsAccountId => _smsAccountId;
-
-  /// Get the SMS account email/display name
-  static String get smsAccountEmail => _smsAccountEmail;
 }
 

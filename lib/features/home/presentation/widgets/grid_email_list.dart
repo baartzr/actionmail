@@ -13,6 +13,7 @@ import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:domail/services/sms/sms_message_converter.dart';
 
 /// Table-style email list with action focus
 /// 
@@ -1239,6 +1240,9 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     final iconEmail = senderEmail.isNotEmpty
         ? senderEmail
         : (isSentFolder ? email.to : email.from);
+    final senderAvatar = SmsMessageConverter.isSmsMessage(email)
+        ? _buildSmsAvatar(theme)
+        : DomainIcon(email: iconEmail);
 
     // Determine row background color
     final rowColor = email.isRead
@@ -1331,7 +1335,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  DomainIcon(email: iconEmail),
+                senderAvatar,
                   const SizedBox(width: 8),
                   Expanded(
                     child: Column(
@@ -1475,6 +1479,9 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     final iconEmail = senderEmail.isNotEmpty
         ? senderEmail
         : (isSentFolder ? email.to : email.from);
+    final senderAvatar = SmsMessageConverter.isSmsMessage(email)
+        ? _buildSmsAvatar(theme)
+        : DomainIcon(email: iconEmail);
 
     // Determine row background color
     final rowColor = email.isRead
@@ -1571,7 +1578,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                DomainIcon(email: iconEmail),
+                senderAvatar,
                 const SizedBox(width: 8),
                 Expanded(
                   child: Column(
@@ -2244,7 +2251,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   Future<void> _handleUnsubscribe(BuildContext context, MessageIndex email) async {
     try {
       // Check if this is an SMS message (SMS messages don't have unsubscribe links)
-      if (email.accountId == 'sms_pushbullet' || email.accountEmail == 'SMS') {
+      if (SmsMessageConverter.isSmsMessage(email)) {
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('SMS messages cannot be unsubscribed')),
@@ -2486,6 +2493,15 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
       }
     }
     return results;
+  }
+
+  Widget _buildSmsAvatar(ThemeData theme) {
+    return CircleAvatar(
+      radius: 12,
+      backgroundColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.7),
+      foregroundColor: theme.colorScheme.primary,
+      child: const Icon(Icons.sms, size: 14),
+    );
   }
 
   // Parse single address (handles both "Name <email>" and "email" formats)

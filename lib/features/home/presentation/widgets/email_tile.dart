@@ -11,6 +11,7 @@ import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
 
 /// Email tile widget with action insight line
@@ -346,6 +347,9 @@ class _EmailTileState extends ConsumerState<EmailTile> {
         : (primaryContact.item2.isNotEmpty
             ? primaryContact.item2
             : widget.message.from);
+    final senderAvatar = SmsMessageConverter.isSmsMessage(widget.message)
+        ? _buildSmsAvatar(theme)
+        : DomainIcon(email: iconEmail);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -465,7 +469,7 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            DomainIcon(email: iconEmail),
+                            senderAvatar,
                             const SizedBox(width: 12),
                             Flexible(
                               fit: FlexFit.loose,
@@ -1126,6 +1130,15 @@ class _EmailTileState extends ConsumerState<EmailTile> {
 
   // Removed modal-based confirmation in favor of inline action buttons
 
+  Widget _buildSmsAvatar(ThemeData theme) {
+    return CircleAvatar(
+      radius: 14,
+      backgroundColor: theme.colorScheme.primaryContainer.withValues(alpha: 0.7),
+      foregroundColor: theme.colorScheme.primary,
+      child: const Icon(Icons.sms, size: 16),
+    );
+  }
+
   List<Tuple2<String, String>> _parseAddressList(String addresses) {
     final results = <Tuple2<String, String>>[];
     final parts = addresses.split(RegExp(r',(?![^<]*>)'));
@@ -1165,7 +1178,7 @@ class _EmailTileState extends ConsumerState<EmailTile> {
   Future<void> _handleUnsubscribe(BuildContext context, MessageIndex email) async {
     try {
       // Check if this is an SMS message (SMS messages don't have unsubscribe links)
-      if (email.accountId == 'sms_pushbullet' || email.accountEmail == 'SMS') {
+      if (SmsMessageConverter.isSmsMessage(email)) {
         if (!context.mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('SMS messages cannot be unsubscribed')),
