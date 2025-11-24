@@ -228,6 +228,7 @@ class FirebaseSyncService {
         // Group documents by messageId and type
         final statusDocs = <String, DocumentSnapshot>{};
         final actionDocs = <String, DocumentSnapshot>{};
+        int legacyDocCount = 0;
         
         for (final doc in snapshot.docs) {
           final docId = doc.id;
@@ -240,10 +241,13 @@ class FirebaseSyncService {
             actionDocs[messageId] = doc;
           } else {
             // Legacy document format - skip for now
-            if (kDebugMode) {
-              _logFirebaseSync('[LOAD_INITIAL] Skipping legacy document: $docId');
-            }
+            legacyDocCount++;
           }
+        }
+        
+        // Log summary of legacy documents instead of one per document
+        if (kDebugMode && legacyDocCount > 0) {
+          _logFirebaseSync('[LOAD_INITIAL] Skipped $legacyDocCount legacy document(s)');
         }
         
         // Get all unique messageIds

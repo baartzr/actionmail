@@ -823,158 +823,204 @@ class GmailSyncService {
         walkPart(p);
       }
     }
-    // Regex patterns to find the link DIRECTLY attached to unsubscribe text/button
-    // Priority: match links where unsubscribe text is the direct content of the anchor tag
-    // Common variations: unsubscribe, unsub, opt-out, opt out, optout, opt_out, click here to unsubscribe, unsubscribe click here
-    final patterns = [
-      // Pattern 0: mailto: links - these are legitimate unsubscribe links (highest priority)
-      (RegExp(r'''mailto:[^\s"\'<>]*(?:unsubscribe|unsub|opt[-_]?out|optout)[^\s"\'<>]*''', caseSensitive: false), 100),
-      
-      // Pattern 1: Direct match - unsubscribe text is the main/only text in the anchor tag
-      // Matches: <a href="url">Unsubscribe</a>, <a href="url">Opt-out</a>
-      // Also matches: "click here to unsubscribe" (prefix) and "unsubscribe click here" (suffix)
-      // This is the most reliable pattern - the text is directly in the anchor tag
-      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:[^<]*<[^>]*>)*\s*(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout|manage\s+preferences|email\s+preferences)\s+click\s+here)[^<]*</a>''', caseSensitive: false), 80),
-      
-      // Pattern 2: Unsubscribe text with optional "click here" or "here" as prefix or suffix
-      // Matches: <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
-      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>\s*(?:(?:click\s+here|here)[^<]*(?:to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)|(?:unsubscribe|unsub|opt[-_\s]?out|optout)[^<]*(?:click\s+here|here))[^<]*</a>''', caseSensitive: false), 60),
-      
-      // Pattern 3: Button-style with unsubscribe text (with click here as prefix or suffix)
-      // Matches: <a href="url" class="button">Unsubscribe</a>, <a href="url">Click here to unsubscribe</a>, <a href="url">Unsubscribe click here</a>
-      (RegExp(r'''<a[^>]*href=["']([^"']+)["'][^>]*>[\s\S]{0,200}?(?:(?:click\s+here\s+to\s+)?(?:unsubscribe|unsub|opt[-_\s]?out|optout)(?:\s+click\s+here)?|(?:unsubscribe|unsub|opt[-_\s]?out|optout)\s+click\s+here)[\s\S]{0,200}?</a>''', caseSensitive: false), 40),
+    // Keywords to match in anchor text (case-insensitive)
+    // Order matters: check longer, more specific phrases first
+    // Note: "change" alone is NOT included - it must be part of a phrase like "change notification"
+    final unsubscribeKeywords = [
+      'change notification settings',
+      'change notification',
+      'update notification',
+      'click here to unsubscribe',
+      'manage preferences',
+      'email preferences',
+      'unsubscribe',
+      'opt-out',
+      'opt out',
     ];
     
-    // Helper function to process a match and return (link, score, anchorText, isExactMatch)
-    ({String link, int score, String? anchorText, bool isExactMatch})? processMatch(
-      RegExpMatch match,
-      int patternIndex,
-      int baseScore,
-    ) {
-      String? link;
-      if (match.groupCount >= 1) {
-        link = match.group(1);
-      } else {
-        link = match.group(0);
-      }
-      
-      if (link == null || link.isEmpty) return null;
-      
-      // Decode HTML entities
-      final decodedLink = link
-          .replaceAll('&amp;', '&')
-          .replaceAll('&lt;', '<')
-          .replaceAll('&gt;', '>')
-          .replaceAll('&quot;', '"')
-          .replaceAll('&#39;', "'")
-          .replaceAll('%26', '&') // URL-encoded &
-          .trim();
-      
-      // Only consider valid URLs
-      if (!decodedLink.startsWith('http://') && 
-          !decodedLink.startsWith('https://') && 
-          !decodedLink.startsWith('mailto:')) {
-        return null;
-      }
-      
-      // Extract anchor text for scoring
-      String? anchorText;
-      bool isExactMatch = false;
-      if (patternIndex > 0) { // Not mailto pattern
-        try {
-          final fullMatch = match.group(0) ?? '';
-          // Extract content between > and </a>, handling nested tags
-          final anchorMatch = RegExp(r'>([\s\S]*?)</a>', caseSensitive: false).firstMatch(fullMatch);
-          if (anchorMatch != null) {
-            // Strip HTML tags to get plain text
-            anchorText = anchorMatch.group(1)
-                ?.replaceAll(RegExp(r'<[^>]+>'), ' ') // Remove HTML tags
-                .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
-                .trim();
-            
-            // Check for exact "Unsubscribe" match
-            if (anchorText != null && anchorText.toLowerCase() == 'unsubscribe') {
-              isExactMatch = true;
-            }
-          }
-        } catch (_) {}
-      } else {
-        // mailto links are considered exact matches
-        isExactMatch = true;
-      }
-      
-      // Calculate score based on multiple factors
-      int score = baseScore;
-      
-      // Bonus for exact "Unsubscribe" text (case-insensitive)
-      if (anchorText != null) {
-        final lowerText = anchorText.toLowerCase();
-        if (lowerText == 'unsubscribe') {
-          score += 30; // Highest bonus for exact match
-        } else if (lowerText.contains('unsubscribe') && !lowerText.contains('click')) {
-          score += 20; // Bonus for "unsubscribe" without "click here"
-        } else if (lowerText.contains('unsubscribe')) {
-          score += 10; // Smaller bonus for "unsubscribe" with other text
-        }
-      }
-      
-      // Bonus for unsubscribe-related keywords in URL
-      final lowerLink = decodedLink.toLowerCase();
-      if (lowerLink.contains('unsubscribe') || 
-          lowerLink.contains('unsub') || 
-          lowerLink.contains('optout') || 
-          lowerLink.contains('opt-out') ||
-          lowerLink.contains('opt_out')) {
-        score += 15;
-      }
-      
-      // Penalty for common non-unsubscribe URLs (homepage, etc.)
-      if (lowerLink.contains('/home') || 
-          lowerLink.contains('/index') ||
-          lowerLink.endsWith('/') ||
-          lowerLink.endsWith('/home.php') ||
-          lowerLink.endsWith('/index.php')) {
-        score -= 20;
-      }
-      
-      return (link: decodedLink, score: score, anchorText: anchorText, isExactMatch: isExactMatch);
-    }
-    
-    // Single pass: collect candidates, but return early if we find an exact match
-    final candidates = <({String link, int score, String? anchorText})>[];
-    
     for (final body in bodies) {
-      for (var patternIndex = 0; patternIndex < patterns.length; patternIndex++) {
-        final (pattern, baseScore) = patterns[patternIndex];
-        final matches = pattern.allMatches(body);
+      // NEW APPROACH: Extract ALL <a> tags individually using proper HTML parsing
+      // We'll find all <a> tags by matching opening tags and finding their corresponding closing tags
+      final allLinks = <({String href, String anchorText, int depth})>[];
+      
+      // Function to extract links with proper handling of nested tags
+      void extractLinks(String html, int depth) {
+        // Find all <a> opening tags with href attributes
+        final openTagPattern = RegExp(r'''<a\s+([^>]*)>''', caseSensitive: false);
+        final openMatches = openTagPattern.allMatches(html);
         
-        for (final match in matches) {
-          final result = processMatch(match, patternIndex, baseScore);
-          if (result != null) {
-            // If we find an exact match, return immediately (most efficient)
-            if (result.isExactMatch) {
-              debugPrint('[Phase2] Found exact unsubscribe match: ${result.link} (score: ${result.score}, anchor: "${result.anchorText ?? 'N/A'}")');
-              return result.link;
+        for (final openMatch in openMatches) {
+          final attrs = openMatch.group(1) ?? '';
+          
+          // Extract href from attributes
+          final hrefMatch = RegExp(r'''href\s*=\s*["']([^"']+)["']''', caseSensitive: false).firstMatch(attrs);
+          if (hrefMatch == null) continue;
+          
+          final href = hrefMatch.group(1) ?? '';
+          if (href.isEmpty) continue;
+          
+          final openEnd = openMatch.end;
+          
+          // Now find the matching closing </a> tag, accounting for nested <a> tags
+          int pos = openEnd;
+          int nestedCount = 0;
+          int? closePos;
+          
+          while (pos < html.length) {
+            // Look for <a or </a>
+            final nextOpen = html.indexOf('<a', pos);
+            final nextClose = html.indexOf('</a>', pos);
+            
+            if (nextClose == -1) break; // No closing tag found
+            
+            // If we find an opening tag before the closing tag, it's nested
+            if (nextOpen != -1 && nextOpen < nextClose) {
+              nestedCount++;
+              pos = nextOpen + 2;
+            } else {
+              // Found a closing tag
+              if (nestedCount == 0) {
+                // This is the matching closing tag
+                closePos = nextClose;
+                break;
+              } else {
+                // This closes a nested tag
+                nestedCount--;
+                pos = nextClose + 4;
+              }
             }
-            // Otherwise, collect for later scoring
-            candidates.add((link: result.link, score: result.score, anchorText: result.anchorText));
+          }
+          
+          if (closePos == null) continue; // No matching closing tag
+          
+          // Extract the content between opening and closing tags
+          final content = html.substring(openEnd, closePos);
+          
+          // Extract plain text from content (remove nested HTML tags for anchor text)
+          final anchorText = content
+              .replaceAll(RegExp(r'<[^>]+>'), ' ') // Remove HTML tags
+              .replaceAll(RegExp(r'\s+'), ' ') // Normalize whitespace
+              .trim();
+          
+          // Only add if we have anchor text
+          if (anchorText.isNotEmpty) {
+            allLinks.add((href: href, anchorText: anchorText, depth: depth));
+          }
+          
+          // Recursively extract nested links from the content
+          if (RegExp(r'<a', caseSensitive: false).hasMatch(content)) {
+            extractLinks(content, depth + 1);
           }
         }
       }
+      
+      // Start extraction from depth 0
+      extractLinks(body, 0);
+      
+      debugPrint('[Phase2] Found ${allLinks.length} total links (including nested)');
+      
+      // Collect matching links with priorities
+      final matchingLinks = <({String link, String anchorText, int priority})>[];
+      
+      int linkIndex = 0;
+      for (final linkData in allLinks) {
+        linkIndex++;
+        final href = linkData.href;
+        final anchorTextRaw = linkData.anchorText;
+        final anchorText = anchorTextRaw.toLowerCase();
+        final depth = linkData.depth;
+        
+        if (href.isEmpty || anchorText.isEmpty) {
+          continue;
+        }
+        
+        debugPrint('[Phase2] Link #$linkIndex (depth=$depth): URL="$href"');
+        debugPrint('[Phase2] Link #$linkIndex: Anchor="$anchorTextRaw"');
+        
+        // Skip links that are ONLY time/frequency selectors (no unsubscribe keywords)
+        final timeWords = ['mins', 'minutes', 'hours', 'days', 'daily', 'weekly', 'hourly'];
+        final hasOnlyTimeWords = timeWords.any((tw) => anchorText.contains(tw)) && 
+                                 !anchorText.contains('notification') && 
+                                 !anchorText.contains('preferences') && 
+                                 !anchorText.contains('unsubscribe');
+        if (hasOnlyTimeWords) {
+          debugPrint('[Phase2] Link #$linkIndex: Skipping time-only link');
+          continue;
+        }
+        
+        // Count time patterns
+        final timePatterns = [
+          r'\b\d+\s*(mins?|minutes?)\b',
+          r'\b\d+\s*hours?\b',
+          r'\b\d+\s*days?\b',
+          r'\bdaily\b',
+          r'\bweekly\b',
+          r'\bhourly\b',
+        ];
+        
+        int timePatternCount = 0;
+        for (final pattern in timePatterns) {
+          if (RegExp(pattern, caseSensitive: false).hasMatch(anchorText)) {
+            timePatternCount++;
+          }
+        }
+        
+        // Check for unsubscribe keywords
+        bool foundMatch = false;
+        for (var i = 0; i < unsubscribeKeywords.length; i++) {
+          final keyword = unsubscribeKeywords[i].toLowerCase();
+          
+          if (anchorText.contains(keyword)) {
+            // Calculate priority: base priority + penalties/bonuses
+            int penalty = 0;
+            
+            // Bonus for nested links (they're often more focused)
+            if (depth > 0) {
+              penalty -= 100;
+              debugPrint('[Phase2] Link #$linkIndex: Applying nested link bonus (-100)');
+            }
+            
+            // Penalty for links with multiple time options (likely a container)
+            if (timePatternCount >= 2) {
+              penalty += 1000;
+              debugPrint('[Phase2] Link #$linkIndex: Applying time-pattern penalty (+1000)');
+            }
+            
+            // Heavy penalty for top-level links with time patterns (likely wrapper containers)
+            if (depth == 0 && timePatternCount >= 2) {
+              penalty += 2000;
+              debugPrint('[Phase2] Link #$linkIndex: Applying top-level wrapper penalty (+2000)');
+            }
+            
+            final adjustedPriority = i + penalty;
+            
+            debugPrint('[Phase2] Link #$linkIndex: MATCH - keyword="$keyword", basePriority=$i, timePatterns=$timePatternCount, depth=$depth, adjustedPriority=$adjustedPriority');
+            matchingLinks.add((
+              link: href,
+              anchorText: anchorTextRaw,
+              priority: adjustedPriority,
+            ));
+            foundMatch = true;
+            break;
+          }
+        }
+        
+        if (!foundMatch) {
+          debugPrint('[Phase2] Link #$linkIndex: No unsubscribe keyword match');
+        }
+      }
+      
+      // Return the link with highest priority (lowest priority value)
+      if (matchingLinks.isNotEmpty) {
+        matchingLinks.sort((a, b) => a.priority.compareTo(b.priority));
+        final bestMatch = matchingLinks.first;
+        debugPrint('[Phase2] Selected unsubscribe link: ${bestMatch.link} (anchor: "${bestMatch.anchorText}", priority: ${bestMatch.priority})');
+        return bestMatch.link;
+      }
     }
     
-    if (candidates.isEmpty) {
-      debugPrint('[Phase2] No unsubscribe link found in email body');
-      return null;
-    }
-    
-    // Sort by score (highest first) and return the best match
-    candidates.sort((a, b) => b.score.compareTo(a.score));
-    final bestMatch = candidates.first;
-    
-    debugPrint('[Phase2] Found ${candidates.length} unsubscribe link candidates. Best match: ${bestMatch.link} (score: ${bestMatch.score}, anchor: "${bestMatch.anchorText ?? 'N/A'}")');
-    
-    return bestMatch.link;
+    debugPrint('[Phase2] No unsubscribe link found in email body');
+    return null;
   }
 
   Future<void> phase1Tagging(String accountId, List<GmailMessage> gmailMessages) async {
@@ -1038,10 +1084,22 @@ class GmailSyncService {
         final subscriptionKeywords = ['newsletter', 'news', 'digest', 'alert', 'update', 'weekly', 'daily', 'monthly'];
         final hasSubscriptionKeyword = subscriptionKeywords.any((keyword) => subj.contains(keyword));
         
+        // Check snippet for unsubscribe-related text (available without body download)
+        final lowerSnippet = snippet.toLowerCase();
+        final snippetHasUnsubscribe = lowerSnippet.contains('unsubscribe') || 
+                                      lowerSnippet.contains('click here to unsubscribe') ||
+                                      lowerSnippet.contains('opt-out') ||
+                                      lowerSnippet.contains('opt out') ||
+                                      lowerSnippet.contains('manage preferences') ||
+                                      lowerSnippet.contains('change notification settings') ||
+                                      lowerSnippet.contains('change notification') ||
+                                      lowerSnippet.contains('update notification');
+        
         final isSubsCandidate = cats.any((c) => c.contains('forum') || c.contains('update')) || 
                                subj.contains('unsubscribe') || 
                                hasSubscriptionKeyword ||
-                               from.contains('noreply');
+                               from.contains('noreply') ||
+                               snippetHasUnsubscribe;
         
         // If email looks like a subs email, perform deeper checks
         if (isSubsCandidate) {
@@ -1226,8 +1284,11 @@ class GmailSyncService {
       orElse: () => '',
     );
     if (mailto.isNotEmpty) {
-      // ignore: avoid_print
-      print('[subs] header mailto=$mailto');
+      if (kDebugMode) {
+        // Truncate long mailto links for readability
+        final displayMailto = mailto.length > 100 ? '${mailto.substring(0, 100)}...' : mailto;
+        debugPrint('[subs] header mailto=$displayMailto');
+      }
       return mailto;
     }
     final https = parts.firstWhere(
@@ -1236,8 +1297,11 @@ class GmailSyncService {
     );
     final chosen = https.isNotEmpty ? https : parts.first;
     if (chosen.isNotEmpty) {
-      // ignore: avoid_print
-      print('[subs] header chosen=$chosen');
+      if (kDebugMode) {
+        // Truncate long links for readability
+        final displayChosen = chosen.length > 100 ? '${chosen.substring(0, 100)}...' : chosen;
+        debugPrint('[subs] header chosen=$displayChosen');
+      }
       return chosen;
     }
     return null;
@@ -1771,14 +1835,22 @@ class GmailSyncService {
       // First, try to extract from List-Unsubscribe header (most reliable)
       final headerLink = _extractUnsubFromHeader(headers);
       if (headerLink != null && headerLink.isNotEmpty) {
-        debugPrint('[extractUnsubscribeLink] Using header link: $headerLink');
+        if (kDebugMode) {
+          // Truncate long links for readability
+          final displayLink = headerLink.length > 100 ? '${headerLink.substring(0, 100)}...' : headerLink;
+          debugPrint('[extractUnsubscribeLink] Using header link: $displayLink');
+        }
         return headerLink;
       }
       
       // Fallback to extracting from email body
       final bodyLink = await _tryExtractUnsubLink(accountId, messageId);
       if (bodyLink != null && bodyLink.isNotEmpty) {
-        debugPrint('[extractUnsubscribeLink] Using body link: $bodyLink');
+        if (kDebugMode) {
+          // Truncate long links for readability
+          final displayLink = bodyLink.length > 100 ? '${bodyLink.substring(0, 100)}...' : bodyLink;
+          debugPrint('[extractUnsubscribeLink] Using body link: $displayLink');
+        }
         return bodyLink;
       }
       
@@ -1821,15 +1893,20 @@ class GmailSyncService {
         body: jsonEncode({'raw': rawBase64Url}),
       );
       if (resp.statusCode >= 200 && resp.statusCode < 300) {
-        // ignore: avoid_print
-        print('[subs] mailto sent to=$to');
+        if (kDebugMode) {
+          // Truncate email address if very long
+          final displayTo = to.length > 80 ? '${to.substring(0, 80)}...' : to;
+          debugPrint('[subs] mailto sent to=$displayTo');
+        }
         return true;
       } else {
+        // Always log errors
         // ignore: avoid_print
         print('[subs] mailto send failed ${resp.statusCode}: ${resp.body}');
         return false;
       }
     } catch (e) {
+      // Always log errors
       // ignore: avoid_print
       print('[subs] mailto send error: $e');
       return false;

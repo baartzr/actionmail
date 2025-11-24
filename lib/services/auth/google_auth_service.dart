@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_appauth/flutter_appauth.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:domail/constants/app_constants.dart';
@@ -535,10 +535,13 @@ class GoogleAuthService {
     if (!isNearExpiry && account.accessToken.isNotEmpty) {
       valid = await _isAccessTokenValid(account.accessToken, accountId);
     }
-    // Debug current token state
+    // Debug current token state (only log when token is invalid or near expiry to reduce noise)
     final remainingMs = account.tokenExpiryMs != null ? (account.tokenExpiryMs! - nowMs) : null;
-    // ignore: avoid_print
-    print('[auth] ensureValidAccessToken account=$accountId access=${account.accessToken.isNotEmpty} refresh=${(account.refreshToken ?? '').isNotEmpty} nearExpiry=$isNearExpiry remainingMs=${remainingMs ?? -1} valid=$valid');
+    if (kDebugMode && (isNearExpiry || !valid || remainingMs != null && remainingMs < 300000)) {
+      // Only log when there's an issue or token is expiring soon (< 5 minutes)
+      // ignore: avoid_print
+      print('[auth] ensureValidAccessToken account=$accountId nearExpiry=$isNearExpiry remainingMs=${remainingMs ?? -1} valid=$valid');
+    }
     if (isNearExpiry || !valid) {
       // Check if refresh token exists
       if (account.refreshToken == null || account.refreshToken!.isEmpty) {

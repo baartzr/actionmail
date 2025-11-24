@@ -10,6 +10,7 @@ import 'package:domail/services/actions/ml_action_extractor.dart';
 import 'package:domail/data/db/app_database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:domail/services/sync/firebase_init.dart';
+import 'package:domail/services/sms/sms_sync_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -96,6 +97,19 @@ void main() async {
       }
     } catch (e) {
       debugPrint('[Main] ML Action Extractor initialization error: $e');
+    }
+
+    // Initialize SMS Sync Manager (optional) in background
+    try {
+      final smsStart = DateTime.now();
+      final smsManager = SmsSyncManager();
+      await smsManager.start();
+      final smsMs = DateTime.now().difference(smsStart).inMilliseconds;
+      if (kDebugMode) {
+        debugPrint('[Main] SMS Sync Manager initialization attempted in ${smsMs}ms');
+      }
+    } catch (e) {
+      debugPrint('[Main] SMS Sync Manager initialization error: $e');
     }
   });
 

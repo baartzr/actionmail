@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:domail/constants/app_brand.dart';
 import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
 import 'package:domail/app/theme/actionmail_theme.dart';
+import 'package:domail/features/settings/presentation/sms_sync_settings_widget.dart';
 // import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
@@ -538,6 +539,8 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                       ),
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  const SmsSyncSettingsWidget(),
                   const SizedBox(height: 12),
                   Card(
                     elevation: 0,

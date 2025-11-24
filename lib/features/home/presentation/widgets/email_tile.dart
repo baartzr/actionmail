@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/gestures.dart';
 import 'dart:io';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/constants/app_constants.dart';
@@ -7,9 +6,15 @@ import 'package:intl/intl.dart';
 import 'package:domail/shared/widgets/app_switch_button.dart';
 import 'package:domail/features/home/presentation/widgets/action_edit_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/domain_icon.dart';
+import 'package:domail/services/gmail/gmail_sync_service.dart';
+import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
 
 /// Email tile widget with action insight line
-class EmailTile extends StatefulWidget {
+class EmailTile extends ConsumerStatefulWidget {
   final MessageIndex message;
   final VoidCallback? onTap;
   final ValueChanged<bool>? onStarToggle;
@@ -22,6 +27,7 @@ class EmailTile extends StatefulWidget {
   final VoidCallback? onActionCompleted;
   final VoidCallback? onMarkRead;
   final void Function(String folderName)? onSaveToFolder;
+  final VoidCallback? onMoveToLocalFolder; // Callback to show folder selection dialog
   final bool isLocalFolder; // Whether this email is from a local folder (not Gmail)
   final VoidCallback? onRestoreToInbox;
 
@@ -39,15 +45,16 @@ class EmailTile extends StatefulWidget {
     this.onActionCompleted,
     this.onMarkRead,
     this.onSaveToFolder,
+    this.onMoveToLocalFolder,
     this.isLocalFolder = false,
     this.onRestoreToInbox,
   });
 
   @override
-  State<EmailTile> createState() => _EmailTileState();
+  ConsumerState<EmailTile> createState() => _EmailTileState();
 }
 
-class _EmailTileState extends State<EmailTile> {
+class _EmailTileState extends ConsumerState<EmailTile> {
   bool _expanded = false;
   String? _localState; // null | Personal | Business
   bool _starred = false;
@@ -552,23 +559,6 @@ class _EmailTileState extends State<EmailTile> {
                           ),
                         ),
                         const Spacer(),
-                        if (widget.isLocalFolder && widget.onRestoreToInbox != null) ...[
-                          TextButton.icon(
-                            onPressed: widget.onRestoreToInbox,
-                            icon: Icon(Icons.move_to_inbox, size: 16, color: theme.colorScheme.primary),
-                            label: Text(
-                              'Restore to Inbox',
-                              style: TextStyle(color: theme.colorScheme.primary),
-                            ),
-                            style: TextButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                              minimumSize: Size.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                              textStyle: theme.textTheme.labelSmall,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                        ],
                         // Action line toggle button
                         IconButton(
                           iconSize: 20,
@@ -600,6 +590,125 @@ class _EmailTileState extends State<EmailTile> {
                           ),
                           onPressed: _handleStarToggle,
                           tooltip: AppConstants.emailStateStarred,
+                        ),
+                        const SizedBox(width: 4),
+                        // Menu button (Move, Archive, Unsubscribe)
+                        PopupMenuButton<String>(
+                          icon: Icon(
+                            Icons.more_vert,
+                            size: 20,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                          constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                          onSelected: (value) async {
+                            if (value == 'restoreToInbox') {
+                              widget.onRestoreToInbox?.call();
+                            } else if (value == 'move') {
+                              // Determine which callback to use based on folder
+                              final folder = widget.message.folderLabel.toUpperCase();
+                              if (folder == 'SPAM') {
+                                widget.onMoveToInbox?.call();
+                              } else if (folder == 'TRASH' || folder == 'ARCHIVE') {
+                                widget.onRestore?.call();
+                              } else {
+                                // For INBOX or local folders: Move to local folder
+                                // Show folder selection dialog
+                                final folder = await MoveToFolderDialog.show(context);
+                                if (folder != null) {
+                                  if (widget.onSaveToFolder != null) {
+                                    widget.onSaveToFolder!(folder);
+                                  } else if (widget.onMoveToLocalFolder != null) {
+                                    widget.onMoveToLocalFolder!();
+                                  }
+                                }
+                              }
+                            } else if (value == 'archive') {
+                              widget.onArchive?.call();
+                            } else if (value == 'unsubscribe') {
+                              await _handleUnsubscribe(context, widget.message);
+                            }
+                          },
+                          itemBuilder: (context) {
+                            final items = <PopupMenuEntry<String>>[];
+                            
+                            // Restore to Inbox (only for local folders)
+                            if (widget.isLocalFolder && widget.onRestoreToInbox != null) {
+                              items.add(
+                                PopupMenuItem(
+                                  value: 'restoreToInbox',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.move_to_inbox, size: 20, color: theme.colorScheme.onSurface),
+                                      const SizedBox(width: 12),
+                                      const Text('Restore to Inbox'),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+                            
+                            // Move (for Gmail folders or moving between local folders)
+                            final folder = widget.message.folderLabel.toUpperCase();
+                            final canMove = folder == 'SPAM' || folder == 'TRASH' || folder == 'ARCHIVE' || folder == 'INBOX' || widget.isLocalFolder;
+                            if (canMove) {
+                              String moveLabel;
+                              if (folder == 'SPAM') {
+                                moveLabel = 'Move to Inbox';
+                              } else if (folder == 'TRASH' || folder == 'ARCHIVE') {
+                                moveLabel = 'Restore';
+                              } else if (widget.isLocalFolder) {
+                                moveLabel = 'Move to Local Folder';
+                              } else {
+                                moveLabel = 'Move to Local Folder';
+                              }
+                              
+                              items.add(
+                                PopupMenuItem(
+                                  value: 'move',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.folder_outlined, size: 20, color: theme.colorScheme.onSurface),
+                                      const SizedBox(width: 12),
+                                      Text(moveLabel),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+                            
+                            // Archive (only for Gmail folders, not local folders)
+                            final canArchive = !widget.isLocalFolder && (folder == 'INBOX' || folder == 'SPAM');
+                            if (canArchive) {
+                              items.add(
+                                PopupMenuItem(
+                                  value: 'archive',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.archive_outlined, size: 20, color: theme.colorScheme.onSurface),
+                                      const SizedBox(width: 12),
+                                      const Text('Archive'),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            }
+                            
+                            // Unsubscribe (always available)
+                            items.add(
+                              PopupMenuItem(
+                                value: 'unsubscribe',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.unsubscribe, size: 20, color: theme.colorScheme.onSurface),
+                                    const SizedBox(width: 12),
+                                    const Text('Unsubscribe'),
+                                  ],
+                                ),
+                              ),
+                            );
+                            
+                            return items;
+                          },
                         ),
                         const SizedBox(width: 4),
                         IconButton(
@@ -1049,6 +1158,191 @@ class _EmailTileState extends State<EmailTile> {
       return Tuple2('', trimmed);
     }
     return Tuple2(trimmed, trimmed);
+  }
+
+  /// Handle unsubscribe action
+  Future<void> _handleUnsubscribe(BuildContext context, MessageIndex email) async {
+    try {
+      // Check if this is an SMS message (SMS messages don't have unsubscribe links)
+      if (email.accountId == 'sms_pushbullet' || email.accountEmail == 'SMS') {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('SMS messages cannot be unsubscribed')),
+        );
+        return;
+      }
+      
+      // For local folder emails, we need to get the original accountId
+      // Local folder emails should have the original accountId stored
+      String accountId = email.accountId;
+      if (accountId.isEmpty && email.accountEmail != null && email.accountEmail!.isNotEmpty) {
+        // Try to find account by email
+        // This is a fallback - ideally accountId should always be set
+        debugPrint('[Unsubscribe] Warning: accountId is empty, using accountEmail: ${email.accountEmail}');
+      }
+      
+      if (accountId.isEmpty) {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to unsubscribe: missing account information')),
+        );
+        return;
+      }
+      
+      final syncService = GmailSyncService();
+      String? unsubLink = await syncService.extractUnsubscribeLink(accountId, email.id);
+      
+      // If extraction failed, try stored link as fallback
+      if (unsubLink == null || unsubLink.isEmpty) {
+        final repo = MessageRepository();
+        final stored = await repo.getUnsubLink(email.id);
+        unsubLink = stored;
+      }
+      
+      if (unsubLink != null && unsubLink.isNotEmpty) {
+      // If email has unsubscribe link but isn't tagged as subscription, tag it now
+      // This ensures it appears in the Subscription Window
+      if (!email.subsLocal) {
+        final repo = MessageRepository();
+        await repo.updateLocalClassification(email.id, subs: true, unsubLink: unsubLink);
+        // Refresh the email list to show the updated subscription status
+        if (accountId.isNotEmpty) {
+          ref.read(emailListProvider.notifier).refresh(accountId);
+        }
+      }
+      
+      // Handle mailto: links (auto-unsubscribe)
+      if (unsubLink.startsWith('mailto:')) {
+        // Show loading dialog
+        if (!context.mounted) return;
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (loadingContext) => const AlertDialog(
+            content: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(),
+                SizedBox(width: 16),
+                Text('Sending unsubscribe email...'),
+              ],
+            ),
+          ),
+        );
+        
+        final ok = await syncService.sendUnsubscribeMailto(accountId, unsubLink);
+        
+        // Close loading dialog
+        if (context.mounted) {
+          Navigator.of(context).pop();
+        }
+        
+        if (!context.mounted) return;
+        
+        // Show prominent dialog feedback
+        await showDialog(
+          context: context,
+          barrierDismissible: true,
+          builder: (dialogContext) => AlertDialog(
+            icon: Icon(
+              ok ? Icons.check_circle : Icons.error,
+              color: ok ? Colors.green : Colors.red,
+              size: 32,
+            ),
+            title: Text(ok ? 'Unsubscribe Sent' : 'Unsubscribe Failed', style: const TextStyle(fontSize: 18)),
+            content: Text(ok 
+              ? 'The unsubscribe email has been sent successfully.'
+              : 'Failed to send the unsubscribe email. Please try again or unsubscribe manually.',
+              style: const TextStyle(fontSize: 14)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+        if (ok) {
+          // Mark this email and all emails from this sender as unsubscribed
+          final senderEmail = _extractEmail(email.from);
+          if (senderEmail.isNotEmpty) {
+            await MessageRepository().markSenderUnsubscribed(accountId, senderEmail);
+            // Update provider state for all messages from this sender
+            ref.read(emailListProvider.notifier).setSenderUnsubscribed(senderEmail, true);
+          } else {
+            await MessageRepository().updateLocalClassification(email.id, unsubscribed: true);
+            ref.read(emailListProvider.notifier).setUnsubscribed(email.id, true);
+          }
+        }
+        return;
+      }
+      
+      // Handle https: links (manual unsubscribe)
+      final url = Uri.tryParse(unsubLink);
+      if (url != null && await canLaunchUrl(url)) {
+        // Open the unsubscribe link
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+        if (!context.mounted) return;
+        // Provide feedback that link was opened
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unsubscribe page opened in browser'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      } else {
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open unsubscribe link'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } else {
+      // No unsubscribe link found
+      if (!context.mounted) return;
+      await showDialog(
+        context: context,
+        barrierDismissible: true,
+        builder: (dialogContext) => AlertDialog(
+          icon: const Icon(
+            Icons.info_outline,
+            color: Colors.orange,
+            size: 32,
+          ),
+          title: const Text('No Unsubscribe Link', style: TextStyle(fontSize: 18)),
+          content: const Text(
+            'No unsubscribe link found in this email. You may need to contact the sender directly.',
+            style: TextStyle(fontSize: 14)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('OK'),
+            ),
+          ],
+        ),
+      );
+    }
+    } catch (e, stackTrace) {
+      debugPrint('[Unsubscribe] Error: $e');
+      debugPrint('[Unsubscribe] Stack trace: $stackTrace');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error unsubscribing: $e')),
+      );
+    }
+  }
+
+  String _extractEmail(String from) {
+    final match = RegExp(r'<([^>]+)>').firstMatch(from);
+    if (match != null) {
+      return match.group(1)!.trim().toLowerCase();
+    }
+    if (from.contains('@')) {
+      return from.trim().toLowerCase();
+    }
+    return '';
   }
 
   String _formatRecipientTitle(

@@ -2127,6 +2127,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                     }
                   }
                 },
+                onRestoreToInbox: _isLocalFolder
+                    ? (email) => _restoreLocalEmailToInbox(email)
+                    : null,
                 onRestore: (email) async {
                   if (!_isLocalFolder && _selectedAccountId != null) {
                     // Optimistic: remove from current view immediately; background restore will adjust
@@ -2275,42 +2278,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       } catch (e) {
                         debugPrint('[HomeScreen] ERROR in syncEmailMeta: $e');
                       }
-                    }
-                  }
-                },
-                onActionCompleteToggle: (email) async {
-                  // Toggle actionComplete status
-                  final newComplete = !email.actionComplete;
-                  
-                  // Update database
-                  await _messageRepository.updateAction(
-                    email.id,
-                    email.actionDate,
-                    email.actionInsightText,
-                    null, // confidence
-                    newComplete,
-                  );
-                  
-                  // Update provider state
-                  ref.read(emailListProvider.notifier).setAction(
-                    email.id,
-                    email.actionDate,
-                    email.actionInsightText,
-                    actionComplete: newComplete,
-                  );
-                  
-                  // Sync to Firebase if enabled
-                  final syncEnabled = await _firebaseSync.isSyncEnabled();
-                  if (syncEnabled && _selectedAccountId != null) {
-                    try {
-                      await _firebaseSync.syncEmailMeta(
-                        email.id,
-                        actionDate: email.actionDate,
-                        actionInsightText: email.actionInsightText,
-                        actionComplete: newComplete,
-                      );
-                    } catch (e) {
-                      debugPrint('[HomeScreen] ERROR in syncEmailMeta for toggle: $e');
                     }
                   }
                 },
@@ -2525,7 +2492,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               _enqueueGmailUpdate('archive:$src', message.id);
                             },
                             onSaveToFolder: (folderName) async {
-                              await _saveEmailToFolder(folderName, message);
+                              if (_isLocalFolder) {
+                                // Moving between local folders
+                                await _moveLocalEmailToFolder(folderName, message);
+                              } else {
+                                // Saving from Gmail to local folder
+                                await _saveEmailToFolder(folderName, message);
+                              }
+                            },
+                            onMoveToLocalFolder: () async {
+                              // Show folder selection dialog
+                              final folder = await MoveToFolderDialog.show(context);
+                              if (folder != null) {
+                                if (_isLocalFolder) {
+                                  // Moving between local folders
+                                  await _moveLocalEmailToFolder(folder, message);
+                                } else {
+                                  // Saving from Gmail to local folder
+                                  await _saveEmailToFolder(folder, message);
+                                }
+                              }
                             },
                             onMoveToInbox: () async {
                               // Optimistic UI update first
