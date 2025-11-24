@@ -201,12 +201,10 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         if (lastDate != null && today != lastDate) {
           // Date changed - trigger UI rebuild for overdue status update
           // No database reload needed since data hasn't changed, only the comparison
-          // Use a more efficient approach: only update if we actually have emails
           final current = state;
           if (current is AsyncData<List<MessageIndex>> && current.value.isNotEmpty) {
-            // Update state with new list to trigger rebuild (overdue status calculated on render)
-            // Only create new list if we have emails to avoid unnecessary rebuilds
-            state = AsyncValue.data(List<MessageIndex>.from(current.value));
+            // Re-emit the same list reference (no cloning) to notify listeners
+            state = AsyncValue.data(current.value);
             if (kDebugMode) {
               // ignore: avoid_print
               print('[sync] date changed from $lastDate to $today, triggering overdue status update');

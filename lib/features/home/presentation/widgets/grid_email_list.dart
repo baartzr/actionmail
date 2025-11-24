@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:domail/constants/app_constants.dart';
 import 'package:flutter/material.dart';
@@ -31,6 +32,12 @@ class GridEmailList extends ConsumerStatefulWidget {
   final ValueChanged<String?>? onFolderChanged;
   final ValueChanged<MessageIndex>? onEmailTap;
   final ValueChanged<MessageIndex>? onEmailAction;
+  final Future<void> Function(
+    MessageIndex email,
+    DateTime? date,
+    String? text, {
+    bool? actionComplete,
+  })? onActionUpdated;
   final ValueChanged<Set<String>>? onFiltersChanged;
   final Set<String> activeFilters;
   final ValueChanged<MessageIndex>? onPersonalBusinessToggle;
@@ -59,6 +66,7 @@ class GridEmailList extends ConsumerStatefulWidget {
     this.onFolderChanged,
     this.onEmailTap,
     this.onEmailAction,
+    this.onActionUpdated,
     this.onFiltersChanged,
     this.activeFilters = const {},
     this.onPersonalBusinessToggle,
@@ -108,6 +116,8 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   bool _showSearchField = false;
   final TextEditingController _searchController = TextEditingController();
   final ScrollController _horizontalScrollController = ScrollController();
+  final ScrollController _verticalScrollController = ScrollController();
+  static final RegExp _fromFieldRegex = RegExp(r'^(.+?)\s*<(.+?)>$');
   
   // Column width state - column index -> width
   // Columns: 0=checkbox, 1=date, 2=sender, 3=subject (flexible), 4=action, 5=status
@@ -177,10 +187,20 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     });
   }
 
-  Future<void> _saveColumnWidths() async {
+  Timer? _columnSaveDebounce;
+  static const Duration _columnSaveDelay = Duration(milliseconds: 300);
+  
+  Future<void> _persistColumnWidthsNow() async {
     final prefs = await SharedPreferences.getInstance();
     final encoded = jsonEncode(_columnWidths.map((k, v) => MapEntry(k.toString(), v)));
     await prefs.setString(_prefsKeyColumnWidths, encoded);
+  }
+  
+  void _scheduleColumnWidthSave() {
+    _columnSaveDebounce?.cancel();
+    _columnSaveDebounce = Timer(_columnSaveDelay, () {
+      _persistColumnWidthsNow();
+    });
   }
 
   double _getColumnWidth(int columnIndex, double defaultWidth) {
@@ -191,7 +211,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     setState(() {
       _columnWidths[columnIndex] = newWidth.clamp(_minColumnWidth, double.infinity);
     });
-    _saveColumnWidths();
+    _scheduleColumnWidthSave();
   }
 
   @override
@@ -264,6 +284,8 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   void dispose() {
     _searchController.dispose();
     _horizontalScrollController.dispose();
+    _verticalScrollController.dispose();
+    _columnSaveDebounce?.cancel();
     super.dispose();
   }
 
@@ -889,11 +911,11 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
         
         // Estimate status width for calculations (actual will be determined by IntrinsicColumnWidth at layout time)
         // Status width varies: ~172px on large screens, ~280px on mobile (IconButton tap targets)
-        final estimatedStatusWidth = isSmallScreen ? 280.0 : 172.0;
+        final statusWidth = isSmallScreen ? 280.0 : 172.0;
         
         // Calculate fixed columns width (subject is now fixed/resizable, status is flexible)
         final fixedColumnsWidth = checkboxWidth + dateWidth + senderWidth + subjectWidth + actionDetailsWidth;
-        final totalMinWidth = fixedColumnsWidth + estimatedStatusWidth;
+        final totalMinWidth = fixedColumnsWidth + statusWidth;
         
         // Calculate available width - account for horizontal padding (16 * 2 = 32)
         final hasValidConstraints = constraints.maxWidth.isFinite && 
@@ -911,110 +933,147 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
             senderWidth + 
             subjectWidth + 
             actionDetailsWidth + 
-            estimatedStatusWidth; // Estimated - actual will be determined by IntrinsicColumnWidth
+            statusWidth;
         
         // Determine if table exceeds available width and needs scrolling
         // Compare with small tolerance for floating point precision
         final needsScrolling = (actualTableWidth - availableWidth) > 0.5;
         
+        final columnWidths = <int, TableColumnWidth>{
+          0: FixedColumnWidth(checkboxWidth),
+          1: FixedColumnWidth(dateWidth),
+          2: FixedColumnWidth(senderWidth),
+          3: FixedColumnWidth(subjectWidth),
+          4: FixedColumnWidth(actionDetailsWidth),
+          5: FixedColumnWidth(statusWidth),
+        };
+        
+        final now = DateTime.now();
+        final today = DateTime(now.year, now.month, now.day);
+        final isSentFolder = widget.selectedFolder == AppConstants.folderSent;
+        
+        final viewportHeight = constraints.hasBoundedHeight && constraints.maxHeight.isFinite
+            ? constraints.maxHeight
+            : MediaQuery.of(context).size.height;
+        
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0), // Add horizontal and bottom padding
+          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           child: ClipRect(
             child: SizedBox(
               width: availableWidth,
+              height: viewportHeight,
               child: Scrollbar(
                 controller: _horizontalScrollController,
-                thumbVisibility: needsScrolling, // Show scrollbar only when content overflows
-                thickness: 12.0, // Make scrollbar thicker for easier clicking
-                radius: const Radius.circular(6.0), // Rounded corners
+                thumbVisibility: needsScrolling,
+                thickness: 12.0,
+                radius: const Radius.circular(6.0),
                 child: SingleChildScrollView(
                   controller: _horizontalScrollController,
                   scrollDirection: Axis.horizontal,
                   physics: needsScrolling
-                      ? const ClampingScrollPhysics() // Allow scrolling when content overflows
-                      : const NeverScrollableScrollPhysics(), // Disable scrolling when table fits
-                  clipBehavior: Clip.hardEdge, // Clip content to prevent overflow indicator
+                      ? const ClampingScrollPhysics()
+                      : const NeverScrollableScrollPhysics(),
+                  clipBehavior: Clip.hardEdge,
                   child: SizedBox(
-                    width: actualTableWidth, // Use actual table width - will exceed available width when screen is small
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.vertical,
-                      child: Table(
-                        // Key ensures table rebuilds when emails change (especially actionComplete)
-                        key: ValueKey('email_table_${widget.emails.length}_${widget.emails.fold<int>(0, (sum, e) => sum ^ (e.id.hashCode ^ (e.actionComplete ? 1 : 0)))}'),
-                        columnWidths: {
-                          0: FixedColumnWidth(checkboxWidth),
-                          1: FixedColumnWidth(dateWidth),
-                          2: FixedColumnWidth(senderWidth),
-                          3: FixedColumnWidth(subjectWidth), // Subject & Snippet - now resizable
-                          4: FixedColumnWidth(actionDetailsWidth), // Action Details - not resizable
-                          5: IntrinsicColumnWidth(), // Status column - flexible width based on content (not resizable)
-                          // TO REVERT: Change above line to: 5: FixedColumnWidth(statusWidth),
-                        },
-                        defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-                        children: [
-                          // Header row
-                          TableRow(
-                            decoration: BoxDecoration(
-                              color: ActionMailTheme.alertColor,
-                            ),
-                            children: [
-                              TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: _buildSelectAllCheckbox(context, theme),
-                                ),
-                              ),
-                              TableCell(
-                                child: _buildResizableHeaderCell(
-                                  context: context,
-                                  theme: theme,
-                                  label: 'Date',
-                                  columnIndex: 1,
-                                  currentWidth: dateWidth,
-                                ),
-                              ),
-                              TableCell(
-                                child: _buildResizableHeaderCell(
-                                  context: context,
-                                  theme: theme,
-                                  label: widget.selectedFolder == AppConstants.folderSent ? 'To' : 'Sender',
-                                  columnIndex: 2,
-                                  currentWidth: senderWidth,
-                                ),
-                              ),
-                              TableCell(
-                                child: _buildResizableHeaderCell(
-                                  context: context,
-                                  theme: theme,
-                                  label: 'Subject & Snippet',
-                                  columnIndex: 3,
-                                  currentWidth: subjectWidth,
-                                ),
-                              ),
-                              TableCell(
-                                child: _buildResizableHeaderCell(
-                                  context: context,
-                                  theme: theme,
-                                  label: 'Action Details',
-                                  columnIndex: 4,
-                                  currentWidth: actionDetailsWidth,
-                                ),
-                              ),
-                              TableCell(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                                  child: Text(
-                                    'Status',
-                                    style: theme.textTheme.labelMedium?.copyWith(
-                                      fontWeight: FontWeight.w600,
+                    width: actualTableWidth,
+                    height: viewportHeight,
+                    child: Scrollbar(
+                      controller: _verticalScrollController,
+                      thumbVisibility: true,
+                      child: CustomScrollView(
+                        controller: _verticalScrollController,
+                        primary: false,
+                        slivers: [
+                          SliverToBoxAdapter(
+                            child: SizedBox(
+                              width: actualTableWidth,
+                              child: Table(
+                                columnWidths: columnWidths,
+                                defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                                children: [
+                                  TableRow(
+                                    decoration: BoxDecoration(
+                                      color: ActionMailTheme.alertColor,
                                     ),
+                                    children: [
+                                      TableCell(
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                          child: _buildSelectAllCheckbox(context, theme),
+                                        ),
+                                      ),
+                                      TableCell(
+                                        child: _buildResizableHeaderCell(
+                                          context: context,
+                                          theme: theme,
+                                          label: 'Date',
+                                          columnIndex: 1,
+                                          currentWidth: dateWidth,
+                                        ),
+                                      ),
+                                      TableCell(
+                                        child: _buildResizableHeaderCell(
+                                          context: context,
+                                          theme: theme,
+                                          label: widget.selectedFolder == AppConstants.folderSent ? 'To' : 'Sender',
+                                          columnIndex: 2,
+                                          currentWidth: senderWidth,
+                                        ),
+                                      ),
+                                      TableCell(
+                                        child: _buildResizableHeaderCell(
+                                          context: context,
+                                          theme: theme,
+                                          label: 'Subject & Snippet',
+                                          columnIndex: 3,
+                                          currentWidth: subjectWidth,
+                                        ),
+                                      ),
+                                      TableCell(
+                                        child: _buildResizableHeaderCell(
+                                          context: context,
+                                          theme: theme,
+                                          label: 'Action Details',
+                                          columnIndex: 4,
+                                          currentWidth: actionDetailsWidth,
+                                        ),
+                                      ),
+                                      TableCell(
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                                          child: Text(
+                                            'Status',
+                                            style: theme.textTheme.labelMedium?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ),
+                                ],
                               ),
-                            ],
+                            ),
                           ),
-                          // Data rows
-                          ...widget.emails.map((email) => _buildEmailTableRow(context, theme, email, constraints.maxWidth)),
+                          SliverList(
+                            delegate: SliverChildBuilderDelegate(
+                              (context, index) {
+                                final email = widget.emails[index];
+                                return SizedBox(
+                                  width: actualTableWidth,
+                                  child: Table(
+                                    key: ValueKey(email.id),
+                                    columnWidths: columnWidths,
+                                    defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+                                    children: [
+                                      _buildEmailTableRow(context, theme, email, now, today, isSentFolder),
+                                    ],
+                                  ),
+                                );
+                              },
+                              childCount: widget.emails.length,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -1145,13 +1204,15 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     );
   }
 
-  TableRow _buildEmailTableRow(BuildContext context, ThemeData theme, MessageIndex email, double availableWidth) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
+  TableRow _buildEmailTableRow(
+    BuildContext context,
+    ThemeData theme,
+    MessageIndex email,
+    DateTime now,
+    DateTime today,
+    bool isSentFolder,
+  ) {
     final isOverdue = email.actionDate != null && email.actionDate!.isBefore(today);
-
-    // Check if we're in SENT folder
-    final isSentFolder = widget.selectedFolder == AppConstants.folderSent;
     
     // Extract sender/recipient name and email
     String senderName = '';
@@ -1170,7 +1231,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
       }
     } else {
       // Extract sender from "from" field
-      final fromMatch = RegExp(r'^(.+?)\s*<(.+?)>$').firstMatch(email.from);
+      final fromMatch = _fromFieldRegex.firstMatch(email.from);
       senderName = fromMatch?.group(1)?.trim() ?? '';
       senderEmail = fromMatch?.group(2)?.trim() ?? email.from;
     }
@@ -1356,7 +1417,14 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
               child: KeyedSubtree(
                 key: ValueKey('action_${email.id}_${email.actionComplete}'),
-                child: _buildActionDetails(context, theme, email, isOverdue),
+                child: _buildActionDetails(
+                  context,
+                  theme,
+                  email,
+                  isOverdue,
+                  now: now,
+                  today: today,
+                ),
               ),
             ),
           ),
@@ -1591,7 +1659,20 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     );
   }
 
-  Widget _buildActionDetails(BuildContext context, ThemeData theme, MessageIndex email, bool isOverdue) {
+  Widget _buildActionDetails(
+    BuildContext context,
+    ThemeData theme,
+    MessageIndex email,
+    bool isOverdue, {
+    DateTime? now,
+    DateTime? today,
+  }) {
+    final effectiveNow = now ?? DateTime.now();
+    final effectiveToday = today ?? DateTime(effectiveNow.year, effectiveNow.month, effectiveNow.day);
+    final isEffectivelyOverdue = email.actionDate != null && email.actionDate!.isBefore(effectiveToday);
+    final displayOverdue = isEffectivelyOverdue || isOverdue;
+    final dateLabel = email.actionDate != null ? _formatActionDate(email.actionDate!, effectiveNow) : null;
+    final canToggleAction = _canToggleActionComplete(email);
     if (!email.hasAction) {
       return Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1630,7 +1711,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
 
     // Priority: Complete > Overdue > Action
     // If complete, show COMPLETE even if overdue
-    final displayStatus = isComplete ? 'COMPLETE' : (isOverdue ? 'OVERDUE' : 'ACTION');
+    final displayStatus = isComplete ? 'COMPLETE' : (displayOverdue ? 'OVERDUE' : 'ACTION');
     final statusColor = isComplete 
         ? Colors.green 
         : (isOverdue ? Colors.red : Colors.orange);
@@ -1689,15 +1770,45 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
               overflow: TextOverflow.ellipsis,
             ),
           ],
-          if (email.actionDate != null) ...[
+          if (dateLabel != null || canToggleAction) ...[
             const SizedBox(height: 3),
-            Text(
-              _formatActionDate(email.actionDate!, DateTime.now()),
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: statusColor.shade700,
-                fontWeight: FontWeight.w600,
-                fontSize: 9,
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (dateLabel != null)
+                  Text(
+                    dateLabel,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: statusColor.shade700,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 9,
+                    ),
+                  ),
+                if (dateLabel != null && canToggleAction)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    child: Text(
+                      '•',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: statusColor.shade700,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 9,
+                      ),
+                    ),
+                  ),
+                if (canToggleAction)
+                  GestureDetector(
+                    onTap: () => _handleToggleActionComplete(email),
+                    child: Text(
+                      isComplete ? 'Mark as Incomplete' : 'Mark as Complete',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.tertiary,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ],
         ],
@@ -2378,9 +2489,42 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   }
 
   // Parse single address (handles both "Name <email>" and "email" formats)
+  static final RegExp _angleEmailRegex = RegExp(r'<([^>]+)>');
+  
+  bool _canToggleActionComplete(MessageIndex email) {
+    final folder = widget.selectedFolder.toUpperCase();
+    return !widget.isLocalFolder && folder == AppConstants.folderInbox && email.hasAction;
+  }
+  
+  Future<void> _handleToggleActionComplete(MessageIndex email) async {
+    final newValue = !email.actionComplete;
+    if (widget.onActionUpdated != null) {
+      await widget.onActionUpdated!(
+        email,
+        email.actionDate,
+        email.actionInsightText,
+        actionComplete: newValue,
+      );
+      return;
+    }
+    
+    await MessageRepository().updateAction(
+      email.id,
+      email.actionDate,
+      email.actionInsightText,
+      null,
+      newValue,
+    );
+    ref.read(emailListProvider.notifier).setAction(
+          email.id,
+          email.actionDate,
+          email.actionInsightText,
+          actionComplete: newValue,
+        );
+  }
+  
   ({String name, String email}) _parseSingleAddress(String input) {
-    final emailRegex = RegExp(r'<([^>]+)>');
-    final match = emailRegex.firstMatch(input);
+    final match = _angleEmailRegex.firstMatch(input);
     if (match != null) {
       final email = match.group(1)!.trim();
       final name = input.replaceAll(match.group(0)!, '').trim();

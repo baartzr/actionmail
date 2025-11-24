@@ -1145,9 +1145,10 @@ class _EmailTileState extends ConsumerState<EmailTile> {
     return results;
   }
 
+  static final RegExp _angleEmailRegex = RegExp(r'<([^>]+)>');
+  
   Tuple2<String, String> _parseSingleAddress(String input) {
-    final emailRegex = RegExp(r'<([^>]+)>');
-    final match = emailRegex.firstMatch(input);
+    final match = _angleEmailRegex.firstMatch(input);
     if (match != null) {
       final email = match.group(1)!.trim();
       final name = input.replaceAll(match.group(0)!, '').trim();

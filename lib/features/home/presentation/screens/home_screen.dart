@@ -642,6 +642,75 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     }
   }
 
+  Future<void> _handleActionUpdate(
+    MessageIndex message,
+    DateTime? date,
+    String? text, {
+    bool? actionComplete,
+  }) async {
+    final originalAction = message.hasAction
+        ? ActionResult(
+            actionDate: message.actionDate ?? DateTime.now(),
+            confidence: message.actionConfidence ?? 0.0,
+            insightText: message.actionInsightText ?? '',
+          )
+        : null;
+
+    await _messageRepository.updateAction(
+      message.id,
+      date,
+      text,
+      null,
+      actionComplete,
+    );
+    ref.read(emailListProvider.notifier).setAction(
+          message.id,
+          date,
+          text,
+          actionComplete: actionComplete,
+        );
+
+    final hasActionNow = text != null && text.isNotEmpty;
+    final userAction = hasActionNow
+        ? ActionResult(
+            actionDate: date ?? DateTime.now(),
+            confidence: 1.0,
+            insightText: text!,
+          )
+        : null;
+
+    final feedbackType = _determineFeedbackType(originalAction, userAction);
+    if (feedbackType != null) {
+      await MLActionExtractor.recordFeedback(
+        messageId: message.id,
+        subject: message.subject,
+        snippet: message.snippet ?? '',
+        detectedResult: originalAction,
+        userCorrectedResult: userAction,
+        feedbackType: feedbackType,
+      );
+    }
+
+    final syncEnabled = await _firebaseSync.isSyncEnabled();
+    if (syncEnabled) {
+      final currentDate = message.actionDate;
+      final currentText = message.actionInsightText;
+      final currentComplete = message.actionComplete;
+      if (currentDate != date ||
+          currentText != text ||
+          currentComplete != actionComplete ||
+          !hasActionNow) {
+        await _firebaseSync.syncEmailMeta(
+          message.id,
+          actionDate: hasActionNow ? date : null,
+          actionInsightText: hasActionNow ? text : null,
+          actionComplete: hasActionNow ? actionComplete : null,
+          clearAction: !hasActionNow,
+        );
+      }
+    }
+  }
+
   Future<void> _loadSenderPrefsFromFirebase() async {
     if (!await _firebaseSync.isSyncEnabled()) return;
 
@@ -1990,6 +2059,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 isLocalFolder: _isLocalFolder,
                 activeFilters: activeFilters,
                 selectedEmailIds: _tableSelectedEmailIds,
+                onActionUpdated: (email, date, text, {bool? actionComplete}) async {
+                  await _handleActionUpdate(
+                    email,
+                    date,
+                    text,
+                    actionComplete: actionComplete,
+                  );
+                },
                 onSelectionChanged: (count) {
                   setState(() {
                     _tableSelectedCount = count;
@@ -2558,75 +2635,19 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             },
                             onActionUpdated: (date, text,
                                 {bool? actionComplete}) async {
-                              // Capture original detected action for feedback
-                              final originalAction = message.hasAction
-                                  ? ActionResult(
-                                      actionDate:
-                                          message.actionDate ?? DateTime.now(),
-                                      confidence:
-                                          message.actionConfidence ?? 0.0,
-                                      insightText:
-                                          message.actionInsightText ?? '',
-                                    )
-                                  : null;
-
-                              await _messageRepository.updateAction(message.id, date, text, null, actionComplete);
-                              ref.read(emailListProvider.notifier).setAction(
-                                  message.id, date, text,
-                                  actionComplete: actionComplete);
-                              // Use actionInsightText only as source of truth
-                              final hasActionNow = text != null && text.isNotEmpty;
-
-                              // Record feedback for ML training
-                              final userAction = date != null || text != null
-                                  ? ActionResult(
-                                      actionDate: date ?? DateTime.now(),
-                                      confidence:
-                                          1.0, // User-provided actions have max confidence
-                                      insightText: text ?? '',
-                                    )
-                                  : null;
-
-                              // Determine feedback type
-                              final feedbackType = _determineFeedbackType(
-                                  originalAction, userAction);
-
-                              if (feedbackType != null) {
-                                await MLActionExtractor.recordFeedback(
-                                  messageId: message.id,
-                                  subject: message.subject,
-                                  snippet: message.snippet ?? '',
-                                  detectedResult: originalAction,
-                                  userCorrectedResult: userAction,
-                                  feedbackType: feedbackType,
-                                );
-                              }
-
-                              // Sync to Firebase if enabled (only if changed from initial value)
-                              final syncEnabled =
-                                  await _firebaseSync.isSyncEnabled();
-                              if (syncEnabled) {
-                                // Get current message to check if action actually changed
-                                final currentDate = message.actionDate;
-                                final currentText = message.actionInsightText;
-                                final currentComplete = message.actionComplete;
-                                if (currentDate != date ||
-                                    currentText != text ||
-                                    currentComplete != actionComplete ||
-                                    !hasActionNow) {
-                                  await _firebaseSync.syncEmailMeta(
-                                    message.id,
-                                    actionDate: hasActionNow ? date : null,
-                                    actionInsightText: hasActionNow ? text : null,
-                                    actionComplete: hasActionNow ? actionComplete : null,
-                                    clearAction: !hasActionNow,
-                                  );
-                                }
-                              }
+                              await _handleActionUpdate(
+                                message,
+                                date,
+                                text,
+                                actionComplete: actionComplete,
+                              );
                             },
                             onActionCompleted: () async {
-                              await _messageRepository.updateAction(message.id, null, null);
-                              ref.read(emailListProvider.notifier).setAction(message.id, null, null);
+                              await _handleActionUpdate(
+                                message,
+                                null,
+                                null,
+                              );
                             },
                           );
                         },
