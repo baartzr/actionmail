@@ -310,18 +310,65 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // ignore: avoid_print
       print('[sync] syncInboxOnStartup account=$accountId');
       _ref.read(emailSyncingProvider.notifier).state = true;
+      
+      // Check if account needs re-authentication before syncing
+      final auth = GoogleAuthService();
+      // ignore: avoid_print
+      print('[sync] syncInboxOnStartup: checking token validity for account=$accountId');
+      // Clear any previous error state before checking
+      auth.clearLastError(accountId);
+      _ref.read(networkErrorProvider.notifier).state = false;
+      final account = await auth.ensureValidAccessToken(accountId);
+      // ignore: avoid_print
+      print('[sync] syncInboxOnStartup: ensureValidAccessToken returned account=${account != null ? 'valid' : 'null'}, accessToken=${account?.accessToken.isNotEmpty ?? false}');
+      if (account == null || account.accessToken.isEmpty) {
+        // Check if this is a network error or auth error
+        final isNetworkError = auth.isLastErrorNetworkError(accountId) == true;
+        // ignore: avoid_print
+        print('[sync] syncInboxOnStartup: token check failed, isNetworkError=$isNetworkError, accountId=$accountId');
+        if (isNetworkError) {
+          // Network error - use networkErrorProvider (NOT authFailureProvider)
+          // ignore: avoid_print
+          print('[sync] syncInboxOnStartup: network error detected, setting networkErrorProvider');
+          _ref.read(networkErrorProvider.notifier).state = true;
+          _ref.read(emailSyncingProvider.notifier).state = false;
+          return;
+        }
+        // Auth error - trigger auth failure
+        // ignore: avoid_print
+        print('[sync] syncInboxOnStartup: account needs re-authentication account=$accountId, setting authFailureProvider');
+        _ref.read(authFailureProvider.notifier).state = accountId;
+        _ref.read(emailSyncingProvider.notifier).state = false;
+        return;
+      }
+      
+      // Clear any previous auth failure for this account on success
+      if (_ref.read(authFailureProvider) == accountId) {
+        _ref.read(authFailureProvider.notifier).state = null;
+      }
+      
       await _syncService.processPendingOps();
       
       // Check for historyID in DB
       final hasHistory = await _syncService.hasHistoryId(accountId);
       // ignore: avoid_print
       print('[sync] hasHistoryId check result: $hasHistory');
+      
+      // Check if local database has any emails - if historyID exists but DB is empty,
+      // we need to do a full sync instead of incremental
+      final localEmails = await _syncService.loadLocal(accountId, folderLabel: 'INBOX');
+      final hasLocalEmails = localEmails.isNotEmpty;
+      // ignore: avoid_print
+      print('[sync] local INBOX email count: ${localEmails.length}, hasLocalEmails: $hasLocalEmails');
+      
       List<GmailMessage> newInboxMessages = [];
       
-      if (hasHistory) {
-        // If historyID exists: run incremental sync using that historyID (handles all folders)
+      // If historyID exists AND we have local emails, use incremental sync
+      // Otherwise, do a full sync (either no historyID or database was cleared/reset)
+      if (hasHistory && hasLocalEmails) {
+        // If historyID exists and we have local emails: run incremental sync using that historyID (handles all folders)
         // ignore: avoid_print
-        print('[sync] historyID exists, doing incremental sync');
+        print('[sync] historyID exists and local emails found, doing incremental sync');
         newInboxMessages = await _syncService.incrementalSync(accountId);
         // Reload from local DB after incremental sync to show updated emails in UI
         // Only update if we're viewing INBOX and NOT viewing a local folder
@@ -340,9 +387,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           }
         }
       } else {
-        // If no historyID: do initial full sync for all folders sequentially
+        // If no historyID OR local database is empty: do initial full sync for all folders sequentially
         // ignore: avoid_print
-        print('[sync] no historyID, doing initial full sync for all folders');
+        print('[sync] ${hasHistory ? "historyID exists but local DB is empty" : "no historyID"}, doing initial full sync for all folders');
         _isInitialSyncing = true;
         try {
           for (final folder in _allFolders) {
@@ -389,7 +436,10 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       if (newInboxMessages.isNotEmpty) {
         unawaited(_runBackgroundTagging(accountId, newInboxMessages));
       }
-    } catch (_) {
+    } catch (e, stackTrace) {
+      // Log error to help diagnose email loading issues
+      debugPrint('[sync] ERROR in syncInboxOnStartup: $e');
+      debugPrint('[sync] Stack trace: $stackTrace');
       _ref.read(emailSyncingProvider.notifier).state = false;
     }
   }

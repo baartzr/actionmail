@@ -20,7 +20,6 @@ class _WhatsAppSyncSettingsWidgetState extends State<WhatsAppSyncSettingsWidget>
   bool _loading = true;
   bool _syncEnabled = false;
   bool _hasToken = false;
-  String? _accountId;
 
   @override
   void initState() {
@@ -45,7 +44,6 @@ class _WhatsAppSyncSettingsWidgetState extends State<WhatsAppSyncSettingsWidget>
       final token = await _whatsAppSyncService.getToken();
       final phoneNumberId = await _whatsAppSyncService.getPhoneNumberId();
       final phoneNumber = await _whatsAppSyncService.getPhoneNumber();
-      final accountId = await _whatsAppSyncService.getAccountId();
       
       setState(() {
         _syncEnabled = enabled;
@@ -53,7 +51,6 @@ class _WhatsAppSyncSettingsWidgetState extends State<WhatsAppSyncSettingsWidget>
         _tokenController.text = token ?? '';
         _phoneNumberIdController.text = phoneNumberId ?? '';
         _phoneNumberController.text = phoneNumber ?? '';
-        _accountId = accountId;
         _loading = false;
       });
     } catch (e) {
@@ -133,7 +130,6 @@ class _WhatsAppSyncSettingsWidgetState extends State<WhatsAppSyncSettingsWidget>
       
       setState(() {
         _hasToken = true;
-        _accountId = accountId;
       });
 
       if (mounted) {
@@ -167,7 +163,6 @@ class _WhatsAppSyncSettingsWidgetState extends State<WhatsAppSyncSettingsWidget>
       
       setState(() {
         _hasToken = false;
-        _accountId = null;
         _syncEnabled = false;
       });
 

@@ -103,9 +103,6 @@ class WhatsAppApiService {
           final messages = value['messages'] as List<dynamic>?;
           if (messages == null || messages.isEmpty) continue;
 
-          final metadata = value['metadata'] as Map<String, dynamic>?;
-          final phoneNumberId = metadata?['phone_number_id'] as String?;
-
           for (final msg in messages) {
             if (msg is! Map<String, dynamic>) continue;
 

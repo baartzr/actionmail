@@ -46,7 +46,6 @@ import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart
 import 'package:domail/services/sms/sms_sync_manager.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/services/whatsapp/whatsapp_sync_manager.dart';
-import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
 import 'package:domail/features/home/presentation/widgets/floating_account_widget.dart';
 
 /// Main home screen for ActionMail

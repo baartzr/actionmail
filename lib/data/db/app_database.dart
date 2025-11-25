@@ -9,6 +9,7 @@ class AppDatabase {
   AppDatabase._internal();
 
   Database? _db;
+  static bool _useTestDatabase = false; // Set to true by tests
 
   Future<Database> get database async {
     if (_db != null) return _db!;
@@ -18,7 +19,12 @@ class AppDatabase {
 
   Future<Database> _open() async {
     final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'domail.db');
+    // Use test database name when running in test environment
+    // This prevents tests from clearing production data
+    // Check if we're in test mode by looking for test environment or test database path override
+    final isTestMode = _isTestMode();
+    final dbFileName = isTestMode ? 'domail_test.db' : 'domail.db';
+    final path = p.join(dbPath, dbFileName);
     return openDatabase(
       path,
       version: 14,
@@ -255,6 +261,18 @@ class AppDatabase {
     final db = await database;
     await db.delete('messages');
     await db.delete('pending_ops');
+    await db.delete('account_state'); // Also clear historyID so full sync will happen next time
+  }
+
+  /// Set test mode to use test database (called by test setup)
+  /// This prevents tests from modifying production database
+  static void setTestMode(bool useTestDatabase) {
+    _useTestDatabase = useTestDatabase;
+  }
+  
+  /// Check if we're running in test mode
+  static bool _isTestMode() {
+    return _useTestDatabase;
   }
 
   /// Delete the entire database file (for testing/fresh start)
@@ -264,7 +282,10 @@ class AppDatabase {
       _db = null;
     }
     final dbPath = await getDatabasesPath();
-    final path = p.join(dbPath, 'domail.db');
+    // Use same logic as _open() to determine database file name
+    final isTestMode = _isTestMode();
+    final dbFileName = isTestMode ? 'domail_test.db' : 'domail.db';
+    final path = p.join(dbPath, dbFileName);
     final dbFile = File(path);
     if (await dbFile.exists()) {
       await dbFile.delete();

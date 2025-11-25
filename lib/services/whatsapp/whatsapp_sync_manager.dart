@@ -6,8 +6,6 @@ import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 
 /// Main manager for WhatsApp sync functionality
 /// Polls for new messages or receives them via webhook
@@ -25,7 +23,6 @@ class WhatsAppSyncManager {
   bool _isRunning = false;
   String? _activeAccountId;
   String? _activeAccountEmail;
-  String? _lastMessageTimestamp; // Track last polled message timestamp
 
   /// Callback when a new WhatsApp message is received and saved
   void Function(MessageIndex message)? onWhatsAppReceived;
@@ -70,7 +67,6 @@ class WhatsAppSyncManager {
 
     _activeAccountId = account.id;
     _activeAccountEmail = account.email;
-    _lastMessageTimestamp = null; // Reset timestamp to fetch recent messages
 
     _isRunning = true;
     debugPrint('[WhatsAppSyncManager] Starting WhatsApp sync...');
@@ -92,7 +88,6 @@ class WhatsAppSyncManager {
     _pollTimer = null;
     _activeAccountId = null;
     _activeAccountEmail = null;
-    _lastMessageTimestamp = null;
   }
 
   /// Start polling for new messages
@@ -192,46 +187,6 @@ class WhatsAppSyncManager {
       onWhatsAppReceived?.call(message);
     } catch (e) {
       debugPrint('[WhatsAppSyncManager] Error saving WhatsApp message: $e');
-    }
-  }
-
-  /// Check if sync should still be running
-  Future<void> _checkSyncState() async {
-    if (!_isRunning) return;
-
-    final isEnabled = await _syncService.isSyncEnabled();
-    if (!isEnabled) {
-      debugPrint('[WhatsAppSyncManager] Sync disabled, stopping...');
-      await stop();
-      return;
-    }
-
-    final token = await _syncService.getToken();
-    if (token == null || token.isEmpty) {
-      debugPrint('[WhatsAppSyncManager] Token missing, stopping...');
-      await stop();
-      return;
-    }
-
-    final phoneNumberId = await _syncService.getPhoneNumberId();
-    if (phoneNumberId == null || phoneNumberId.isEmpty) {
-      debugPrint('[WhatsAppSyncManager] Phone number ID missing, stopping...');
-      await stop();
-      return;
-    }
-
-    final accountId = await _syncService.getAccountId();
-    if (accountId == null || accountId.isEmpty) {
-      debugPrint('[WhatsAppSyncManager] Account id missing, stopping...');
-      await stop();
-      return;
-    }
-
-    if (_activeAccountId != accountId) {
-      debugPrint('[WhatsAppSyncManager] Account changed, restarting sync...');
-      await stop();
-      await start();
-      return;
     }
   }
 
