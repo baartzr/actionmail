@@ -271,7 +271,7 @@ class PushbulletMessageParser {
   }
 
   /// Parse recent SMS threads fetched via Pushbullet REST API.
-  /// Each element in [threads] should be a Map<String, dynamic>.
+  /// Each element in [threads] should be a Map with String keys and dynamic values.
   /// Returns a list of SMS events (only incoming messages are returned).
   static List<PushbulletSmsEvent> parseRecentSmsThreads(List<dynamic> threads) {
     final events = <PushbulletSmsEvent>[];

@@ -383,15 +383,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     final email = account.email;
 
     final auth = GoogleAuthService();
-    final isConnectionError = auth.isLastErrorNetworkError(accountId) == true;
+    // Safety check: if this is actually a network error, redirect to network error handler
+    // This should not happen since network errors are handled before authFailureProvider is set
+    final isNetworkError = auth.isLastErrorNetworkError(accountId) == true;
+    if (isNetworkError) {
+      // Network errors should be handled by networkErrorProvider, not authFailureProvider
+      // Redirect to network error handler
+      if (mounted) {
+        ref.read(networkErrorProvider.notifier).state = true;
+      }
+      // Clear auth failure provider since this is actually a network error
+      if (ref.read(authFailureProvider) == accountId) {
+        ref.read(authFailureProvider.notifier).state = null;
+      }
+      return;
+    }
 
     try {
       // Show dialog - it stays open until user takes action (modal, barrierDismissible: false)
+      // Only show auth dialog for actual auth errors, not network errors
       final action = await ReauthPromptDialog.show(
         context: context,
         accountId: accountId,
         accountEmail: email,
-        isConnectionError: isConnectionError,
+        isConnectionError: false, // Deprecated parameter - always false, network errors use separate system
       );
 
       if (!mounted || action == null || action == 'cancel') {
@@ -402,35 +417,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         return; // User cancelled
       }
 
-      if (action == 'retry') {
-        // User chose to retry - attempt token refresh again
-        final refreshed = await auth.ensureValidAccessToken(accountId);
-        if (refreshed != null && refreshed.accessToken.isNotEmpty) {
-          // Success - clear error
-          auth.clearLastError(accountId);
-          // Clear auth failure provider
-          if (ref.read(authFailureProvider) == accountId) {
-            ref.read(authFailureProvider.notifier).state = null;
-          }
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Connection restored')),
-            );
-          }
-        } else {
-          // Retry failed - re-trigger dialog
-          // Clear and re-set provider to ensure ref.listen fires
-          if (ref.read(authFailureProvider) == accountId) {
-            ref.read(authFailureProvider.notifier).state = null;
-          }
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) {
-              ref.read(authFailureProvider.notifier).state = accountId;
-            }
-          });
-        }
-        return;
-      }
+      // Note: 'retry' action removed - network errors now use separate networkErrorProvider system
 
       // User chose to re-authenticate/reconnect
       final reauthAccount = await auth.reauthenticateAccount(accountId);
@@ -452,10 +439,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       if (reauthAccount.accessToken.isEmpty) {
         final messenger = ScaffoldMessenger.of(context);
         messenger.showSnackBar(
-          SnackBar(
-            content: Text(isConnectionError 
-                ? 'Reconnection failed. Please check your internet connection.'
-                : 'Re-authentication failed or cancelled'),
+          const SnackBar(
+            content: Text('Re-authentication failed or cancelled'),
           ),
         );
         // Re-trigger dialog
@@ -480,10 +465,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       
       final messenger = ScaffoldMessenger.of(context);
       messenger.showSnackBar(
-        SnackBar(
-          content: Text(isConnectionError 
-              ? 'Reconnected successfully'
-              : 'Re-authentication successful'),
+        const SnackBar(
+          content: Text('Re-authentication successful'),
         ),
       );
       

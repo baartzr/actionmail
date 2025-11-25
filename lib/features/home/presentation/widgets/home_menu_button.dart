@@ -8,6 +8,7 @@ import 'package:domail/features/home/presentation/windows/attachments_window.dar
 import 'package:domail/features/home/presentation/windows/subscriptions_window.dart';
 import 'package:domail/features/home/presentation/windows/shopping_window.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 
 /// Menu button widget for the home screen AppBar
 class HomeMenuButton extends ConsumerWidget {
@@ -59,33 +60,22 @@ class HomeMenuButton extends ConsumerWidget {
               idToken: '',
             ),
           );
+          // Clear any previous error state before refresh
+          final auth = GoogleAuthService();
+          auth.clearLastError(selectedAccountId!);
+          // Clear network error provider state
+          ref.read(networkErrorProvider.notifier).state = false;
+          
           final authenticated = await ensureAccountAuthenticated(
             selectedAccountId!,
             accountEmail: accountInfo.email,
           );
           if (!authenticated) {
-            // Check if it's a network error
-            final auth = GoogleAuthService();
-            final isNetworkError = auth.isLastErrorNetworkError(selectedAccountId!) == true;
-            if (isNetworkError) {
-              // Show network error dialog
-              if (context.mounted) {
-                showDialog(
-                  context: context,
-                  barrierDismissible: true,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Network Issue'),
-                    content: const Text('There\'s a network issue. Please try again later.'),
-                    actions: [
-                      FilledButton(
-                        onPressed: () => Navigator.of(ctx).pop(),
-                        child: const Text('OK'),
-                      ),
-                    ],
-                  ),
-                );
-              }
-            }
+            // Error handling is done by provider listeners:
+            // - Network errors -> networkErrorProvider -> handled in HomeProviderListeners
+            // - Auth errors -> authFailureProvider -> handled in HomeProviderListeners
+            // Just trigger the refresh, which will set the appropriate provider on error
+            await onRefresh(selectedAccountId!, selectedFolder);
             break;
           }
           await onRefresh(selectedAccountId!, selectedFolder);

@@ -222,6 +222,8 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // Check token validity before syncing - if invalid, trigger auth failure
         // Note: For background sync, we don't show network error popup - only for manual refresh
         final auth = GoogleAuthService();
+        // Clear any previous error state before checking
+        auth.clearLastError(_currentAccountId!);
         final account = await auth.ensureValidAccessToken(_currentAccountId!);
         if (account == null || account.accessToken.isEmpty) {
           // Check if this is a network error or auth error
@@ -234,6 +236,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
             return;
           }
           // Auth error (no refresh token or refresh failed) - trigger auth failure
+          // Only set authFailureProvider if it's NOT a network error
           // ignore: avoid_print
           print('[sync] incremental tick: account needs re-authentication account=$_currentAccountId');
           _ref.read(authFailureProvider.notifier).state = _currentAccountId;
@@ -241,7 +244,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           return;
         }
         
-        // Clear any previous auth failure for this account
+        // Clear any previous auth failure for this account on success
         if (_ref.read(authFailureProvider) == _currentAccountId) {
           _ref.read(authFailureProvider.notifier).state = null;
         }
@@ -415,9 +418,11 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       final auth = GoogleAuthService();
       // ignore: avoid_print
       print('[sync] sync current: checking token validity for account=$accountId');
-      // Clear any previous network error state before checking
+      // Clear any previous error state before checking
+      auth.clearLastError(accountId);
+      _ref.read(networkErrorProvider.notifier).state = false;
       // ignore: avoid_print
-      print('[sync] sync current: lastErrorType before check=${auth.isLastErrorNetworkError(accountId)}');
+      print('[sync] sync current: cleared previous error states before token check');
       final account = await auth.ensureValidAccessToken(accountId);
       // ignore: avoid_print
       print('[sync] sync current: ensureValidAccessToken returned account=${account != null ? 'valid' : 'null'}, accessToken=${account?.accessToken.isNotEmpty ?? false}');
@@ -427,6 +432,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // ignore: avoid_print
         print('[sync] sync current: token check failed, isNetworkError=$isNetworkError, accountId=$accountId');
         if (isNetworkError) {
+          // Network error - use networkErrorProvider (NOT authFailureProvider)
           // ignore: avoid_print
           print('[sync] sync current: network error detected, setting networkErrorProvider');
           _ref.read(networkErrorProvider.notifier).state = true;
@@ -436,6 +442,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           return;
         }
         // Auth error (no refresh token or refresh failed) - trigger auth failure
+        // Only set authFailureProvider if it's NOT a network error
         // ignore: avoid_print
         print('[sync] sync current: account needs re-authentication account=$accountId, setting authFailureProvider');
         _ref.read(authFailureProvider.notifier).state = accountId;
@@ -447,7 +454,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // ignore: avoid_print
       print('[sync] sync current: token valid, proceeding with sync account=$accountId');
       
-      // Clear any previous auth failure for this account
+      // Clear any previous auth failure for this account on success
       if (_ref.read(authFailureProvider) == accountId) {
         _ref.read(authFailureProvider.notifier).state = null;
       }
@@ -461,11 +468,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       if (hasHistory) {
         // ignore: avoid_print
         print('[sync] history exists, using incremental sync');
-        // Clear any previous network error state before calling incrementalSync
-        final auth = GoogleAuthService();
-        auth.clearLastError(accountId);
-        // ignore: avoid_print
-        print('[sync] sync current: cleared previous error state before incrementalSync');
+        // Error state was already cleared before token check above
+        // Clear network error provider state before incremental sync
+        _ref.read(networkErrorProvider.notifier).state = false;
         
         newMessages = await _syncService.incrementalSync(accountId);
         
@@ -479,6 +484,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         // incrementalSync returns empty list on network error, but we need to distinguish from "no new messages"
         // If isNetworkError is true AFTER incrementalSync, it means the sync failed
         if (isNetworkError) {
+          // Network error - use networkErrorProvider (NOT authFailureProvider)
           // ignore: avoid_print
           print('[sync] sync current: incrementalSync failed with network error, setting networkErrorProvider');
           _ref.read(networkErrorProvider.notifier).state = true;

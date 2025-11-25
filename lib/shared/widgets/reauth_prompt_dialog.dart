@@ -14,11 +14,14 @@ class ReauthPromptDialog extends StatelessWidget {
     this.isConnectionError = false,
   });
 
+  /// Show re-authentication dialog
+  /// Note: isConnectionError parameter is deprecated - network errors are now handled
+  /// by the networkErrorProvider system. This parameter is ignored.
   static Future<String?> show({
     required BuildContext context,
     required String accountId,
     required String accountEmail,
-    bool isConnectionError = false,
+    bool isConnectionError = false, // Deprecated - always treated as false
   }) async {
     return await showDialog<String>(
       context: context,
@@ -35,8 +38,11 @@ class ReauthPromptDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Note: isConnectionError should never be true anymore - network errors are handled
+    // by networkErrorProvider system. This parameter is kept for backward compatibility
+    // but will always be false in practice.
     return AppWindowDialog(
-      title: isConnectionError ? 'Connection Problem' : 'Re-authentication Required',
+      title: 'Re-authentication Required',
       child: Padding(
         padding: const EdgeInsets.all(24.0),
         child: Column(
@@ -44,9 +50,7 @@ class ReauthPromptDialog extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              isConnectionError
-                  ? "There's a problem connecting to Gmail."
-                  : 'Your Google account session has expired.',
+              'Your Google account session has expired.',
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 12),
@@ -57,34 +61,10 @@ class ReauthPromptDialog extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 16),
-            isConnectionError
-                ? RichText(
-                    text: TextSpan(
-                      style: theme.textTheme.bodyMedium,
-                      children: [
-                        const TextSpan(
-                          text: 'This could be a problem with your internet connection or Gmail service. Please try again and if the problem persists, please ',
-                        ),
-                        WidgetSpan(
-                          child: InkWell(
-                            onTap: () => Navigator.of(context).pop(true),
-                            child: Text(
-                              'reconnect',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: theme.colorScheme.primary,
-                                decoration: TextDecoration.underline,
-                              ),
-                            ),
-                          ),
-                        ),
-                        const TextSpan(text: '.'),
-                      ],
-                    ),
-                  )
-                : Text(
-                    'Please re-authenticate to continue syncing emails.',
-                    style: theme.textTheme.bodyMedium,
-                  ),
+            Text(
+              'Please re-authenticate to continue syncing emails.',
+              style: theme.textTheme.bodyMedium,
+            ),
             const SizedBox(height: 24),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -94,16 +74,9 @@ class ReauthPromptDialog extends StatelessWidget {
                   child: const Text('Cancel'),
                 ),
                 const SizedBox(width: 8),
-                if (isConnectionError) ...[
-                  TextButton(
-                    onPressed: () => Navigator.of(context).pop('retry'),
-                    child: const Text('Retry'),
-                  ),
-                  const SizedBox(width: 8),
-                ],
                 FilledButton(
-                  onPressed: () => Navigator.of(context).pop(isConnectionError ? 'reconnect' : 'reauth'),
-                  child: Text(isConnectionError ? 'Reconnect' : 'Re-authenticate'),
+                  onPressed: () => Navigator.of(context).pop('reauth'),
+                  child: const Text('Re-authenticate'),
                 ),
               ],
             ),
