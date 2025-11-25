@@ -269,5 +269,108 @@ class PushbulletMessageParser {
       return 'unable to summarize event: $e';
     }
   }
+
+  /// Parse recent SMS threads fetched via Pushbullet REST API.
+  /// Each element in [threads] should be a Map<String, dynamic>.
+  /// Returns a list of SMS events (only incoming messages are returned).
+  static List<PushbulletSmsEvent> parseRecentSmsThreads(List<dynamic> threads) {
+    final events = <PushbulletSmsEvent>[];
+    for (final rawThread in threads) {
+      if (rawThread is! Map<String, dynamic>) continue;
+      final messages = <Map<String, dynamic>>[];
+
+      void addMessage(dynamic msg) {
+        if (msg is Map<String, dynamic>) {
+          messages.add(msg);
+        }
+      }
+
+      addMessage(rawThread['latest_received_message']);
+      addMessage(rawThread['latest_message']);
+
+      final recents = rawThread['recents'];
+      if (recents is List) {
+        for (final item in recents) {
+          addMessage(item);
+        }
+      }
+
+      if (messages.isEmpty) continue;
+      messages.sort((a, b) {
+        final aTime = a['timestamp'] as num? ?? 0;
+        final bTime = b['timestamp'] as num? ?? 0;
+        return aTime.compareTo(bTime);
+      });
+
+      for (final message in messages) {
+        final smsEvent = _parseRecentSmsMessage(rawThread, message);
+        if (smsEvent != null) {
+          events.add(smsEvent);
+        }
+      }
+    }
+    return events;
+  }
+
+  static PushbulletSmsEvent? _parseRecentSmsMessage(
+    Map<String, dynamic> thread,
+    Map<String, dynamic> message,
+  ) {
+    final body = message['message'] ??
+        message['body'] ??
+        message['text'] ??
+        message['content'];
+    if (body == null || (body is String && body.trim().isEmpty)) {
+      return null;
+    }
+
+    final direction = (message['direction'] as String?)?.toLowerCase();
+    if (direction == 'outgoing') {
+      // Skip messages we sent; catch-up is mainly for incoming messages.
+      return null;
+    }
+
+    final timestamp = _timestampFromSeconds(message['timestamp'] as num?) ??
+        DateTime.now();
+    final notificationId = message['iden'] as String? ??
+        message['notification_id'] as String?;
+    final conversationId =
+        thread['iden'] as String? ?? message['thread_iden'] as String?;
+
+    final title = thread['name'] as String? ??
+        message['name'] as String? ??
+        message['title'] as String?;
+
+    dynamic addresses = thread['addresses'];
+    if (addresses == null && thread['participants'] is List) {
+      addresses = (thread['participants'] as List)
+          .map((p) => p is Map<String, dynamic> ? p['address'] : p)
+          .toList();
+    }
+
+    final primaryAddress =
+        message['address'] ?? message['phone_number'] ?? message['source'];
+    final phoneNumber = _chooseBestPhone(
+      primary: primaryAddress as String?,
+      addresses: addresses,
+      fallback: title,
+      conversationId: conversationId,
+    );
+
+    if (phoneNumber == null) {
+      return null;
+    }
+
+    return PushbulletSmsEvent(
+      phoneNumber: phoneNumber,
+      message: body as String,
+      timestamp: timestamp,
+      notificationId: notificationId,
+      deviceId: thread['device_iden'] as String? ?? message['device_iden'] as String?,
+      conversationId: conversationId ?? phoneNumber,
+      sourceUserId: null,
+      title: title,
+    );
+  }
 }
 

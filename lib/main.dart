@@ -11,6 +11,7 @@ import 'package:domail/data/db/app_database.dart';
 import 'package:flutter/foundation.dart';
 import 'package:domail/services/sync/firebase_init.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
+import 'package:domail/services/whatsapp/whatsapp_sync_manager.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -104,12 +105,26 @@ void main() async {
       final smsStart = DateTime.now();
       final smsManager = SmsSyncManager();
       await smsManager.start();
+      await smsManager.catchUpMissedMessages(force: true);
       final smsMs = DateTime.now().difference(smsStart).inMilliseconds;
       if (kDebugMode) {
         debugPrint('[Main] SMS Sync Manager initialization attempted in ${smsMs}ms');
       }
     } catch (e) {
       debugPrint('[Main] SMS Sync Manager initialization error: $e');
+    }
+
+    // Initialize WhatsApp Sync Manager (optional) in background
+    try {
+      final whatsappStart = DateTime.now();
+      final whatsappManager = WhatsAppSyncManager();
+      await whatsappManager.start();
+      final whatsappMs = DateTime.now().difference(whatsappStart).inMilliseconds;
+      if (kDebugMode) {
+        debugPrint('[Main] WhatsApp Sync Manager initialization attempted in ${whatsappMs}ms');
+      }
+    } catch (e) {
+      debugPrint('[Main] WhatsApp Sync Manager initialization error: $e');
     }
   });
 

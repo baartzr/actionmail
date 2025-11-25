@@ -45,6 +45,8 @@ import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart
 import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
+import 'package:domail/services/whatsapp/whatsapp_sync_manager.dart';
+import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
 import 'package:domail/features/home/presentation/widgets/floating_account_widget.dart';
 
 /// Main home screen for ActionMail
@@ -83,18 +85,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   // Cached service instances to avoid repeated instantiation
   late final MessageRepository _messageRepository = MessageRepository();
   late final SmsSyncManager _smsSyncManager = SmsSyncManager();
+  late final WhatsAppSyncManager _whatsAppSyncManager = WhatsAppSyncManager();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _smsSyncManager.onSmsReceived = _handleSmsReceived;
+    _whatsAppSyncManager.onWhatsAppReceived = _handleWhatsAppReceived;
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _smsSyncManager.onSmsReceived = null;
+    _whatsAppSyncManager.onWhatsAppReceived = null;
     _unreadCountRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();
@@ -103,6 +108,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_smsSyncManager.catchUpMissedMessages());
+    }
     // When app resumes, check if re-auth completed successfully
     // Only check if we're actually expecting a re-auth (oauth_reauth_account_id exists)
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
@@ -127,6 +135,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
       return;
     }
     // Refresh the current inbox to include the new SMS message
+    ref.read(emailListProvider.notifier).refresh(
+          _selectedAccountId!,
+          folderLabel: _selectedFolder,
+        );
+  }
+
+  void _handleWhatsAppReceived(MessageIndex message) {
+    if (!mounted) return;
+    if (_selectedAccountId == null || message.accountId != _selectedAccountId) {
+      return;
+    }
+    if (_isLocalFolder || _selectedFolder != AppConstants.folderInbox) {
+      return;
+    }
+    // Refresh the current inbox to include the new WhatsApp message
     ref.read(emailListProvider.notifier).refresh(
           _selectedAccountId!,
           folderLabel: _selectedFolder,

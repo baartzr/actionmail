@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:domail/services/sms/sms_sync_service.dart';
 import 'package:domail/services/sms/pushbullet_websocket_service.dart';
 import 'package:domail/services/sms/pushbullet_message_parser.dart';
+import 'package:domail/services/sms/pushbullet_rest_service.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/models/message_index.dart';
@@ -18,12 +19,16 @@ class SmsSyncManager {
   final SmsSyncService _syncService = SmsSyncService();
   final MessageRepository _messageRepository = MessageRepository();
   final GoogleAuthService _googleAuthService = GoogleAuthService();
+  final PushbulletRestService _restService = PushbulletRestService();
   
   PushbulletWebSocketService? _webSocketService;
   bool _isRunning = false;
   Timer? _checkStateTimer;
   String? _activeAccountId;
   String? _activeAccountEmail;
+  bool _isRestCatchUpRunning = false;
+  DateTime? _lastRestCatchUp;
+  static const Duration _restCatchUpMinInterval = Duration(minutes: 2);
 
   /// Callback when a new SMS message is received and saved
   void Function(MessageIndex message)? onSmsReceived;
@@ -80,6 +85,7 @@ class SmsSyncManager {
 
     // Connect to WebSocket
     await _webSocketService!.connect();
+    unawaited(_catchUpWithRest(force: true));
   }
 
   /// Stop SMS sync and disconnect WebSocket
@@ -166,6 +172,7 @@ class SmsSyncManager {
   /// Handle WebSocket connection established
   void _handleWebSocketConnected() {
     debugPrint('[SmsSyncManager] WebSocket connected');
+    unawaited(_catchUpWithRest());
   }
 
   /// Handle WebSocket disconnection
@@ -242,5 +249,53 @@ class SmsSyncManager {
 
   /// Check if WebSocket is connected
   bool get isConnected => _webSocketService?.isConnected ?? false;
+
+  /// Public entry point for forcing a REST catch-up (e.g., on app resume).
+  Future<void> catchUpMissedMessages({bool force = false}) async {
+    if (!_isRunning) {
+      debugPrint('[SmsSyncManager] catchUpMissedMessages skipped (manager not running)');
+      return;
+    }
+    await _catchUpWithRest(force: force);
+  }
+
+  Future<void> _catchUpWithRest({bool force = false}) async {
+    if (_activeAccountId == null || _activeAccountEmail == null) {
+      debugPrint('[SmsSyncManager] REST catch-up skipped (missing account context)');
+      return;
+    }
+    if (_isRestCatchUpRunning) {
+      debugPrint('[SmsSyncManager] REST catch-up already running');
+      return;
+    }
+    if (!force &&
+        _lastRestCatchUp != null &&
+        DateTime.now().difference(_lastRestCatchUp!) < _restCatchUpMinInterval) {
+      return;
+    }
+
+    _isRestCatchUpRunning = true;
+    try {
+      final events = await _restService.fetchRecentSmsEvents();
+      if (events.isEmpty) {
+        return;
+      }
+      for (final smsEvent in events) {
+        if (!smsEvent.isValid) continue;
+        final message = SmsMessageConverter.toMessageIndex(
+          smsEvent,
+          accountId: _activeAccountId!,
+          accountEmail: _activeAccountEmail!,
+        );
+        await _saveSmsMessage(message);
+      }
+      _lastRestCatchUp = DateTime.now();
+    } catch (e, stackTrace) {
+      debugPrint('[SmsSyncManager] REST catch-up error: $e');
+      debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+    } finally {
+      _isRestCatchUpRunning = false;
+    }
+  }
 }
 

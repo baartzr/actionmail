@@ -27,6 +27,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/services/sms/pushbullet_sms_sender.dart';
+import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
+import 'package:domail/services/whatsapp/whatsapp_sender.dart';
 
 const int _maxInlineImageCount = 0; // 0 means no limit
 const int _maxInlineImageTotalBytes = 0; // 0 means no limit
@@ -108,6 +110,8 @@ class _PendingSentMessage {
   final TextEditingController? textController; // For editable messages
   final bool isSms;
   final String? smsPhoneNumber;
+  final bool isWhatsApp;
+  final String? whatsappPhoneNumber;
 
   _PendingSentMessage({
     required this.threadId,
@@ -120,6 +124,8 @@ class _PendingSentMessage {
     this.textController,
     this.isSms = false,
     this.smsPhoneNumber,
+    this.isWhatsApp = false,
+    this.whatsappPhoneNumber,
   });
   
   bool get isEditable => !isSent && textController != null;
@@ -196,6 +202,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   // Pending sent messages (in-memory only, cleared on window close or when real message arrives)
   final List<_PendingSentMessage> _pendingSentMessages = [];
   final PushbulletSmsSender _smsSender = PushbulletSmsSender();
+  final WhatsAppSender _whatsAppSender = WhatsAppSender();
   Timer? _conversationRefreshTimer;
   final ScrollController _conversationScrollController = ScrollController();
   
@@ -208,12 +215,13 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   void initState() {
     super.initState();
     _currentMessage = widget.message;
-    // Auto-enable conversation mode for SMS messages
+    // Auto-enable conversation mode for SMS and WhatsApp messages
     final isSmsMessage = SmsMessageConverter.isSmsMessage(_currentMessage);
+    final isWhatsAppMessage = WhatsAppMessageConverter.isWhatsAppMessage(_currentMessage);
     // Load conversation mode state from provider
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final isConversationMode = ref.read(conversationModeProvider);
-      if (isConversationMode || isSmsMessage) {
+      if (isConversationMode || isSmsMessage || isWhatsAppMessage) {
         setState(() {
           _isConversationMode = true;
           _threadMessages = [_currentMessage];
@@ -327,6 +335,29 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         debugPrint('[EmailViewer] Loading SMS message from local content');
         final smsBody = _currentMessage.subject;
         final bodyHtml = _wrapPlainAsHtml(smsBody);
+        
+        if (!mounted) return;
+        setState(() {
+          _htmlContent = bodyHtml;
+          _attachments = [];
+          _isLoading = false;
+          _conversationAttachments[_currentMessage.id] = [];
+          _allowInlineImages = true;
+          _hasInlinePlaceholders = false;
+        });
+        final controller = _webViewController;
+        if (controller != null) {
+          unawaited(_loadHtmlIntoWebView(controller));
+        }
+        debugPrint('[EmailViewer] <<< loadEmailBody end (SMS) >>> messageId=${_currentMessage.id}');
+        return;
+      }
+
+      // For WhatsApp messages, use locally stored content (subject field contains the message body)
+      if (WhatsAppMessageConverter.isWhatsAppMessage(_currentMessage)) {
+        debugPrint('[EmailViewer] Loading WhatsApp message from local content');
+        final whatsappBody = _currentMessage.subject;
+        final bodyHtml = _wrapPlainAsHtml(whatsappBody);
         
         if (!mounted) return;
         setState(() {
@@ -1781,11 +1812,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
 
   void _handleReply() async {
     final isSmsThread = _isSmsConversation();
-    if (!_isConversationMode && isSmsThread) {
+    final isWhatsAppThread = _isWhatsAppConversation();
+    if (!_isConversationMode && (isSmsThread || isWhatsAppThread)) {
       _toggleConversationMode();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Conversation mode enabled for SMS replies')),
+          SnackBar(content: Text(isWhatsAppThread 
+            ? 'Conversation mode enabled for WhatsApp replies'
+            : 'Conversation mode enabled for SMS replies')),
         );
       }
       return;
@@ -1817,23 +1851,49 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
       
       final isSmsReply = SmsMessageConverter.isSmsMessage(messageToReplyTo);
+      final isWhatsAppReply = WhatsAppMessageConverter.isWhatsAppMessage(messageToReplyTo);
       final smsPhone = isSmsReply ? _extractSmsPhone(messageToReplyTo) : null;
+      final whatsappPhone = isWhatsAppReply ? _extractWhatsAppPhone(messageToReplyTo) : null;
+      
       if (isSmsReply && (smsPhone == null || smsPhone.isEmpty)) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to determine SMS recipient')),
+            const SnackBar(
+              content: Text(
+                'Unable to determine the SMS recipient number. Please reply directly from your phone.',
+              ),
+            ),
+          );
+        }
+        return;
+      }
+      
+      if (isWhatsAppReply && (whatsappPhone == null || whatsappPhone.isEmpty)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Unable to determine the WhatsApp recipient number. Please send this message from your phone.',
+              ),
+            ),
           );
         }
         return;
       }
 
-      // Use the sender of the last received email/SMS as the "To" address
-      final to = isSmsReply ? smsPhone! : _extractEmail(messageToReplyTo.from);
+      // Use the sender of the last received email/SMS/WhatsApp as the "To" address
+      final to = isSmsReply 
+          ? smsPhone! 
+          : isWhatsAppReply 
+              ? whatsappPhone! 
+              : _extractEmail(messageToReplyTo.from);
       final subject = isSmsReply
           ? 'SMS to $to'
-          : messageToReplyTo.subject.startsWith('Re:')
-              ? messageToReplyTo.subject
-              : 'Re: ${messageToReplyTo.subject}';
+          : isWhatsAppReply
+              ? 'WhatsApp to $to'
+              : messageToReplyTo.subject.startsWith('Re:')
+                  ? messageToReplyTo.subject
+                  : 'Re: ${messageToReplyTo.subject}';
       final threadId = messageToReplyTo.threadId.isNotEmpty ? messageToReplyTo.threadId : '';
       
       // Get account email for "From" field
@@ -1848,11 +1908,17 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         subject: subject,
         body: '', // Empty - will be filled when user types
         sentDate: DateTime.now(),
-        from: isSmsReply && fromEmail.isNotEmpty ? '$fromEmail (SMS)' : fromEmail,
+        from: isSmsReply && fromEmail.isNotEmpty 
+            ? '$fromEmail (SMS)' 
+            : isWhatsAppReply && fromEmail.isNotEmpty 
+                ? '$fromEmail (WhatsApp)' 
+                : fromEmail,
         isSent: false,
         textController: textController,
         isSms: isSmsReply,
         smsPhoneNumber: smsPhone,
+        isWhatsApp: isWhatsAppReply,
+        whatsappPhoneNumber: whatsappPhone,
       );
       
       setState(() {
@@ -2095,12 +2161,33 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     return _threadMessages.any(SmsMessageConverter.isSmsMessage);
   }
 
-  String _extractSmsPhone(MessageIndex message) {
+  bool _isWhatsAppConversation() {
+    if (WhatsAppMessageConverter.isWhatsAppMessage(_currentMessage)) {
+      return true;
+    }
+    return _threadMessages.any(WhatsAppMessageConverter.isWhatsAppMessage);
+  }
+
+  String? _extractSmsPhone(MessageIndex message) {
+    String? candidate;
     final match = RegExp(r'<([^>]+)>').firstMatch(message.from);
     if (match != null) {
-      return match.group(1)!.trim();
+      candidate = match.group(1)?.trim();
+    } else {
+      candidate = message.from.trim();
     }
-    return message.from.trim();
+
+    if (candidate == null || candidate.isEmpty) {
+      return null;
+    }
+
+    // Require at least one digit so Pushbullet can route the SMS.
+    final hasDigits = RegExp(r'\d').hasMatch(candidate);
+    return hasDigits ? candidate : null;
+  }
+
+  String? _extractWhatsAppPhone(MessageIndex message) {
+    return WhatsAppMessageConverter.extractPhoneNumber(message);
   }
 
 
@@ -2350,6 +2437,11 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       return;
     }
 
+    if (pending.isWhatsApp) {
+      await _sendPendingWhatsApp(pending, text);
+      return;
+    }
+
     // Find the message to reply to
     MessageIndex? lastReceivedMessage;
     final accountEmail = _accountEmail?.toLowerCase() ?? '';
@@ -2452,7 +2544,11 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     if (phone.isEmpty) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Missing SMS recipient number')),
+        const SnackBar(
+          content: Text(
+            'Missing SMS recipient number. Please reply directly from your phone.',
+          ),
+        ),
       );
       return;
     }
@@ -2487,6 +2583,50 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to send SMS: $e')),
+      );
+    }
+  }
+
+  Future<void> _sendPendingWhatsApp(_PendingSentMessage pending, String text) async {
+    final phone = pending.whatsappPhoneNumber ?? pending.to;
+    if (phone.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Missing WhatsApp recipient number')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSendingInlineReply = true;
+      pending.isSent = false;
+    });
+
+    try {
+      await _whatsAppSender.sendWhatsApp(
+        accountId: widget.accountId,
+        phoneNumber: phone,
+        message: text,
+      );
+      if (!mounted) return;
+      setState(() {
+        pending.isSent = true;
+        _isSendingInlineReply = false;
+      });
+      await _refreshConversation(showLoading: false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('WhatsApp message sent')),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        pending.isSent = false;
+        _isSendingInlineReply = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send WhatsApp message: $e')),
       );
     }
   }
