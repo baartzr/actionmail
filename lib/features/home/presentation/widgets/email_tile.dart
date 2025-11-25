@@ -697,19 +697,21 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                               );
                             }
                             
-                            // Unsubscribe (always available)
-                            items.add(
-                              PopupMenuItem(
-                                value: 'unsubscribe',
-                                child: Row(
-                                  children: [
-                                    Icon(Icons.unsubscribe, size: 20, color: theme.colorScheme.onSurface),
-                                    const SizedBox(width: 12),
-                                    const Text('Unsubscribe'),
-                                  ],
+                            // Unsubscribe (only show for messages with subs tag)
+                            if (widget.message.subsLocal) {
+                              items.add(
+                                PopupMenuItem(
+                                  value: 'unsubscribe',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.unsubscribe, size: 20, color: theme.colorScheme.onSurface),
+                                      const SizedBox(width: 12),
+                                      const Text('Unsubscribe'),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            );
+                              );
+                            }
                             
                             return items;
                           },

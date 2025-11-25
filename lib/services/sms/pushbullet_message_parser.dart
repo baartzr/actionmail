@@ -72,17 +72,29 @@ class PushbulletMessageParser {
 
     final title = notification['title'] as String?;
     final body = notification['body'] as String?;
+    final address = notification['address'] as String?;
+    final addresses = notification['addresses'];
+    final conversationId = notification['conversation_iden'] as String?;
+
+    // Debug: log raw Pushbullet data
+    debugPrint('[PushbulletParser] Mirror event raw data:');
+    debugPrint('[PushbulletParser]   title: "$title"');
+    debugPrint('[PushbulletParser]   address: "$address"');
+    debugPrint('[PushbulletParser]   addresses: $addresses');
+    debugPrint('[PushbulletParser]   conversation_iden: "$conversationId"');
+    debugPrint('[PushbulletParser]   notification keys: ${notification.keys.toList()}');
 
     final phoneNumber = _chooseBestPhone(
       fallback: title,
-      primary: notification['address'] as String?,
-      addresses: notification['addresses'],
-      conversationId: notification['conversation_iden'] as String?,
+      primary: address,
+      addresses: addresses,
+      conversationId: conversationId,
     );
+    
+    debugPrint('[PushbulletParser]   chosen phoneNumber: "$phoneNumber"');
     final timestamp = _timestampFromSeconds(push['created'] as num?);
     final notificationId = notification['notification_id'] as String?;
     final deviceId = notification['source_device_iden'] as String? ?? push['device_iden'] as String?;
-    final conversationId = notification['conversation_iden'] as String?;
 
     return PushbulletSmsEvent(
       phoneNumber: phoneNumber,
@@ -112,18 +124,32 @@ class PushbulletMessageParser {
 
     final title = first['title'] as String?;
     final body = first['body'] as String?;
+    final address = first['address'] as String?;
+    final addresses = first['addresses'];
+    final conversationIdRaw = first['conversation_iden'] as String?;
+
+    // Debug: log raw Pushbullet data
+    debugPrint('[PushbulletParser] SmsChanged event raw data:');
+    debugPrint('[PushbulletParser]   title: "$title"');
+    debugPrint('[PushbulletParser]   address: "$address"');
+    debugPrint('[PushbulletParser]   addresses: $addresses');
+    debugPrint('[PushbulletParser]   conversation_iden: "$conversationIdRaw"');
+    debugPrint('[PushbulletParser]   notification keys: ${first.keys.toList()}');
+
     final phoneNumber = _chooseBestPhone(
-      primary: first['address'] as String?,
-      addresses: first['addresses'],
+      primary: address,
+      addresses: addresses,
       fallback: title,
-      conversationId: first['conversation_iden'] as String?,
+      conversationId: conversationIdRaw,
     );
+    
+    debugPrint('[PushbulletParser]   chosen phoneNumber: "$phoneNumber"');
     final timestamp = _timestampFromSeconds(first['timestamp'] as num?) ?? DateTime.now();
     final notificationId = first['notification_id'] as String? ?? first['iden'] as String?;
     final deviceId = first['source_device_iden'] as String? ??
         first['target_device_iden'] as String? ??
         push['source_device_iden'] as String?;
-    final conversationId = first['conversation_iden'] as String? ?? phoneNumber;
+    final conversationId = conversationIdRaw ?? phoneNumber;
 
     return PushbulletSmsEvent(
       phoneNumber: phoneNumber,
@@ -163,16 +189,24 @@ class PushbulletMessageParser {
       if (fallback != null) fallback,
     ];
 
+    debugPrint('[PushbulletParser] _chooseBestPhone candidates: $candidates');
+
     for (final raw in candidates) {
       final candidate = sanitize(_extractPhoneNumber(raw) ?? raw);
+      debugPrint('[PushbulletParser]   checking candidate "$raw" -> "$candidate"');
       if (candidate == null) {
         continue;
       }
-      if (RegExp(r'\d').hasMatch(candidate)) {
+      final hasDigits = RegExp(r'\d').hasMatch(candidate);
+      debugPrint('[PushbulletParser]     hasDigits: $hasDigits');
+      if (hasDigits) {
+        debugPrint('[PushbulletParser]     -> selected: "$candidate"');
         return candidate;
       }
     }
-    return sanitize(primary ?? fallback ?? conversationId);
+    final finalResult = sanitize(primary ?? fallback ?? conversationId);
+    debugPrint('[PushbulletParser]   -> final fallback: "$finalResult"');
+    return finalResult;
   }
 
   /// Extract phone number from a string (removes common prefixes/suffixes)

@@ -208,10 +208,12 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   void initState() {
     super.initState();
     _currentMessage = widget.message;
+    // Auto-enable conversation mode for SMS messages
+    final isSmsMessage = SmsMessageConverter.isSmsMessage(_currentMessage);
     // Load conversation mode state from provider
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final isConversationMode = ref.read(conversationModeProvider);
-      if (isConversationMode) {
+      if (isConversationMode || isSmsMessage) {
         setState(() {
           _isConversationMode = true;
           _threadMessages = [_currentMessage];
@@ -221,7 +223,9 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
           _canGoBack = false;
         });
         unawaited(_loadThreadMessages());
-        _startConversationRefreshTimer();
+        if (!isSmsMessage) {
+          _startConversationRefreshTimer();
+        }
       }
     });
     _loadAccountEmail();
@@ -285,6 +289,10 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       }
     }
     _tempFilePaths.clear();
+    // Clear WebView controller reference to prevent post-dispose callbacks
+    // Note: The WebView will dispose itself, but clearing the reference prevents
+    // our code from trying to use it after disposal
+    _webViewController = null;
     super.dispose();
   }
 
@@ -314,6 +322,30 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
         }
       }
 
+      // For SMS messages, use locally stored content (subject field contains the message body)
+      if (SmsMessageConverter.isSmsMessage(_currentMessage)) {
+        debugPrint('[EmailViewer] Loading SMS message from local content');
+        final smsBody = _currentMessage.subject;
+        final bodyHtml = _wrapPlainAsHtml(smsBody);
+        
+        if (!mounted) return;
+        setState(() {
+          _htmlContent = bodyHtml;
+          _attachments = [];
+          _isLoading = false;
+          _conversationAttachments[_currentMessage.id] = [];
+          _allowInlineImages = true;
+          _hasInlinePlaceholders = false;
+        });
+        final controller = _webViewController;
+        if (controller != null) {
+          unawaited(_loadHtmlIntoWebView(controller));
+        }
+        stopTiming?.call();
+        debugPrint('[EmailViewer] <<< loadEmailBody end (SMS) >>> messageId=${_currentMessage.id}');
+        return;
+      }
+      
       // If viewing from local folder, load from saved file
       if (widget.localFolderName != null) {
         final folderService = LocalFolderService();
@@ -2002,6 +2034,23 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   Future<void> _refreshConversation({bool showLoading = false}) async {
     if (!_isConversationMode) return;
     
+    // Skip Gmail sync for SMS conversations - they are managed by Pushbullet
+    if (_isSmsConversation()) {
+      // Just reload thread messages from local database
+      if (showLoading && mounted) {
+        setState(() {
+          _isThreadLoading = true;
+        });
+      }
+      await _loadThreadMessages();
+      if (showLoading && mounted) {
+        setState(() {
+          _isThreadLoading = false;
+        });
+      }
+      return;
+    }
+    
     try {
       if (showLoading && mounted) {
         setState(() {
@@ -2539,6 +2588,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
 
             final senderEmail = _extractEmail(message.from);
             final senderName = _extractSenderName(message.from);
+            // For SMS messages, check if there's a contact name structure
+            final isSms = SmsMessageConverter.isSmsMessage(message);
+            final hasSmsContactName = isSms && message.from.contains('<') && message.from.contains('>');
+            // Debug logging for SMS messages
+            if (isSms) {
+              debugPrint('[EmailViewer] SMS sender display - from: "${message.from}", senderName: "$senderName", senderEmail: "$senderEmail"');
+              debugPrint('[EmailViewer] SMS display - hasContactName: $hasSmsContactName');
+            }
             final attachments = _conversationAttachments[message.id];
             final isLoadingAttachments = _loadingConversationAttachmentIds.contains(message.id);
 
@@ -2597,13 +2654,43 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                '$senderName <$senderEmail>',
-                                style: theme.textTheme.titleSmall?.copyWith(
-                                  color: textColor,
-                                  fontWeight: FontWeight.w600,
+                              // For SMS messages, show name on first row and phone on second row
+                              if (isSms) ...[
+                                if (hasSmsContactName) ...[
+                                  // First row: Contact name (what's before < >)
+                                  Text(
+                                    senderName,
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  // Second row: Phone number (what's inside < >)
+                                  Text(
+                                    senderEmail.isNotEmpty ? senderEmail : senderName,
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: metaColor,
+                                    ),
+                                  ),
+                                ] else ...[
+                                  // No contact name, just phone number - show on first row only
+                                  Text(
+                                    senderName.isNotEmpty ? senderName : message.from,
+                                    style: theme.textTheme.titleSmall?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ] else ...[
+                                Text(
+                                  '$senderName <$senderEmail>',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    color: textColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
                                 ),
-                              ),
+                              ],
                               const SizedBox(height: 4),
                               Text(
                                 _formatDate(message.internalDate),
@@ -2774,8 +2861,12 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     try {
       String? bodyHtml;
 
-      // If viewing from local folder, load from saved file
-      if (widget.localFolderName != null) {
+      // For SMS messages, use locally stored content (subject field contains the message body)
+      if (SmsMessageConverter.isSmsMessage(message)) {
+        final smsBody = message.subject;
+        bodyHtml = _wrapPlainAsHtml(smsBody);
+      } else if (widget.localFolderName != null) {
+        // If viewing from local folder, load from saved file
         final folderService = LocalFolderService();
         final body = await folderService.loadEmailBody(widget.localFolderName!, message.id);
         if (body != null) {
@@ -2940,9 +3031,12 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               icon: const Icon(Icons.arrow_back, size: 20),
               color: theme.appBarTheme.foregroundColor,
               onPressed: () async {
+                if (!mounted) return;
                 if (_webViewController != null && await _webViewController!.canGoBack()) {
                   await _webViewController!.goBack();
-                  await _updateNavigationState();
+                  if (mounted) {
+                    await _updateNavigationState();
+                  }
                 }
               },
             ),
@@ -2952,6 +3046,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               icon: const Icon(Icons.home, size: 20),
               color: theme.appBarTheme.foregroundColor,
               onPressed: () async {
+                if (!mounted) return;
                 if (_webViewController != null && _htmlContent != null) {
                   if (mounted) {
                     setState(() {
@@ -2959,7 +3054,9 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                       _currentUrl = null;
                     });
                   }
-                  await _loadHtmlIntoWebView(_webViewController!);
+                  if (mounted && _webViewController != null) {
+                    await _loadHtmlIntoWebView(_webViewController!);
+                  }
                 }
               },
             ),

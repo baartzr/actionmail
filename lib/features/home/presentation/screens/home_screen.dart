@@ -44,6 +44,7 @@ import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.
 import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart';
 import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
+import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/features/home/presentation/widgets/floating_account_widget.dart';
 
 /// Main home screen for ActionMail
@@ -1644,31 +1645,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     // Defer heavy work (token check, body fetch, file IO, DB, Gmail) until after UI paints
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       try {
-        // Get access token for downloading email body and attachments
-        final account = await GoogleAuthService()
-            .ensureValidAccessToken(_selectedAccountId!);
-        final accessToken = account?.accessToken;
-        if (accessToken == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Unable to save: No access token')),
-            );
+        // For SMS messages, use locally stored content (subject field contains the message body)
+        String? emailBody;
+        String? accessToken;
+        if (SmsMessageConverter.isSmsMessage(message)) {
+          emailBody = message.subject;
+          // SMS messages don't need access token for saving to local folder
+          accessToken = null;
+        } else {
+          // Get access token for downloading email body and attachments
+          final account = await GoogleAuthService()
+              .ensureValidAccessToken(_selectedAccountId!);
+          accessToken = account?.accessToken;
+          if (accessToken == null) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Unable to save: No access token')),
+              );
+            }
+            return;
           }
-          return;
-        }
 
-        // Fetch full email body
-        final gmailService = GmailSyncService();
-        final emailBody =
-            await gmailService.getEmailBody(message.id, accessToken);
-        if (emailBody == null) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                  content: Text('Unable to save: Could not fetch email body')),
-            );
+          // Fetch full email body from Gmail API
+          final gmailService = GmailSyncService();
+          emailBody = await gmailService.getEmailBody(message.id, accessToken);
+          if (emailBody == null) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                    content: Text('Unable to save: Could not fetch email body')),
+              );
+            }
+            return;
           }
-          return;
         }
 
         final accountEmail = HomeScreenHelpers.getAccountEmail(
@@ -1677,14 +1686,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
           accounts: _accounts,
         );
 
-        // Save to local folder
+        // Save to local folder (accessToken is optional for SMS messages)
         final saved = await _localFolderService.saveEmailToFolder(
           folderName: folderName,
           message: message,
           emailBodyHtml: emailBody,
           accountId: _selectedAccountId!,
           accountEmail: accountEmail,
-          accessToken: accessToken,
+          accessToken: accessToken ?? '', // Empty string for SMS messages
         );
 
         if (saved) {
@@ -2012,6 +2021,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   void _enqueueGmailUpdate(String action, String messageId) {
     if (_selectedAccountId == null) return;
     // Enqueue to DB; processing is triggered by refresh/incremental sync
+    // GmailSyncService will skip SMS messages automatically
     MessageRepository()
         .enqueuePendingOp(_selectedAccountId!, messageId, action);
     // Trigger background processing after current frame to allow optimistic UI to paint first

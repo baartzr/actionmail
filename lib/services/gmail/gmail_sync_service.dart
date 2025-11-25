@@ -608,6 +608,13 @@ class GmailSyncService {
         final String action = op['action'] as String;
         final int retries = (op['retries'] as int?) ?? 0;
         
+        // Skip Gmail updates for SMS messages (they are managed by Pushbullet, not Gmail)
+        if (messageId.startsWith('sms_')) {
+          debugPrint('[GmailSync] Skipping pending op for SMS message: $messageId (action: $action)');
+          await _repo.markOpDone(id); // Mark as done so it doesn't retry
+          continue;
+        }
+        
         // Check if token is still valid/not expired before each operation
         if (account != null && accessToken != null && accessToken.isNotEmpty) {
           final nowMs = DateTime.now().millisecondsSinceEpoch;
@@ -687,6 +694,13 @@ class GmailSyncService {
   /// Apply label change with a pre-validated access token (for batched operations)
   /// Returns the HTTP status code if the request fails, for better error handling
   Future<void> _applyLabelChangeWithToken(String accountId, String messageId, String action, String accessToken) async {
+    // Skip Gmail updates for SMS messages (they are managed by Pushbullet, not Gmail)
+    // SMS messages have IDs starting with 'sms_' or thread IDs starting with 'sms_thread_'
+    if (messageId.startsWith('sms_')) {
+      debugPrint('[GmailSync] Skipping Gmail update for SMS message: $messageId (action: $action)');
+      return;
+    }
+    
     final uri = Uri.parse('https://gmail.googleapis.com/gmail/v1/users/me/messages/$messageId/modify');
     final body = _buildModifyBody(action);
     final resp = await http.post(

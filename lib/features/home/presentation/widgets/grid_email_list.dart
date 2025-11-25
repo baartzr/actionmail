@@ -1329,6 +1329,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
         TableCell(
           verticalAlignment: TableCellVerticalAlignment.middle,
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => widget.onEmailTap?.call(email),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -1378,6 +1379,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
         TableCell(
           verticalAlignment: TableCellVerticalAlignment.middle,
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => widget.onEmailTap?.call(email),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
@@ -1574,6 +1576,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
         // Sender/To column
         DataCell(
           GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => widget.onEmailTap?.call(email),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1619,6 +1622,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
         // Subject & Snippet column
         DataCell(
           GestureDetector(
+            behavior: HitTestBehavior.opaque,
             onTap: () => widget.onEmailTap?.call(email),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2209,19 +2213,21 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
                 );
               }
               
-              // Unsubscribe (always available)
-              items.add(
-                PopupMenuItem(
-                  value: 'unsubscribe',
-                  child: Row(
-                    children: [
-                      Icon(Icons.unsubscribe, size: 20, color: theme.colorScheme.onSurface),
-                      const SizedBox(width: 12),
-                      const Text('Unsubscribe'),
-                    ],
+              // Unsubscribe (only show for messages with subs tag)
+              if (email.subsLocal) {
+                items.add(
+                  PopupMenuItem(
+                    value: 'unsubscribe',
+                    child: Row(
+                      children: [
+                        Icon(Icons.unsubscribe, size: 20, color: theme.colorScheme.onSurface),
+                        const SizedBox(width: 12),
+                        const Text('Unsubscribe'),
+                      ],
+                    ),
                   ),
-                ),
-              );
+                );
+              }
               
               return items;
             },
