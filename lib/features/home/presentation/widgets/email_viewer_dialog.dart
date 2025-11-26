@@ -1829,134 +1829,127 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     return sanitized.isEmpty ? 'attachment' : sanitized;
   }
 
-  void _handleReply() async {
-    final isSmsThread = _isSmsConversation();
-    final isWhatsAppThread = _isWhatsAppConversation();
-    if (!_isConversationMode && (isSmsThread || isWhatsAppThread)) {
-      _toggleConversationMode();
+  void _handleAddInlineReply() async {
+    // Find the last received email (not sent by user) to get the "To" address
+    MessageIndex? lastReceivedMessage;
+    final accountEmail = _accountEmail?.toLowerCase() ?? '';
+    
+    // Combine all messages (thread + current)
+    final allThreadMessages = _threadMessages.isEmpty 
+        ? <MessageIndex>[_currentMessage] 
+        : List<MessageIndex>.from(_threadMessages);
+    
+    // Find the most recent message that was NOT sent by the user
+    for (final msg in allThreadMessages) {
+      final senderEmail = _extractEmail(msg.from).toLowerCase();
+      if (senderEmail != accountEmail && accountEmail.isNotEmpty) {
+        if (lastReceivedMessage == null || 
+            msg.internalDate.isAfter(lastReceivedMessage.internalDate)) {
+          lastReceivedMessage = msg;
+        }
+      }
+    }
+    
+    // Fallback to current message if no received message found
+    final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
+    
+    final isSmsReply = SmsMessageConverter.isSmsMessage(messageToReplyTo);
+    final isWhatsAppReply = WhatsAppMessageConverter.isWhatsAppMessage(messageToReplyTo);
+    final smsPhone = isSmsReply ? _extractSmsPhone(messageToReplyTo) : null;
+    final whatsappPhone = isWhatsAppReply ? _extractWhatsAppPhone(messageToReplyTo) : null;
+    
+    if (isSmsReply && (smsPhone == null || smsPhone.isEmpty)) {
+      if (mounted) {
+        await showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('SMS Reply Unavailable'),
+            content: const Text(
+              'Unable to determine the SMS recipient number. Please reply directly from your phone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                child: const Text('OK'),
+              ),
+            ],
+          ),
+        );
+      }
+      return;
+    }
+    
+    if (isWhatsAppReply && (whatsappPhone == null || whatsappPhone.isEmpty)) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(isWhatsAppThread 
-            ? 'Conversation mode enabled for WhatsApp replies'
-            : 'Conversation mode enabled for SMS replies')),
+          const SnackBar(
+            content: Text(
+              'Unable to determine the WhatsApp recipient number. Please send this message from your phone.',
+            ),
+          ),
         );
       }
       return;
     }
 
-    // In conversation mode, create an empty message bubble at the top
-    if (_isConversationMode) {
-      // Find the last received email (not sent by user) to get the "To" address
-      MessageIndex? lastReceivedMessage;
-      final accountEmail = _accountEmail?.toLowerCase() ?? '';
-      
-      // Combine all messages (thread + current)
-      final allThreadMessages = _threadMessages.isEmpty 
-          ? <MessageIndex>[_currentMessage] 
-          : List<MessageIndex>.from(_threadMessages);
-      
-      // Find the most recent message that was NOT sent by the user
-      for (final msg in allThreadMessages) {
-        final senderEmail = _extractEmail(msg.from).toLowerCase();
-        if (senderEmail != accountEmail && accountEmail.isNotEmpty) {
-          if (lastReceivedMessage == null || 
-              msg.internalDate.isAfter(lastReceivedMessage.internalDate)) {
-            lastReceivedMessage = msg;
-          }
-        }
-      }
-      
-      // Fallback to current message if no received message found
-      final messageToReplyTo = lastReceivedMessage ?? _currentMessage;
-      
-      final isSmsReply = SmsMessageConverter.isSmsMessage(messageToReplyTo);
-      final isWhatsAppReply = WhatsAppMessageConverter.isWhatsAppMessage(messageToReplyTo);
-      final smsPhone = isSmsReply ? _extractSmsPhone(messageToReplyTo) : null;
-      final whatsappPhone = isWhatsAppReply ? _extractWhatsAppPhone(messageToReplyTo) : null;
-      
-      if (isSmsReply && (smsPhone == null || smsPhone.isEmpty)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Unable to determine the SMS recipient number. Please reply directly from your phone.',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-      
-      if (isWhatsAppReply && (whatsappPhone == null || whatsappPhone.isEmpty)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Unable to determine the WhatsApp recipient number. Please send this message from your phone.',
-              ),
-            ),
-          );
-        }
-        return;
-      }
-
-      // Use the sender of the last received email/SMS/WhatsApp as the "To" address
-      final to = isSmsReply 
-          ? smsPhone! 
-          : isWhatsAppReply 
-              ? whatsappPhone! 
-              : _extractEmail(messageToReplyTo.from);
-      final subject = isSmsReply
-          ? 'SMS to $to'
-          : isWhatsAppReply
-              ? 'WhatsApp to $to'
-              : messageToReplyTo.subject.startsWith('Re:')
-                  ? messageToReplyTo.subject
-                  : 'Re: ${messageToReplyTo.subject}';
-      final threadId = messageToReplyTo.threadId.isNotEmpty ? messageToReplyTo.threadId : '';
-      
-      // Get account email for "From" field
-      final account = await GoogleAuthService().getAccountById(widget.accountId);
-      final fromEmail = account?.email ?? '';
-      
-      // Create an empty editable pending message
-      final textController = TextEditingController();
-      final pendingMessage = _PendingSentMessage(
-        threadId: threadId,
-        to: to,
-        subject: subject,
-        body: '', // Empty - will be filled when user types
-        sentDate: DateTime.now(),
-        from: isSmsReply && fromEmail.isNotEmpty 
-            ? '$fromEmail (SMS)' 
-            : isWhatsAppReply && fromEmail.isNotEmpty 
-                ? '$fromEmail (WhatsApp)' 
-                : fromEmail,
-        isSent: false,
-        textController: textController,
-        isSms: isSmsReply,
-        smsPhoneNumber: smsPhone,
-        isWhatsApp: isWhatsAppReply,
-        whatsappPhoneNumber: whatsappPhone,
-      );
-      
-      setState(() {
-        _pendingSentMessages.add(pendingMessage);
-      });
-      
-      // Scroll to top to show the new message
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_conversationScrollController.hasClients) {
-          _conversationScrollController.animateTo(
-            0,
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOut,
-          );
-        }
-      });
-      return;
-    }
+    // Use the sender of the last received email/SMS/WhatsApp as the "To" address
+    final to = isSmsReply 
+        ? smsPhone! 
+        : isWhatsAppReply 
+            ? whatsappPhone! 
+            : _extractEmail(messageToReplyTo.from);
+    final subject = isSmsReply
+        ? 'SMS to $to'
+        : isWhatsAppReply
+            ? 'WhatsApp to $to'
+            : messageToReplyTo.subject.startsWith('Re:')
+                ? messageToReplyTo.subject
+                : 'Re: ${messageToReplyTo.subject}';
+    final threadId = messageToReplyTo.threadId.isNotEmpty ? messageToReplyTo.threadId : '';
     
+    // Get account email for "From" field
+    final account = await GoogleAuthService().getAccountById(widget.accountId);
+    final fromEmail = account?.email ?? '';
+    
+    // Create an empty editable pending message
+    final textController = TextEditingController();
+    final pendingMessage = _PendingSentMessage(
+      threadId: threadId,
+      to: to,
+      subject: subject,
+      body: '', // Empty - will be filled when user types
+      sentDate: DateTime.now(),
+      from: isSmsReply && fromEmail.isNotEmpty 
+          ? '$fromEmail (SMS)' 
+          : isWhatsAppReply && fromEmail.isNotEmpty 
+              ? '$fromEmail (WhatsApp)' 
+              : fromEmail,
+      isSent: false,
+      textController: textController,
+      isSms: isSmsReply,
+      smsPhoneNumber: smsPhone,
+      isWhatsApp: isWhatsAppReply,
+      whatsappPhoneNumber: whatsappPhone,
+    );
+    
+    setState(() {
+      _pendingSentMessages.add(pendingMessage);
+    });
+    
+    // Scroll to top to show the new message
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_conversationScrollController.hasClients) {
+        _conversationScrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  void _handleReply() async {
+    // Always open compose window (same behavior for all message types and modes)
     final to = _resolveReplyRecipient();
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
@@ -1973,15 +1966,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleReplyAll() {
-    if (_isSmsConversation() || _isWhatsAppConversation()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reply all is not available for this conversation')),
-        );
-      }
-      return;
-    }
-    final to = _extractEmail(_currentMessage.from);
+    final to = _resolveReplyRecipient();
     // TODO: Extract all recipients from the email
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
@@ -1998,14 +1983,6 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleForward() {
-    if (_isSmsConversation() || _isWhatsAppConversation()) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Forward is not available for this conversation')),
-        );
-      }
-      return;
-    }
     final subject = _currentMessage.subject.startsWith('Fwd:') 
         ? _currentMessage.subject 
         : 'Fwd: ${_currentMessage.subject}';
@@ -2198,12 +2175,6 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     return _threadMessages.any(SmsMessageConverter.isSmsMessage);
   }
 
-  bool _isWhatsAppConversation() {
-    if (WhatsAppMessageConverter.isWhatsAppMessage(_currentMessage)) {
-      return true;
-    }
-    return _threadMessages.any(WhatsAppMessageConverter.isWhatsAppMessage);
-  }
 
   String? _extractSmsPhone(MessageIndex message) {
     String? candidate;
@@ -3238,13 +3209,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isSmsThread = _isSmsConversation();
+    final isSmsMessage = SmsMessageConverter.isSmsMessage(_currentMessage);
+    final windowTitle = isSmsMessage ? 'SMS Message' : 'Email Message';
     return Shortcuts(
       shortcuts: <LogicalKeySet, Intent>{
         LogicalKeySet(LogicalKeyboardKey.escape): DoNothingIntent(),
       },
       child: AppWindowDialog(
-        title: 'Email',
+        title: windowTitle,
         fullscreen: false,
         windowId: 'emailWindow',
         headerActions: [
@@ -3353,20 +3325,18 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               }
             },
             itemBuilder: (context) => [
-              PopupMenuItem<_ReplyMenuAction>(
+              const PopupMenuItem<_ReplyMenuAction>(
                 value: _ReplyMenuAction.reply,
-                child: Text(isSmsThread ? 'Reply via SMS' : 'Reply'),
+                child: Text('Reply'),
               ),
-              if (!isSmsThread)
-                const PopupMenuItem<_ReplyMenuAction>(
-                  value: _ReplyMenuAction.replyAll,
-                  child: Text('Reply all'),
-                ),
-              if (!isSmsThread)
-                const PopupMenuItem<_ReplyMenuAction>(
-                  value: _ReplyMenuAction.forward,
-                  child: Text('Forward'),
-                ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.replyAll,
+                child: Text('Reply all'),
+              ),
+              const PopupMenuItem<_ReplyMenuAction>(
+                value: _ReplyMenuAction.forward,
+                child: Text('Forward'),
+              ),
             ],
         ),
         Builder(
@@ -3424,6 +3394,20 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                       : _isConversationMode
                           ? Column(
                               children: [
+                                // Add reply button below appbar
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 0),
+                                  alignment: Alignment.centerRight,
+                                  child: IconButton(
+                                    tooltip: 'Add reply',
+                                    icon: const Icon(Icons.add_circle_outline, size: 24),
+                                    color: theme.colorScheme.primary,
+                                    onPressed: () {
+                                      // Same action as clicking reply - add inline reply tile
+                                      _handleAddInlineReply();
+                                    },
+                                  ),
+                                ),
                                 Expanded(child: _buildConversationList()),
                               ],
                       )
