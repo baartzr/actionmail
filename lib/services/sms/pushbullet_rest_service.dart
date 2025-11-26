@@ -37,6 +37,14 @@ class PushbulletRestService {
       );
 
       if (resp.statusCode != 200) {
+        // 404 is expected when permanent object doesn't exist yet (normal for new devices or devices without SMS history)
+        // Suppress 404 errors as they're expected and not actionable
+        if (resp.statusCode == 404) {
+          // Silent return - 404 is expected when permanent object doesn't exist yet
+          // The object will be created by Pushbullet after the first SMS is received
+          return [];
+        }
+        // Log other error status codes
         debugPrint('[PushbulletRest] Failed response: ${resp.statusCode} ${resp.body}');
         return [];
       }

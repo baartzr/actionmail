@@ -116,8 +116,28 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   static final DateFormat _previewDateFormat = DateFormat('EEE, MMM d, yyyy h:mm a');
   final PushbulletSmsSender _smsSender = PushbulletSmsSender();
   ComposeMessageType _messageType = ComposeMessageType.email;
+  
+  // Listeners for text field changes
+  late final VoidCallback _toFieldListener;
+  late final VoidCallback _bodyFieldListener;
 
   bool get _isEmailMessage => _messageType == ComposeMessageType.email;
+
+  /// Check if send button should be disabled
+  bool get _isSendDisabled {
+    if (_isSending) return true;
+    
+    final toEmpty = _toController.text.trim().isEmpty;
+    final bodyEmpty = _bodyController.text.trim().isEmpty;
+    
+    // For SMS and WhatsApp, both recipient and body are required
+    if (_messageType == ComposeMessageType.sms || _messageType == ComposeMessageType.whatsapp) {
+      return toEmpty || bodyEmpty;
+    }
+    
+    // For email, only recipient is required (body can be empty)
+    return toEmpty;
+  }
 
   @override
   void initState() {
@@ -146,6 +166,16 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
       }
     }
 
+    // Add listeners to update UI when text changes
+    _toFieldListener = () {
+      if (mounted) setState(() {});
+    };
+    _bodyFieldListener = () {
+      if (mounted) setState(() {});
+    };
+    _toController.addListener(_toFieldListener);
+    _bodyController.addListener(_bodyFieldListener);
+
     if (_shouldFetchOriginalContent) {
       unawaited(_loadOriginalMessageContent());
     }
@@ -153,6 +183,8 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
 
   @override
   void dispose() {
+    _toController.removeListener(_toFieldListener);
+    _bodyController.removeListener(_bodyFieldListener);
     _toController.dispose();
     _subjectController.dispose();
     _bodyController.dispose();
@@ -362,16 +394,23 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   }
 
   Future<void> _sendWhatsApp() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (!_formKey.currentState!.validate()) {
+      debugPrint('[Compose] WhatsApp send: Form validation failed');
+      return;
+    }
     final phone = _preparePhoneForWhatsApp(_toController.text);
     final body = _bodyController.text.trim();
+    debugPrint('[Compose] WhatsApp send: phone="$phone", body length=${body.length}');
+    
     if (phone.isEmpty) {
+      debugPrint('[Compose] WhatsApp send: Phone number is empty after preparation');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Enter a valid phone number')),
       );
       return;
     }
     if (body.isEmpty) {
+      debugPrint('[Compose] WhatsApp send: Message body is empty');
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Message body is required for WhatsApp')),
       );
@@ -385,23 +424,45 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     try {
       final encodedMessage = Uri.encodeComponent(body);
       final deepLink = Uri.parse('whatsapp://send?phone=$phone&text=$encodedMessage');
+      debugPrint('[Compose] WhatsApp send: Attempting deep link: $deepLink');
+      
       bool launched = false;
       if (await canLaunchUrl(deepLink)) {
+        debugPrint('[Compose] WhatsApp send: canLaunchUrl returned true, launching...');
         launched = await launchUrl(deepLink, mode: LaunchMode.externalApplication);
+        debugPrint('[Compose] WhatsApp send: launchUrl returned: $launched');
+      } else {
+        debugPrint('[Compose] WhatsApp send: canLaunchUrl returned false, trying web URL fallback...');
       }
+      
       if (!launched) {
         final waMe = Uri.parse('https://wa.me/$phone?text=$encodedMessage');
-        launched = await launchUrl(waMe, mode: LaunchMode.externalApplication);
+        debugPrint('[Compose] WhatsApp send: Attempting web URL fallback: $waMe');
+        try {
+          // Try to launch the web URL even if canLaunchUrl returns false
+          // (browser might still be able to open it)
+          launched = await launchUrl(waMe, mode: LaunchMode.externalApplication);
+          debugPrint('[Compose] WhatsApp send: Web URL launch returned: $launched');
+        } catch (urlError) {
+          debugPrint('[Compose] WhatsApp send: Error launching web URL: $urlError');
+          // Re-throw with more context
+          throw StateError('Failed to open WhatsApp web link. Please check your browser settings. Error: $urlError');
+        }
       }
+      
       if (!launched) {
-        throw StateError('WhatsApp is not installed. Please install WhatsApp to send messages.');
+        debugPrint('[Compose] WhatsApp send: Both deep link and web URL failed');
+        throw StateError('Unable to open WhatsApp. On Windows, this will open WhatsApp Web in your browser. Please ensure your default browser is configured correctly.');
       }
+      
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Opening WhatsApp...')),
       );
       Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
-    } catch (e) {
+    } catch (e, stackTrace) {
+      debugPrint('[Compose] WhatsApp send error: $e');
+      debugPrint('[Compose] WhatsApp send stack trace: $stackTrace');
       if (!mounted) return;
       setState(() => _isSending = false);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -923,10 +984,31 @@ $body
   }
 
   String _preparePhoneForWhatsApp(String input) {
-    var digits = input.trim().replaceAll(RegExp(r'[^0-9]'), '');
+    var trimmed = input.trim();
+    if (trimmed.isEmpty) return '';
+    
+    // Check if it starts with +
+    final hasPlus = trimmed.startsWith('+');
+    
+    // Extract all digits
+    var digits = trimmed.replaceAll(RegExp(r'[^\d]'), '');
+    
+    if (digits.isEmpty) return '';
+    
+    // Handle leading 00 (international prefix that should become +)
     if (digits.startsWith('00')) {
       digits = digits.substring(2);
+      // After removing 00, add + for international format
+      return '+$digits';
     }
+    
+    // If it had +, add it back (WhatsApp requires + for international format)
+    if (hasPlus) {
+      return '+$digits';
+    }
+    
+    // For numbers without +, assume they need country code
+    // Return digits only - WhatsApp web (wa.me) can handle both formats
     return digits;
   }
 
@@ -1045,7 +1127,7 @@ $body
           tooltip: 'Send',
           icon: const Icon(Icons.send, size: 20),
           color: theme.appBarTheme.foregroundColor,
-          onPressed: _isSending ? null : _handleSend,
+          onPressed: _isSendDisabled ? null : _handleSend,
         ),
       ],
       child: Form(
