@@ -1216,6 +1216,17 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   String _buildEmailHtml(String bodyHtml) {
+    // Extract sender name and email for duplication check
+    final senderName = _extractSenderName(_currentMessage.from);
+    final senderEmail = _extractEmail(_currentMessage.from);
+    final showSenderNameOnly = senderName.trim() == senderEmail.trim();
+    final fromDisplay = showSenderNameOnly 
+        ? senderName 
+        : '$senderName <$senderEmail>';
+    
+    // Check if snippet should be shown (it's in the body, but we don't show it separately in regular view)
+    // The snippet is typically the first part of the body, so duplication logic isn't needed here
+    
     return '''
 <!DOCTYPE html>
 <html>
@@ -1272,7 +1283,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   <div class="email-header">
     <h2>${_escapeHtml(_currentMessage.subject)}</h2>
     <div class="meta">
-      <div><strong>From:</strong> ${_escapeHtml(_currentMessage.from)}</div>
+      <div><strong>From:</strong> ${_escapeHtml(fromDisplay)}</div>
       <div><strong>To:</strong> ${_escapeHtml(_currentMessage.to)}</div>
       <div><strong>Date:</strong> ${_formatDate(_currentMessage.internalDate)}</div>
     </div>
@@ -1286,6 +1297,9 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   Future<void> _loadHtmlIntoWebView(InAppWebViewController controller) async {
+    if (!mounted) {
+      return;
+    }
     final html = _htmlContent;
     if (html == null) {
       return;
@@ -1297,7 +1311,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       final containsDataUri = html.contains('data:');
       if (htmlBytes.length > navigateToStringLimit || containsDataUri) {
         final filePath = await _createTempHtmlFile(htmlBytes);
-        if (filePath != null) {
+        if (filePath != null && mounted) {
           await controller.loadUrl(
             urlRequest: URLRequest(url: WebUri.uri(Uri.file(filePath))),
           );
@@ -1306,11 +1320,13 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       }
     }
 
-    await controller.loadData(
-      data: html,
-      mimeType: 'text/html',
-      encoding: 'utf8',
-    );
+    if (mounted) {
+      await controller.loadData(
+        data: html,
+        mimeType: 'text/html',
+        encoding: 'utf8',
+      );
+    }
   }
 
   Future<String?> _createTempHtmlFile(List<int> htmlBytes) async {
@@ -1550,6 +1566,9 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   Future<void> _applyScrollEnhancements(InAppWebViewController controller) async {
+    if (!mounted) {
+      return;
+    }
     const script = '''
 (function() {
   if (window.__domailScrollPatchApplied) {
@@ -2728,6 +2747,32 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
 
             final senderEmail = _extractEmail(message.from);
             final senderName = _extractSenderName(message.from);
+            final senderNameTrimmed = senderName.trim();
+            final senderEmailTrimmed = senderEmail.trim();
+            final senderNameLower = senderNameTrimmed.toLowerCase();
+            final senderEmailLower = senderEmailTrimmed.toLowerCase();
+            final senderDisplay = senderNameTrimmed.isNotEmpty ? senderNameTrimmed : senderEmailTrimmed;
+            final showSeparateEmailLine = senderNameTrimmed.isNotEmpty && senderNameLower != senderEmailLower;
+            final snippetText = message.snippet ?? '';
+            final subjectText = message.subject;
+            // Check if snippet is just a truncated version of the subject
+            final snippetTrimmed = snippetText.trim();
+            final subjectTrimmed = subjectText.trim();
+            final snippetLower = snippetTrimmed.toLowerCase();
+            final subjectLower = subjectTrimmed.toLowerCase();
+            
+            // Remove trailing "..." from snippet if present (indicates truncation)
+            final snippetWithoutEllipsis = snippetLower.endsWith('...')
+                ? snippetLower.substring(0, snippetLower.length - 3).trim()
+                : snippetLower;
+            
+            // Don't show snippet if:
+            // 1. It's empty
+            // 2. It exactly matches the subject
+            // 3. It's a truncated prefix of the subject (subject starts with snippet content)
+            final showSnippet = snippetTrimmed.isNotEmpty &&
+                snippetLower != subjectLower &&
+                !(snippetWithoutEllipsis.isNotEmpty && subjectLower.startsWith(snippetWithoutEllipsis));
             // For SMS messages, check if there's a contact name structure
             final isSms = SmsMessageConverter.isSmsMessage(message);
             final hasSmsContactName = isSms && message.from.contains('<') && message.from.contains('>');
@@ -2736,6 +2781,18 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               debugPrint('[EmailViewer] SMS sender display - from: "${message.from}", senderName: "$senderName", senderEmail: "$senderEmail"');
               debugPrint('[EmailViewer] SMS display - hasContactName: $hasSmsContactName');
             }
+            // Debug logging for Subject/Snippet duplication check
+            final snippetWithoutEllipsisDebug = snippetTrimmed.toLowerCase().endsWith('...')
+                ? snippetTrimmed.toLowerCase().substring(0, snippetTrimmed.toLowerCase().length - 3).trim()
+                : snippetTrimmed.toLowerCase();
+            final subjectStartsWithSnippet = subjectLower.startsWith(snippetWithoutEllipsisDebug);
+            debugPrint('[EmailViewer] Conversation mode - messageId: ${message.id}');
+            debugPrint('[EmailViewer] Subject: "$subjectText" (length: ${subjectText.length})');
+            debugPrint('[EmailViewer] Snippet: "$snippetText" (length: ${snippetText.length})');
+            debugPrint('[EmailViewer] Snippet without ellipsis: "$snippetWithoutEllipsisDebug"');
+            debugPrint('[EmailViewer] Subject starts with snippet: $subjectStartsWithSnippet');
+            debugPrint('[EmailViewer] showSnippet: $showSnippet (will ${showSnippet ? 'SHOW' : 'HIDE'} snippet)');
+            debugPrint('[EmailViewer] isExpanded: ${_expandedMessageIds.contains(message.id)}');
             final attachments = _conversationAttachments[message.id];
             final isLoadingAttachments = _loadingConversationAttachmentIds.contains(message.id);
 
@@ -2799,23 +2856,25 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                 if (hasSmsContactName) ...[
                                   // First row: Contact name (what's before < >)
                                   Text(
-                                    senderName,
+                                    senderDisplay,
                                     style: theme.textTheme.titleSmall?.copyWith(
                                       color: textColor,
                                       fontWeight: FontWeight.w600,
                                     ),
                                   ),
-                                  // Second row: Phone number (what's inside < >)
-                                  Text(
-                                    senderEmail.isNotEmpty ? senderEmail : senderName,
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: metaColor,
+                                  if (showSeparateEmailLine) ...[
+                                    // Second row: Phone number (what's inside < >)
+                                    Text(
+                                      senderEmailTrimmed.isNotEmpty ? senderEmailTrimmed : senderDisplay,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: metaColor,
+                                      ),
                                     ),
-                                  ),
+                                  ],
                                 ] else ...[
                                   // No contact name, just phone number - show on first row only
                                   Text(
-                                    senderName.isNotEmpty ? senderName : message.from,
+                                    senderDisplay.isNotEmpty ? senderDisplay : message.from,
                                     style: theme.textTheme.titleSmall?.copyWith(
                                       color: textColor,
                                       fontWeight: FontWeight.w600,
@@ -2824,7 +2883,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                 ],
                               ] else ...[
                                 Text(
-                                  '$senderName <$senderEmail>',
+                                  showSeparateEmailLine ? '$senderDisplay <$senderEmailTrimmed>' : senderDisplay,
                                   style: theme.textTheme.titleSmall?.copyWith(
                                     color: textColor,
                                     fontWeight: FontWeight.w600,
@@ -2852,11 +2911,11 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                 ),
                               ),
                               if (!isExpanded) ...[
-                                // Normal collapsed view - show snippet
-                                if (message.snippet != null && message.snippet!.isNotEmpty) ...[
+                                // Normal collapsed view - show snippet only if different from subject
+                                if (showSnippet) ...[
                                   const SizedBox(height: 8),
                                   Text(
-                                    message.snippet!,
+                                    snippetText,
                                     style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
                                   ),
                                 ],
@@ -3130,9 +3189,12 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   Future<void> _updateNavigationState() async {
+    if (!mounted) {
+      return;
+    }
     final controller = _webViewController;
     if (controller == null) {
-      if (_canGoBack || _showNavigationExtras) {
+      if (mounted && (_canGoBack || _showNavigationExtras)) {
         setState(() {
           _canGoBack = false;
           _showNavigationExtras = false;
@@ -3142,6 +3204,9 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     }
 
     final canGoBack = await controller.canGoBack();
+    if (!mounted) {
+      return;
+    }
     final shouldShowExtras = !_isViewingOriginal;
     final nextCanGoBack = shouldShowExtras && canGoBack;
     if (mounted && (nextCanGoBack != _canGoBack || shouldShowExtras != _showNavigationExtras)) {
@@ -3408,10 +3473,17 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                           ),
                                         ),
                                         onWebViewCreated: (controller) {
+                                          if (!mounted) {
+                                            return;
+                                          }
                                           _webViewController = controller;
                                           unawaited(_loadHtmlIntoWebView(controller));
-                                          _isViewingOriginal = true;
-                                          _currentUrl = null;
+                                          if (mounted) {
+                                            setState(() {
+                                              _isViewingOriginal = true;
+                                              _currentUrl = null;
+                                            });
+                                          }
                                           _updateNavigationState();
                                         },
                                         onConsoleMessage: (controller, consoleMessage) {

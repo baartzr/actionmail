@@ -347,6 +347,8 @@ class _EmailTileState extends ConsumerState<EmailTile> {
         : (primaryContact.item2.isNotEmpty
             ? primaryContact.item2
             : widget.message.from);
+    // If sender name is the same as sender email, don't show both
+    final showSubtitle = isSentFolder || titleText != subtitleText;
     final senderAvatar = SmsMessageConverter.isSmsMessage(widget.message)
         ? _buildSmsAvatar(theme)
         : DomainIcon(email: iconEmail);
@@ -486,14 +488,15 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
-                                  Text(
-                                    subtitleText,
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      color: theme.colorScheme.onSurfaceVariant,
+                                  if (showSubtitle)
+                                    Text(
+                                      subtitleText,
+                                      style: theme.textTheme.bodySmall?.copyWith(
+                                        color: theme.colorScheme.onSurfaceVariant,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                     ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
                                 ],
                               ),
                             ),
@@ -524,17 +527,44 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                   ),
 
                             // Row 3: Snippet (one row collapsed, full when expanded)
-                            if (widget.message.snippet != null && _expanded) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      _decodeHtmlEntities(widget.message.snippet!),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                      //maxLines: _expanded ? null : 1,
-                      overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                    ),
-                  ],
+                            // Only show snippet if it's different from subject and not just a truncated version
+                            Builder(
+                              builder: (context) {
+                                if (widget.message.snippet == null || !_expanded) {
+                                  return const SizedBox.shrink();
+                                }
+                                final snippetText = widget.message.snippet!;
+                                final subjectText = widget.message.subject;
+                                final snippetTrimmed = snippetText.trim();
+                                final subjectTrimmed = subjectText.trim();
+                                final snippetLower = snippetTrimmed.toLowerCase();
+                                final subjectLower = subjectTrimmed.toLowerCase();
+                                
+                                // Remove trailing "..." from snippet if present (indicates truncation)
+                                final snippetWithoutEllipsis = snippetLower.endsWith('...')
+                                    ? snippetLower.substring(0, snippetLower.length - 3).trim()
+                                    : snippetLower;
+                                
+                                // Don't show snippet if it's a truncated prefix of the subject
+                                final shouldShowSnippet = snippetTrimmed.isNotEmpty &&
+                                    snippetLower != subjectLower &&
+                                    !(snippetWithoutEllipsis.isNotEmpty && subjectLower.startsWith(snippetWithoutEllipsis));
+                                
+                                if (!shouldShowSnippet) {
+                                  return const SizedBox.shrink();
+                                }
+                                return Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(
+                                    _decodeHtmlEntities(snippetText),
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: theme.colorScheme.onSurfaceVariant,
+                                    ),
+                                    overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                                  ),
+                                );
+                              },
+                            ),
 
                             // Email Full View button and 4 info buttons (always visible)
                             ...[

@@ -1301,7 +1301,8 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
                           maxLines: isSentFolder && allRecipients.length > 1 ? 2 : 1,
                           overflow: TextOverflow.ellipsis,
                         ),
-                        if (!isSentFolder && senderName.isNotEmpty) ...[
+                        // Only show sender email if it's different from sender name
+                        if (!isSentFolder && senderName.isNotEmpty && senderName.trim() != senderEmail.trim()) ...[
                           const SizedBox(height: 1),
                           Text(
                             senderEmail,
@@ -1343,18 +1344,46 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  if (email.snippet != null && email.snippet!.isNotEmpty) ...[
-                    const SizedBox(height: 2),
-                    Text(
-                      email.snippet!,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                        fontSize: 10,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
+                  // Only show snippet if it's different from subject and not just a truncated version
+                  Builder(
+                    builder: (context) {
+                      if (email.snippet == null || email.snippet!.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      final snippetText = email.snippet!;
+                      final subjectText = email.subject;
+                      final snippetTrimmed = snippetText.trim();
+                      final subjectTrimmed = subjectText.trim();
+                      final snippetLower = snippetTrimmed.toLowerCase();
+                      final subjectLower = subjectTrimmed.toLowerCase();
+                      
+                      // Remove trailing "..." from snippet if present (indicates truncation)
+                      final snippetWithoutEllipsis = snippetLower.endsWith('...')
+                          ? snippetLower.substring(0, snippetLower.length - 3).trim()
+                          : snippetLower;
+                      
+                      // Don't show snippet if it's a truncated prefix of the subject
+                      final shouldShowSnippet = snippetTrimmed.isNotEmpty &&
+                          snippetLower != subjectLower &&
+                          !(snippetWithoutEllipsis.isNotEmpty && subjectLower.startsWith(snippetWithoutEllipsis));
+                      
+                      if (!shouldShowSnippet) {
+                        return const SizedBox.shrink();
+                      }
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          snippetText,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                            fontSize: 10,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    },
+                  ),
                 ],
               ),
             ),
