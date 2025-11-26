@@ -321,6 +321,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   }
 
 
+  // ignore: unused_element
   void _showLocalFolderTreeDialog(BuildContext context) {
     showDialog<void>(
       context: context,

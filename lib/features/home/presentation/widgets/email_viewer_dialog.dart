@@ -1957,7 +1957,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       return;
     }
     
-    final to = _extractEmail(_currentMessage.from);
+    final to = _resolveReplyRecipient();
     final subject = _currentMessage.subject.startsWith('Re:') 
         ? _currentMessage.subject 
         : 'Re: ${_currentMessage.subject}';
@@ -1973,10 +1973,10 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleReplyAll() {
-    if (_isSmsConversation()) {
+    if (_isSmsConversation() || _isWhatsAppConversation()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Reply all is not available for SMS conversations')),
+          const SnackBar(content: Text('Reply all is not available for this conversation')),
         );
       }
       return;
@@ -1998,10 +1998,10 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   void _handleForward() {
-    if (_isSmsConversation()) {
+    if (_isSmsConversation() || _isWhatsAppConversation()) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Forward is not available for SMS conversations')),
+          const SnackBar(content: Text('Forward is not available for this conversation')),
         );
       }
       return;
@@ -2017,6 +2017,24 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       mode: ComposeEmailMode.forward,
       subject: subject,
     );
+  }
+
+  String _resolveReplyRecipient() {
+    if (SmsMessageConverter.isSmsMessage(_currentMessage)) {
+      final match = RegExp(r'<([^>]+)>').firstMatch(_currentMessage.from);
+      if (match != null) {
+        return match.group(1)!.trim();
+      }
+      return _currentMessage.from;
+    }
+    if (WhatsAppMessageConverter.isWhatsAppMessage(_currentMessage)) {
+      final phone = WhatsAppMessageConverter.extractPhoneNumber(_currentMessage);
+      if (phone != null && phone.isNotEmpty) {
+        return phone;
+      }
+      return _currentMessage.from;
+    }
+    return _extractEmail(_currentMessage.from);
   }
 
   void _toggleConversationMode() {

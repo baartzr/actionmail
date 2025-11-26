@@ -11,6 +11,14 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:domail/features/home/presentation/widgets/pdf_viewer_window.dart';
 import 'package:domail/services/pdf_viewer_preference_service.dart';
+import 'package:domail/features/home/presentation/widgets/message_compose_type.dart';
+import 'package:domail/features/home/presentation/widgets/contact_autocomplete_field.dart';
+import 'package:domail/features/home/presentation/widgets/contact_picker_dialog.dart';
+import 'package:domail/features/home/presentation/widgets/contacts_management_dialog.dart';
+import 'package:domail/services/sms/pushbullet_sms_sender.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:domail/services/sms/sms_message_converter.dart';
+import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
 
 enum ComposeEmailMode {
   newEmail,
@@ -106,6 +114,10 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   String? _originalPlainText;
   final List<GmailAttachmentData> _forwardedAttachments = [];
   static final DateFormat _previewDateFormat = DateFormat('EEE, MMM d, yyyy h:mm a');
+  final PushbulletSmsSender _smsSender = PushbulletSmsSender();
+  ComposeMessageType _messageType = ComposeMessageType.email;
+
+  bool get _isEmailMessage => _messageType == ComposeMessageType.email;
 
   @override
   void initState() {
@@ -123,6 +135,15 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
       _toController.text = widget.to ?? '';
       _subjectController.text = widget.subject ?? '';
       _bodyController.text = widget.body ?? '';
+    }
+
+    if (widget.originalMessage != null) {
+      final original = widget.originalMessage!;
+      if (SmsMessageConverter.isSmsMessage(original)) {
+        _messageType = ComposeMessageType.sms;
+      } else if (WhatsAppMessageConverter.isWhatsAppMessage(original)) {
+        _messageType = ComposeMessageType.whatsapp;
+      }
     }
 
     if (_shouldFetchOriginalContent) {
@@ -147,6 +168,21 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     }
     _tempAttachmentPaths.clear();
     super.dispose();
+  }
+
+  Future<void> _handleSend() async {
+    if (!_formKey.currentState!.validate()) return;
+    switch (_messageType) {
+      case ComposeMessageType.email:
+        await _sendEmail();
+        break;
+      case ComposeMessageType.sms:
+        await _sendSms();
+        break;
+      case ComposeMessageType.whatsapp:
+        await _sendWhatsApp();
+        break;
+    }
   }
 
   Future<void> _sendEmail() async {
@@ -280,6 +316,96 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Failed to send email: $e')),
+      );
+    }
+  }
+
+  Future<void> _sendSms() async {
+    if (!_formKey.currentState!.validate()) return;
+    final phone = _preparePhoneForSms(_toController.text);
+    final body = _bodyController.text.trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid phone number')),
+      );
+      return;
+    }
+    if (body.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Message body is required for SMS')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSending = true;
+    });
+
+    try {
+      await _smsSender.sendSms(
+        accountId: widget.accountId,
+        phoneNumber: phone,
+        message: body,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('SMS sent via Pushbullet')),
+      );
+      Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send SMS: $e')),
+      );
+    }
+  }
+
+  Future<void> _sendWhatsApp() async {
+    if (!_formKey.currentState!.validate()) return;
+    final phone = _preparePhoneForWhatsApp(_toController.text);
+    final body = _bodyController.text.trim();
+    if (phone.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a valid phone number')),
+      );
+      return;
+    }
+    if (body.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Message body is required for WhatsApp')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isSending = true;
+    });
+
+    try {
+      final encodedMessage = Uri.encodeComponent(body);
+      final deepLink = Uri.parse('whatsapp://send?phone=$phone&text=$encodedMessage');
+      bool launched = false;
+      if (await canLaunchUrl(deepLink)) {
+        launched = await launchUrl(deepLink, mode: LaunchMode.externalApplication);
+      }
+      if (!launched) {
+        final waMe = Uri.parse('https://wa.me/$phone?text=$encodedMessage');
+        launched = await launchUrl(waMe, mode: LaunchMode.externalApplication);
+      }
+      if (!launched) {
+        throw StateError('WhatsApp is not installed. Please install WhatsApp to send messages.');
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Opening WhatsApp...')),
+      );
+      Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSending = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to launch WhatsApp: $e')),
       );
     }
   }
@@ -421,10 +547,22 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
 
   bool get _isForwardLike => widget.mode == ComposeEmailMode.forward;
 
+  String get _dialogTitle {
+    switch (_messageType) {
+      case ComposeMessageType.email:
+        return 'Compose Email';
+      case ComposeMessageType.sms:
+        return 'Compose SMS';
+      case ComposeMessageType.whatsapp:
+        return 'Compose WhatsApp';
+    }
+  }
+
   bool get _shouldShowOriginalPreview =>
-      widget.originalMessage != null && widget.mode != ComposeEmailMode.newEmail;
+      _isEmailMessage && widget.originalMessage != null && widget.mode != ComposeEmailMode.newEmail;
 
   bool get _shouldFetchOriginalContent =>
+      _isEmailMessage &&
       widget.originalMessage != null &&
       widget.mode != ComposeEmailMode.newEmail &&
       (_originalPreviewHtml == null ||
@@ -601,10 +739,11 @@ $body
           ),
         ),
       ),
-      child: TextFormField(
+      child: ContactAutocompleteField(
         controller: _toController,
+        messageType: _messageType,
         decoration: InputDecoration(
-          labelText: 'To',
+          labelText: 'Recipient',
           border: InputBorder.none,
           labelStyle: TextStyle(
             color: theme.colorScheme.onSurfaceVariant,
@@ -612,17 +751,18 @@ $body
           ),
         ),
         style: const TextStyle(fontSize: 14),
-        validator: (value) {
-          if (value == null || value.trim().isEmpty) {
-            return 'Please enter a recipient';
-          }
-          return null;
-        },
+        enabled: !_isSending,
+        validator: _validateRecipient,
+        onTapContactPicker: _isSending ? null : _openContactPicker,
       ),
     );
   }
 
   Widget _buildSubjectField(ThemeData theme) {
+    if (!_isEmailMessage) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
@@ -643,6 +783,51 @@ $body
           ),
         ),
         style: const TextStyle(fontSize: 14),
+      ),
+    );
+  }
+
+  Widget _buildMessageTypeSelector(ThemeData theme) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: theme.colorScheme.outline.withValues(alpha: 0.2),
+          ),
+        ),
+      ),
+      child: SegmentedButton<ComposeMessageType>(
+        segments: const [
+          ButtonSegment(
+            value: ComposeMessageType.email,
+            label: Text('Email'),
+            icon: Icon(Icons.email_outlined),
+          ),
+          ButtonSegment(
+            value: ComposeMessageType.sms,
+            label: Text('SMS'),
+            icon: Icon(Icons.sms_outlined),
+          ),
+          ButtonSegment(
+            value: ComposeMessageType.whatsapp,
+            label: Text('WhatsApp'),
+            icon: Icon(Icons.chat_outlined),
+          ),
+        ],
+        selected: <ComposeMessageType>{_messageType},
+        onSelectionChanged: (selection) {
+          final next = selection.first;
+          if (next == _messageType) return;
+          setState(() {
+            _messageType = next;
+            if (!_isEmailMessage) {
+              _attachments.clear();
+              _forwardedAttachments.clear();
+            }
+          });
+          _formKey.currentState?.validate();
+        },
       ),
     );
   }
@@ -692,6 +877,57 @@ $body
         }),
       ),
     );
+  }
+
+  Future<void> _openContactPicker() async {
+    final value = await ContactPickerDialog.show(
+      context: context,
+      messageType: _messageType,
+    );
+    if (value != null && value.isNotEmpty) {
+      setState(() {
+        _toController.text = value;
+      });
+      _formKey.currentState?.validate();
+    }
+  }
+
+  String? _validateRecipient(String? value) {
+    final trimmed = value?.trim() ?? '';
+    if (trimmed.isEmpty) {
+      return 'Please enter a recipient';
+    }
+    if (_isEmailMessage) {
+      if (!trimmed.contains('@')) {
+        return 'Enter a valid email address';
+      }
+    } else {
+      final digits = trimmed.replaceAll(RegExp(r'[^0-9+]'), '');
+      if (digits.isEmpty) {
+        return 'Enter a valid phone number';
+      }
+    }
+    return null;
+  }
+
+  String _preparePhoneForSms(String input) {
+    var digits = input.trim().replaceAll(RegExp(r'[^0-9+]'), '');
+    if (digits.isEmpty) return '';
+    if (digits.startsWith('00')) {
+      digits = digits.substring(2);
+    }
+    if (!digits.startsWith('+')) {
+      digits = '+$digits';
+    }
+    return digits;
+  }
+
+  String _preparePhoneForWhatsApp(String input) {
+    var digits = input.trim().replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.startsWith('00')) {
+      digits = digits.substring(2);
+    }
+    return digits;
   }
 
   void _handleViewOriginal() {
@@ -782,27 +1018,34 @@ $body
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AppWindowDialog(
-      title: 'Compose Email',
+      title: _dialogTitle,
       bodyPadding: EdgeInsets.zero,
       headerActions: [
-        if (_shouldShowOriginalPreview)
+        IconButton(
+          tooltip: 'Manage contacts',
+          icon: const Icon(Icons.manage_accounts_outlined, size: 20),
+          color: theme.appBarTheme.foregroundColor,
+          onPressed: _isSending ? null : () => ContactsManagementDialog.show(context),
+        ),
+        if (_shouldShowOriginalPreview && _isEmailMessage)
           IconButton(
             tooltip: _isOriginalLoading ? 'Loading original email...' : 'View original email',
             icon: const Icon(Icons.remove_red_eye_outlined, size: 20),
             color: theme.appBarTheme.foregroundColor,
             onPressed: _isOriginalLoading || _isSending ? null : _handleViewOriginal,
           ),
-        IconButton(
-          tooltip: 'Attachments',
-          icon: const Icon(Icons.attach_file, size: 20),
-          color: theme.appBarTheme.foregroundColor,
-          onPressed: _isSending ? null : _handleAttachments,
-        ),
+        if (_isEmailMessage)
+          IconButton(
+            tooltip: 'Attachments',
+            icon: const Icon(Icons.attach_file, size: 20),
+            color: theme.appBarTheme.foregroundColor,
+            onPressed: _isSending ? null : _handleAttachments,
+          ),
         IconButton(
           tooltip: 'Send',
           icon: const Icon(Icons.send, size: 20),
           color: theme.appBarTheme.foregroundColor,
-          onPressed: _isSending ? null : _sendEmail,
+          onPressed: _isSending ? null : _handleSend,
         ),
       ],
       child: Form(
@@ -810,9 +1053,10 @@ $body
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            _buildMessageTypeSelector(theme),
             _buildToField(theme),
             _buildSubjectField(theme),
-            if (_attachments.isNotEmpty) _buildAttachmentChips(theme),
+            if (_isEmailMessage && _attachments.isNotEmpty) _buildAttachmentChips(theme),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(16),

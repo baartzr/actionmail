@@ -13,6 +13,7 @@ import 'package:domail/constants/app_brand.dart';
 import 'package:domail/features/home/domain/providers/view_mode_provider.dart';
 import 'package:domail/app/theme/actionmail_theme.dart';
 import 'package:domail/features/settings/presentation/sms_sync_settings_widget.dart';
+import 'package:domail/services/contacts/contacts_provider.dart';
 // import 'package:shared_preferences/shared_preferences.dart'; // unused
 
 class AccountsSettingsDialog extends ConsumerStatefulWidget {
@@ -840,6 +841,102 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                                 if (accounts.isNotEmpty) {
                                   emailListRef.read(emailListProvider.notifier).refresh(accounts.first.id);
                                 }
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Card(
+                    elevation: 0,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Clear Contacts (temporary)',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'This will permanently delete all contacts from the database. Contacts will be rebuilt from messages on next update.',
+                            style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                          ),
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            icon: const Icon(Icons.delete_forever, size: 18),
+                            label: const Text('Clear Contacts', style: TextStyle(fontSize: 14)),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: theme.colorScheme.error,
+                              foregroundColor: theme.colorScheme.onError,
+                            ),
+                            onPressed: () async {
+                              final scaffoldMessenger = ScaffoldMessenger.of(context);
+                              final confirmed = await showDialog<bool>(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: const Text('Clear Contacts'),
+                                  content: const Text(
+                                    'This will delete all contacts from the database. They will be rebuilt immediately from all your messages. Continue?',
+                                  ),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.of(ctx).pop(false),
+                                      child: const Text('Cancel'),
+                                    ),
+                                    FilledButton(
+                                      onPressed: () => Navigator.of(ctx).pop(true),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: Theme.of(ctx).colorScheme.error,
+                                        foregroundColor: Theme.of(ctx).colorScheme.onError,
+                                      ),
+                                      child: const Text('Clear'),
+                                    ),
+                                  ],
+                                ),
+                              );
+                              if (confirmed == true && mounted) {
+                                await ref.read(contactServiceProvider).clearAllContacts();
+                                if (!mounted) return;
+                                // Clear search state to reset filter
+                                ref.read(contactSearchProvider.notifier).state = '';
+                                // Invalidate both providers to force UI update
+                                ref.invalidate(contactsProvider);
+                                ref.invalidate(filteredContactsProvider);
+                                scaffoldMessenger.showSnackBar(
+                                  const SnackBar(content: Text('Contacts database cleared. Contacts are being rebuilt from all messages...')),
+                                );
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.refresh, size: 18),
+                            label: const Text('Force Rebuild Contacts', style: TextStyle(fontSize: 14)),
+                            onPressed: () async {
+                              final scaffoldMessenger = ScaffoldMessenger.of(context);
+                              try {
+                                // Rebuild contacts from all messages
+                                await ref.read(contactServiceProvider).buildContactList();
+                                if (!mounted) return;
+                                // Clear search state to reset filter
+                                ref.read(contactSearchProvider.notifier).state = '';
+                                // Invalidate both providers to force UI update
+                                ref.invalidate(contactsProvider);
+                                ref.invalidate(filteredContactsProvider);
+                                scaffoldMessenger.showSnackBar(
+                                  const SnackBar(content: Text('Contacts rebuilt from all messages.')),
+                                );
+                              } catch (e) {
+                                if (!mounted) return;
+                                scaffoldMessenger.showSnackBar(
+                                  SnackBar(content: Text('Error rebuilding contacts: $e')),
+                                );
                               }
                             },
                           ),

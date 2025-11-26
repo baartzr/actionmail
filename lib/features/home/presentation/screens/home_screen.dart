@@ -38,6 +38,7 @@ import 'package:domail/features/home/presentation/widgets/home_provider_listener
 import 'package:domail/shared/widgets/processing_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/home_saved_list_indicator.dart';
 import 'package:domail/features/home/presentation/widgets/home_filter_banner.dart';
+import 'package:domail/services/contacts/contacts_provider.dart';
 import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/features/home/presentation/widgets/home_email_list_filter.dart';
 import 'package:domail/features/home/presentation/widgets/home_menu_button.dart';
@@ -92,6 +93,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     _smsSyncManager.onSmsReceived = _handleSmsReceived;
     _whatsAppSyncManager.onWhatsAppReceived = _handleWhatsAppReceived;
+    unawaited(
+      ref.read(contactServiceProvider).updateContacts().catchError(
+            (e) => debugPrint('[HomeScreen] Initial contact refresh error: $e'),
+          ),
+    );
   }
 
   @override
@@ -2781,6 +2787,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _unreadCountRefreshTimer?.cancel();
     _unreadCountRefreshTimer = Timer.periodic(const Duration(minutes: 15), (_) {
       _refreshAccountUnreadCounts();
+      unawaited(
+        ref.read(contactServiceProvider).updateContacts().catchError(
+              (e) => debugPrint('[HomeScreen] Contact refresh error: $e'),
+            ),
+      );
     });
   }
 

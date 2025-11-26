@@ -27,7 +27,7 @@ class AppDatabase {
     final path = p.join(dbPath, dbFileName);
     return openDatabase(
       path,
-      version: 14,
+      version: 15,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE messages (
@@ -101,9 +101,21 @@ class AppDatabase {
             timestamp INTEGER NOT NULL
           )
         ''');
+        await db.execute('''
+          CREATE TABLE contacts (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            email TEXT,
+            phone TEXT,
+            lastUsed INTEGER,
+            lastUpdated INTEGER NOT NULL
+          )
+        ''');
         // Create indexes for faster queries
         await db.execute('CREATE INDEX idx_messages_account_folder_date ON messages(accountId, folderLabel, internalDate DESC)');
         await db.execute('CREATE INDEX idx_messages_account_date ON messages(accountId, internalDate DESC)');
+        await db.execute('CREATE INDEX idx_contacts_email ON contacts(email)');
+        await db.execute('CREATE INDEX idx_contacts_phone ON contacts(phone)');
       },
       onUpgrade: (db, oldVersion, newVersion) async {
         if (oldVersion < 2) {
@@ -252,6 +264,21 @@ class AppDatabase {
         if (oldVersion < 14) {
           // Add lastUpdated field for timestamp-based conflict resolution
           await db.execute('ALTER TABLE messages ADD COLUMN lastUpdated INTEGER');
+        }
+        if (oldVersion < 15) {
+          // Create contacts table
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS contacts (
+              id TEXT PRIMARY KEY,
+              name TEXT,
+              email TEXT,
+              phone TEXT,
+              lastUsed INTEGER,
+              lastUpdated INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email)');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone)');
         }
       },
     );
