@@ -12,7 +12,7 @@ void main() {
   
   group('Secure Storage Tests', () {
     late FlutterSecureStorage storage;
-    bool _pluginsAvailable = false;
+    bool pluginsAvailable = false;
 
     setUpAll(() async {
       initializeTestEnvironment();
@@ -22,12 +22,12 @@ void main() {
       final testStorage = const FlutterSecureStorage();
       try {
         await testStorage.deleteAll();
-        _pluginsAvailable = true;
+        pluginsAvailable = true;
       } on MissingPluginException {
-        _pluginsAvailable = false;
+        pluginsAvailable = false;
       } catch (e) {
         // Other errors might indicate plugins are available
-        _pluginsAvailable = true;
+        pluginsAvailable = true;
       }
     });
 
@@ -47,7 +47,7 @@ void main() {
       );
 
       // Clean up any existing test data (only if plugins available)
-      if (_pluginsAvailable) {
+      if (pluginsAvailable) {
         try {
           await storage.deleteAll();
         } catch (e) {
@@ -58,7 +58,7 @@ void main() {
 
     tearDown(() async {
       // Clean up after each test (only if plugins are available)
-      if (_pluginsAvailable) {
+      if (pluginsAvailable) {
         try {
           await storage.deleteAll();
         } catch (e) {
@@ -68,7 +68,7 @@ void main() {
     });
 
     test('write and read string value', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'test_token';
       const value = 'test_access_token_12345';
@@ -83,7 +83,7 @@ void main() {
     });
 
     test('write and read null value returns null', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'test_null_key';
 
@@ -94,7 +94,7 @@ void main() {
     });
 
     test('delete specific key', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'test_delete_key';
       const value = 'test_value';
@@ -112,7 +112,7 @@ void main() {
     });
 
     test('deleteAll removes all keys', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       // Write multiple keys
       await storage.write(key: 'key1', value: 'value1');
@@ -134,7 +134,7 @@ void main() {
     });
 
     test('readAll retrieves all keys and values', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       // Write multiple keys
       await storage.write(key: 'token1', value: 'access_token_1');
@@ -149,7 +149,7 @@ void main() {
     });
 
     test('overwrite existing key updates value', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'test_overwrite';
       const initialValue = 'initial_value';
@@ -165,7 +165,7 @@ void main() {
     });
 
     test('containsKey checks if key exists', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'test_contains_key';
       const value = 'test_value';
@@ -187,7 +187,7 @@ void main() {
     });
 
     test('handles empty string values', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'empty_key';
       const emptyValue = '';
@@ -199,7 +199,7 @@ void main() {
     });
 
     test('handles special characters in values', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'special_chars_key';
       const specialValue = 'token_with_!@#\$%^&*()_+-=[]{}|;:,.<>?';
@@ -211,7 +211,7 @@ void main() {
     });
 
     test('handles long token values', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'long_token_key';
       // Generate a long token (typical OAuth token length)
@@ -225,7 +225,7 @@ void main() {
     });
 
     test('migration: values persist after storage reinitialization', () async {
-      if (!_pluginsAvailable) return;
+      if (!pluginsAvailable) return;
       
       const key = 'migration_test_key';
       const value = 'persistent_token_value';
@@ -254,7 +254,7 @@ void main() {
 
     group('Token Storage Pattern Tests', () {
       test('stores access token pattern', () async {
-        if (!_pluginsAvailable) return;
+        if (!pluginsAvailable) return;
         
         const accountId = 'account_123';
         const accessToken = 'ya29.access_token_string';
@@ -267,7 +267,7 @@ void main() {
       });
 
       test('stores refresh token pattern', () async {
-        if (!_pluginsAvailable) return;
+        if (!pluginsAvailable) return;
         
         const accountId = 'account_456';
         const refreshToken = '1//refresh_token_string';
@@ -280,7 +280,7 @@ void main() {
       });
 
       test('stores multiple account tokens', () async {
-        if (!_pluginsAvailable) return;
+        if (!pluginsAvailable) return;
         
         await storage.write(key: 'access_token_account1', value: 'token1');
         await storage.write(key: 'refresh_token_account1', value: 'refresh1');

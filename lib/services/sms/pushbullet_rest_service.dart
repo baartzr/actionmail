@@ -13,16 +13,16 @@ class PushbulletRestService {
   /// Fetch recent SMS threads and return them as PushbulletSmsEvent objects.
   /// The result is sorted by timestamp (oldest first) so callers can insert
   /// messages chronologically.
-  Future<List<PushbulletSmsEvent>> fetchRecentSmsEvents() async {
-    final token = await _smsSyncService.getToken();
+  Future<List<PushbulletSmsEvent>> fetchRecentSmsEvents(String accountId) async {
+    final token = await _smsSyncService.getToken(accountId);
     if (token == null || token.isEmpty) {
-      debugPrint('[PushbulletRest] Missing access token');
+      debugPrint('[PushbulletRest] Missing access token for account $accountId');
       return [];
     }
 
-    final deviceId = await _smsSyncService.getDeviceId();
+    final deviceId = await _smsSyncService.getDeviceId(accountId);
     if (deviceId == null || deviceId.isEmpty) {
-      debugPrint('[PushbulletRest] Missing device id, cannot fetch recent SMS');
+      debugPrint('[PushbulletRest] Missing device id for account $accountId, cannot fetch recent SMS');
       return [];
     }
 

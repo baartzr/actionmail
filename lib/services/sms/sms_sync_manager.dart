@@ -9,8 +9,25 @@ import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 
+/// Account-specific sync state
+class _AccountSyncState {
+  final String accountId;
+  final String accountEmail;
+  final PushbulletWebSocketService webSocketService;
+  Timer? checkStateTimer;
+  bool isRestCatchUpRunning = false;
+  DateTime? lastRestCatchUp;
+  static const Duration restCatchUpMinInterval = Duration(minutes: 2);
+
+  _AccountSyncState({
+    required this.accountId,
+    required this.accountEmail,
+    required this.webSocketService,
+  });
+}
+
 /// Main manager for SMS sync functionality
-/// Orchestrates WebSocket connection, message parsing, and storage
+/// Orchestrates multiple WebSocket connections (one per account with token)
 class SmsSyncManager {
   static final SmsSyncManager _instance = SmsSyncManager._internal();
   factory SmsSyncManager() => _instance;
@@ -21,94 +38,116 @@ class SmsSyncManager {
   final GoogleAuthService _googleAuthService = GoogleAuthService();
   final PushbulletRestService _restService = PushbulletRestService();
   
-  PushbulletWebSocketService? _webSocketService;
-  bool _isRunning = false;
-  Timer? _checkStateTimer;
-  String? _activeAccountId;
-  String? _activeAccountEmail;
-  bool _isRestCatchUpRunning = false;
-  DateTime? _lastRestCatchUp;
-  static const Duration _restCatchUpMinInterval = Duration(minutes: 2);
+  final Map<String, _AccountSyncState> _accountStates = {};
+  Timer? _checkAllAccountsTimer;
 
   /// Callback when a new SMS message is received and saved
   void Function(MessageIndex message)? onSmsReceived;
 
-  /// Start SMS sync if enabled
-  /// Checks sync state and token, then establishes WebSocket connection
+  /// Start SMS sync for all accounts with tokens
   Future<void> start() async {
-    if (_isRunning) {
-      debugPrint('[SmsSyncManager] Already running');
-      return;
-    }
-
     final isEnabled = await _syncService.isSyncEnabled();
     if (!isEnabled) {
       debugPrint('[SmsSyncManager] SMS sync is disabled');
       return;
     }
 
-    final token = await _syncService.getToken();
-    if (token == null || token.isEmpty) {
-      debugPrint('[SmsSyncManager] No access token available');
+    final accountsWithTokens = await _syncService.getAccountsWithTokens();
+    if (accountsWithTokens.isEmpty) {
+      debugPrint('[SmsSyncManager] No accounts with tokens found');
       return;
     }
 
-    final accountId = await _syncService.getAccountId();
-    if (accountId == null || accountId.isEmpty) {
-      debugPrint('[SmsSyncManager] No account selected for SMS sync');
+    debugPrint('[SmsSyncManager] Starting SMS sync for ${accountsWithTokens.length} account(s)...');
+
+    // Start sync for each account
+    for (final accountId in accountsWithTokens) {
+      await _startForAccount(accountId);
+    }
+
+    // Start periodic state checking for all accounts
+    _startStateChecking();
+  }
+
+  /// Start SMS sync for a specific account
+  Future<void> _startForAccount(String accountId) async {
+    // Skip if already running for this account
+    if (_accountStates.containsKey(accountId)) {
+      debugPrint('[SmsSyncManager] Already running for account $accountId');
+      return;
+    }
+
+    final token = await _syncService.getToken(accountId);
+    if (token == null || token.isEmpty) {
+      debugPrint('[SmsSyncManager] No access token available for account $accountId');
       return;
     }
 
     final account = await _googleAuthService.getAccountById(accountId);
     if (account == null) {
-      debugPrint('[SmsSyncManager] Selected account is no longer available');
+      debugPrint('[SmsSyncManager] Account $accountId is no longer available');
       return;
     }
 
-    _activeAccountId = account.id;
-    _activeAccountEmail = account.email;
+    debugPrint('[SmsSyncManager] Starting SMS sync for account ${account.email} ($accountId)...');
 
-    _isRunning = true;
-    debugPrint('[SmsSyncManager] Starting SMS sync...');
-
-    // Create and configure WebSocket service
-    _webSocketService = PushbulletWebSocketService(
+    // Create and configure WebSocket service for this account
+    final webSocketService = PushbulletWebSocketService(
       accessToken: token,
-      onEvent: _handleWebSocketEvent,
-      onError: _handleWebSocketError,
-      onConnected: _handleWebSocketConnected,
-      onDisconnected: _handleWebSocketDisconnected,
+      onEvent: (event) => _handleWebSocketEvent(accountId, event),
+      onError: (error) => _handleWebSocketError(accountId, error),
+      onConnected: () => _handleWebSocketConnected(accountId),
+      onDisconnected: () => _handleWebSocketDisconnected(accountId),
     );
 
-    // Start periodic state checking
-    _startStateChecking();
+    // Store account state
+    _accountStates[accountId] = _AccountSyncState(
+      accountId: accountId,
+      accountEmail: account.email,
+      webSocketService: webSocketService,
+    );
 
     // Connect to WebSocket
-    await _webSocketService!.connect();
-    unawaited(_catchUpWithRest(force: true));
+    await webSocketService.connect();
+    unawaited(_catchUpWithRest(accountId, force: true));
   }
 
-  /// Stop SMS sync and disconnect WebSocket
-  Future<void> stop() async {
-    if (!_isRunning) {
+  /// Stop SMS sync for a specific account
+  Future<void> _stopForAccount(String accountId) async {
+    final state = _accountStates.remove(accountId);
+    if (state == null) {
       return;
     }
 
-    _isRunning = false;
-    debugPrint('[SmsSyncManager] Stopping SMS sync...');
+    debugPrint('[SmsSyncManager] Stopping SMS sync for account ${state.accountEmail} ($accountId)...');
 
-    _checkStateTimer?.cancel();
-    _checkStateTimer = null;
-    _activeAccountId = null;
-    _activeAccountEmail = null;
-
-    await _webSocketService?.disconnect();
-    _webSocketService = null;
+    state.checkStateTimer?.cancel();
+    await state.webSocketService.disconnect();
   }
 
-  /// Handle WebSocket events
-  void _handleWebSocketEvent(Map<String, dynamic> event) {
+  /// Stop SMS sync for all accounts
+  Future<void> stop() async {
+    debugPrint('[SmsSyncManager] Stopping SMS sync for all accounts...');
+
+    _checkAllAccountsTimer?.cancel();
+    _checkAllAccountsTimer = null;
+
+    // Stop all account syncs
+    final accountIds = _accountStates.keys.toList();
+    for (final accountId in accountIds) {
+      await _stopForAccount(accountId);
+    }
+  }
+
+  /// Handle WebSocket events for a specific account
+  void _handleWebSocketEvent(String accountId, Map<String, dynamic> event) {
     try {
+      final state = _accountStates[accountId];
+      if (state == null) {
+        debugPrint('[SmsSyncManager] Received event for unknown account $accountId');
+        return;
+      }
+
       // Check if this is an SMS event
       if (!PushbulletMessageParser.isSmsEvent(event)) {
         debugPrint('[SmsSyncManager] Ignoring non-SMS event: ${PushbulletMessageParser.describeEvent(event)}');
@@ -122,28 +161,23 @@ class SmsSyncManager {
         return;
       }
 
-      debugPrint('[SmsSyncManager] Received SMS from ${smsEvent.phoneNumber}');
+      debugPrint('[SmsSyncManager] Received SMS from ${smsEvent.phoneNumber} (account: ${state.accountEmail})');
 
       if (smsEvent.deviceId != null && smsEvent.deviceId!.isNotEmpty) {
-        unawaited(_syncService.setDeviceId(smsEvent.deviceId!));
-      }
-
-      if (_activeAccountId == null || _activeAccountEmail == null) {
-        debugPrint('[SmsSyncManager] Missing active account context, ignoring SMS event');
-        return;
+        unawaited(_syncService.setDeviceId(accountId, smsEvent.deviceId!));
       }
 
       // Convert to MessageIndex
       final message = SmsMessageConverter.toMessageIndex(
         smsEvent,
-        accountId: _activeAccountId!,
-        accountEmail: _activeAccountEmail!,
+        accountId: accountId,
+        accountEmail: state.accountEmail,
       );
 
       // Save to repository
       _saveSmsMessage(message);
     } catch (e, stackTrace) {
-      debugPrint('[SmsSyncManager] Error handling WebSocket event: $e');
+      debugPrint('[SmsSyncManager] Error handling WebSocket event for account $accountId: $e');
       debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
     }
   }
@@ -160,7 +194,7 @@ class SmsSyncManager {
 
       // Save message
       await _messageRepository.upsertMessages([message]);
-      debugPrint('[SmsSyncManager] Saved SMS message: ${message.id}');
+      debugPrint('[SmsSyncManager] Saved SMS message: ${message.id} (account: ${message.accountEmail})');
 
       // Notify callback
       onSmsReceived?.call(message);
@@ -169,114 +203,155 @@ class SmsSyncManager {
     }
   }
 
-  /// Handle WebSocket connection established
-  void _handleWebSocketConnected() {
-    debugPrint('[SmsSyncManager] WebSocket connected');
-    unawaited(_catchUpWithRest());
+  /// Handle WebSocket connection established for a specific account
+  void _handleWebSocketConnected(String accountId) {
+    debugPrint('[SmsSyncManager] WebSocket connected for account $accountId');
+    unawaited(_catchUpWithRest(accountId));
   }
 
-  /// Handle WebSocket disconnection
-  void _handleWebSocketDisconnected() {
-    debugPrint('[SmsSyncManager] WebSocket disconnected');
+  /// Handle WebSocket disconnection for a specific account
+  void _handleWebSocketDisconnected(String accountId) {
+    debugPrint('[SmsSyncManager] WebSocket disconnected for account $accountId');
     
-    // If still supposed to be running, it will reconnect automatically
-    // But we should check if sync is still enabled
-    if (_isRunning) {
-      _checkSyncState();
+    // Check if sync should still be running for this account
+    final state = _accountStates[accountId];
+    if (state != null) {
+      unawaited(_checkAccountSyncState(accountId));
     }
   }
 
-  /// Handle WebSocket errors
-  void _handleWebSocketError(String error) {
-    debugPrint('[SmsSyncManager] WebSocket error: $error');
+  /// Handle WebSocket errors for a specific account
+  void _handleWebSocketError(String accountId, String error) {
+    debugPrint('[SmsSyncManager] WebSocket error for account $accountId: $error');
     
-    // If it's an authentication error, stop trying
+    // If it's an authentication error, stop trying for this account
     if (error.contains('401') || error.contains('unauthorized') || error.contains('invalid')) {
-      debugPrint('[SmsSyncManager] Authentication error, stopping sync');
-      stop();
+      debugPrint('[SmsSyncManager] Authentication error for account $accountId, stopping sync');
+      unawaited(_stopForAccount(accountId));
     }
   }
 
-  /// Start periodic state checking
+  /// Start periodic state checking for all accounts
   void _startStateChecking() {
     // Check state every 30 seconds to ensure sync is still enabled
-    _checkStateTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _checkSyncState();
+    _checkAllAccountsTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _checkAllAccountsState();
     });
   }
 
-  /// Check if sync should still be running
-  Future<void> _checkSyncState() async {
-    if (!_isRunning) return;
+  /// Check sync state for all accounts
+  Future<void> _checkAllAccountsState() async {
+    final isEnabled = await _syncService.isSyncEnabled();
+    if (!isEnabled) {
+      debugPrint('[SmsSyncManager] Sync disabled, stopping all accounts...');
+      await stop();
+      return;
+    }
+
+    // Get current accounts with tokens
+    final accountsWithTokens = await _syncService.getAccountsWithTokens();
+    final currentAccountIds = _accountStates.keys.toSet();
+    final tokenAccountIds = accountsWithTokens.toSet();
+
+    // Stop sync for accounts that no longer have tokens
+    for (final accountId in currentAccountIds) {
+      if (!tokenAccountIds.contains(accountId)) {
+        debugPrint('[SmsSyncManager] Token removed for account $accountId, stopping sync...');
+        await _stopForAccount(accountId);
+      }
+    }
+
+    // Start sync for new accounts with tokens
+    for (final accountId in tokenAccountIds) {
+      if (!currentAccountIds.contains(accountId)) {
+        debugPrint('[SmsSyncManager] New token found for account $accountId, starting sync...');
+        await _startForAccount(accountId);
+      } else {
+        // Check individual account state
+        await _checkAccountSyncState(accountId);
+      }
+    }
+  }
+
+  /// Check if sync should still be running for a specific account
+  Future<void> _checkAccountSyncState(String accountId) async {
+    final state = _accountStates[accountId];
+    if (state == null) return;
 
     final isEnabled = await _syncService.isSyncEnabled();
     if (!isEnabled) {
-      debugPrint('[SmsSyncManager] Sync disabled, stopping...');
-      await stop();
+      await _stopForAccount(accountId);
       return;
     }
 
-    final token = await _syncService.getToken();
+    final token = await _syncService.getToken(accountId);
     if (token == null || token.isEmpty) {
-      debugPrint('[SmsSyncManager] Token missing, stopping...');
-      await stop();
+      debugPrint('[SmsSyncManager] Token missing for account $accountId, stopping...');
+      await _stopForAccount(accountId);
       return;
     }
 
-    final accountId = await _syncService.getAccountId();
-    if (accountId == null || accountId.isEmpty) {
-      debugPrint('[SmsSyncManager] Account id missing, stopping...');
-      await stop();
-      return;
-    }
-
-    if (_activeAccountId != accountId) {
-      debugPrint('[SmsSyncManager] Account changed, restarting sync...');
-      await stop();
-      await start();
+    final account = await _googleAuthService.getAccountById(accountId);
+    if (account == null) {
+      debugPrint('[SmsSyncManager] Account $accountId no longer available, stopping...');
+      await _stopForAccount(accountId);
       return;
     }
 
     // If WebSocket is not connected and we should be, try to reconnect
-    if (_webSocketService != null && !_webSocketService!.isConnected && !_webSocketService!.isConnecting) {
-      debugPrint('[SmsSyncManager] WebSocket not connected, attempting reconnect...');
-      await _webSocketService!.connect();
+    if (!state.webSocketService.isConnected && !state.webSocketService.isConnecting) {
+      debugPrint('[SmsSyncManager] WebSocket not connected for account $accountId, attempting reconnect...');
+      await state.webSocketService.connect();
     }
   }
 
-  /// Check if SMS sync is currently running
-  bool get isRunning => _isRunning;
+  /// Check if SMS sync is currently running for any account
+  bool get isRunning => _accountStates.isNotEmpty;
 
-  /// Check if WebSocket is connected
-  bool get isConnected => _webSocketService?.isConnected ?? false;
+  /// Check if WebSocket is connected for any account
+  bool get isConnected {
+    for (final state in _accountStates.values) {
+      if (state.webSocketService.isConnected) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// Public entry point for forcing a REST catch-up (e.g., on app resume).
+  /// Catches up for all accounts
   Future<void> catchUpMissedMessages({bool force = false}) async {
-    if (!_isRunning) {
-      debugPrint('[SmsSyncManager] catchUpMissedMessages skipped (manager not running)');
+    if (_accountStates.isEmpty) {
+      debugPrint('[SmsSyncManager] catchUpMissedMessages skipped (no accounts running)');
       return;
     }
-    await _catchUpWithRest(force: force);
+
+    for (final accountId in _accountStates.keys) {
+      unawaited(_catchUpWithRest(accountId, force: force));
+    }
   }
 
-  Future<void> _catchUpWithRest({bool force = false}) async {
-    if (_activeAccountId == null || _activeAccountEmail == null) {
-      debugPrint('[SmsSyncManager] REST catch-up skipped (missing account context)');
-      return;
-    }
-    if (_isRestCatchUpRunning) {
-      debugPrint('[SmsSyncManager] REST catch-up already running');
-      return;
-    }
-    if (!force &&
-        _lastRestCatchUp != null &&
-        DateTime.now().difference(_lastRestCatchUp!) < _restCatchUpMinInterval) {
+  Future<void> _catchUpWithRest(String accountId, {bool force = false}) async {
+    final state = _accountStates[accountId];
+    if (state == null) {
+      debugPrint('[SmsSyncManager] REST catch-up skipped for account $accountId (not running)');
       return;
     }
 
-    _isRestCatchUpRunning = true;
+    if (state.isRestCatchUpRunning) {
+      debugPrint('[SmsSyncManager] REST catch-up already running for account $accountId');
+      return;
+    }
+
+    if (!force &&
+        state.lastRestCatchUp != null &&
+        DateTime.now().difference(state.lastRestCatchUp!) < _AccountSyncState.restCatchUpMinInterval) {
+      return;
+    }
+
+    state.isRestCatchUpRunning = true;
     try {
-      final events = await _restService.fetchRecentSmsEvents();
+      final events = await _restService.fetchRecentSmsEvents(accountId);
       if (events.isEmpty) {
         return;
       }
@@ -284,18 +359,39 @@ class SmsSyncManager {
         if (!smsEvent.isValid) continue;
         final message = SmsMessageConverter.toMessageIndex(
           smsEvent,
-          accountId: _activeAccountId!,
-          accountEmail: _activeAccountEmail!,
+          accountId: accountId,
+          accountEmail: state.accountEmail,
         );
         await _saveSmsMessage(message);
       }
-      _lastRestCatchUp = DateTime.now();
+      state.lastRestCatchUp = DateTime.now();
     } catch (e, stackTrace) {
-      debugPrint('[SmsSyncManager] REST catch-up error: $e');
+      debugPrint('[SmsSyncManager] REST catch-up error for account $accountId: $e');
       debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
     } finally {
-      _isRestCatchUpRunning = false;
+      state.isRestCatchUpRunning = false;
     }
   }
-}
 
+  /// Start sync for a specific account (public method for external use)
+  Future<void> startForAccount(String accountId) async {
+    final isEnabled = await _syncService.isSyncEnabled();
+    if (!isEnabled) {
+      debugPrint('[SmsSyncManager] SMS sync is disabled, cannot start for account $accountId');
+      return;
+    }
+
+    final hasToken = await _syncService.hasToken(accountId);
+    if (!hasToken) {
+      debugPrint('[SmsSyncManager] No token for account $accountId, cannot start sync');
+      return;
+    }
+
+    await _startForAccount(accountId);
+  }
+
+  /// Stop sync for a specific account (public method for external use)
+  Future<void> stopForAccount(String accountId) async {
+    await _stopForAccount(accountId);
+  }
+}

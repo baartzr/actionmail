@@ -19,12 +19,12 @@ class PushbulletSmsSender {
       throw ArgumentError('Message cannot be empty');
     }
 
-    final token = await _smsSyncService.getToken();
+    final token = await _smsSyncService.getToken(accountId);
     if (token == null || token.isEmpty) {
-      throw StateError('Pushbullet access token is missing');
+      throw StateError('Pushbullet access token is missing for account $accountId');
     }
 
-    final deviceId = await _smsSyncService.getDeviceId();
+    final deviceId = await _smsSyncService.getDeviceId(accountId);
     if (deviceId == null || deviceId.isEmpty) {
       throw StateError('Phone connection unavailable. Receive an SMS first to link your device.');
     }
