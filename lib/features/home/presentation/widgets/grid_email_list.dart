@@ -1722,7 +1722,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
 
     // Priority: Complete > Overdue > Action
     // If complete, show COMPLETE even if overdue
-    final displayStatus = isComplete ? 'COMPLETE' : (displayOverdue ? 'OVERDUE' : 'ACTION');
+    final displayStatus = isComplete ? 'COMPLETE' : (displayOverdue ? 'OVERDUE' : (email.actionDate != null ? 'ACTION' : 'NOTE'));
     final statusColor = isComplete 
         ? Colors.green 
         : (isOverdue ? Colors.red : Colors.orange);
