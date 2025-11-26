@@ -38,11 +38,11 @@ import 'package:domail/features/home/presentation/widgets/home_provider_listener
 import 'package:domail/shared/widgets/processing_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/home_saved_list_indicator.dart';
 import 'package:domail/features/home/presentation/widgets/home_filter_banner.dart';
+import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/features/home/presentation/widgets/home_email_list_filter.dart';
 import 'package:domail/features/home/presentation/widgets/home_menu_button.dart';
 import 'package:domail/features/home/presentation/widgets/move_to_folder_dialog.dart';
 import 'package:domail/features/home/presentation/utils/home_screen_helpers.dart';
-import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/services/whatsapp/whatsapp_sync_manager.dart';
@@ -1017,61 +1017,72 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 // ------------------------------------
                 // TOP ROW: Title + Account selector (centered)
                 // ------------------------------------
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      GestureDetector(
-                        onTap: () => showDialog(
-                          context: context,
-                          builder: (_) => ActionsSummaryWindow(),
-                        ),
-                        child: Text(
-                          AppConstants.appName,
-                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: ActionMailTheme.alertColor,
-                            fontWeight: FontWeight.w500,
+                Consumer(
+                  builder: (context, ref, child) {
+                    final viewMode = ref.watch(viewModeProvider);
+                    final isDesktop = MediaQuery.of(context).size.width >= 900;
+                    final isGridView = isDesktop && viewMode == ViewMode.table;
+                    
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          GestureDetector(
+                            onTap: () => showDialog(
+                              context: context,
+                              builder: (_) => ActionsSummaryWindow(),
+                            ),
+                            child: Text(
+                              AppConstants.appName,
+                              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                color: ActionMailTheme.alertColor,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 16),
+                          const SizedBox(width: 16),
 
-                      // ACCOUNT SELECTOR
-                      TextButton.icon(
-                        onPressed: _isOpeningAccountDialog
-                            ? null
-                            : _showAccountSelectorDialog,
-                        icon: _isOpeningAccountDialog
-                            ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Theme.of(context).appBarTheme.foregroundColor,
+                          // ACCOUNT SELECTOR (disabled in GridView with local folder)
+                          Opacity(
+                            opacity: (isGridView && _isLocalFolder) ? 0.5 : 1.0,
+                            child: TextButton.icon(
+                              onPressed: (_isOpeningAccountDialog || (isGridView && _isLocalFolder))
+                                  ? null
+                                  : _showAccountSelectorDialog,
+                              icon: _isOpeningAccountDialog
+                                  ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
+                                ),
+                              )
+                                  : Icon(
+                                Icons.account_circle,
+                                size: 18,
+                                color: Theme.of(context).appBarTheme.foregroundColor,
+                              ),
+                              label: Text(
+                                _selectedAccountId != null && _accounts.isNotEmpty
+                                    ? _accounts
+                                        .firstWhere(
+                                            (acc) => acc.id == _selectedAccountId,
+                                        orElse: () => _accounts.first)
+                                        .email
+                                    : '',
+                                style: TextStyle(
+                                  color: Theme.of(context).appBarTheme.foregroundColor,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ),
                           ),
-                        )
-                            : Icon(
-                          Icons.account_circle,
-                          size: 18,
-                          color: Theme.of(context).appBarTheme.foregroundColor,
-                        ),
-                        label: Text(
-                          _selectedAccountId != null && _accounts.isNotEmpty
-                              ? _accounts
-                                  .firstWhere(
-                                      (acc) => acc.id == _selectedAccountId,
-                                  orElse: () => _accounts.first)
-                                  .email
-                              : '',
-                          style: TextStyle(
-                            color: Theme.of(context).appBarTheme.foregroundColor,
-                            fontSize: 14,
-                          ),
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
+                    );
+                  },
                 ),
 
                 // Small gap between rows
@@ -1080,51 +1091,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                 // ------------------------------------
                 // BOTTOM ROW: Folder selector + actions
                 // ------------------------------------
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
-                  child: Row(
-                    children: [
-                      // FOLDER DROPDOWN
-                      if (!_isLocalFolder)
-                        AppDropdown<String>(
-                          value: _selectedFolder,
-                          items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
-                          itemBuilder: (folder) =>
-                          AppConstants.folderDisplayNames[folder] ?? folder,
-                          textColor: Theme.of(context).appBarTheme.foregroundColor,
-                          onChanged: (value) async {
-                            if (value != null) {
-                              setState(() {
-                                _selectedFolder = value;
-                                _isLocalFolder = false;
-                              });
-                              if (_selectedAccountId != null) {
-                                await ref.read(emailListProvider.notifier).loadFolder(
-                                  _selectedAccountId!,
-                                  folderLabel: _selectedFolder,
-                                );
-                              }
-                            }
-                          },
-                        )
-                      else
-                        Text(
-                          _selectedFolder,
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).appBarTheme.foregroundColor,
-                            fontWeight: FontWeight.w500,
+                Consumer(
+                  builder: (context, ref, child) {
+                    final viewMode = ref.watch(viewModeProvider);
+                    final isDesktop = MediaQuery.of(context).size.width >= 900;
+                    final isGridView = isDesktop && viewMode == ViewMode.table;
+                    
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 0),
+                      child: Row(
+                        children: [
+                          // FOLDER DROPDOWN (disabled but visible when local folder is selected)
+                          Opacity(
+                            opacity: _isLocalFolder ? 0.5 : 1.0,
+                            child: IgnorePointer(
+                              ignoring: _isLocalFolder,
+                              child: AppDropdown<String>(
+                                value: _isLocalFolder ? 'INBOX' : _selectedFolder,
+                                items: const ['INBOX', 'SENT', 'TRASH', 'SPAM', 'ARCHIVE'],
+                                itemBuilder: (folder) =>
+                                AppConstants.folderDisplayNames[folder] ?? folder,
+                                textColor: Theme.of(context).appBarTheme.foregroundColor,
+                                onChanged: _isLocalFolder
+                                    ? (_) {} // Disabled when local folder is selected
+                                    : (value) async {
+                                        if (value != null) {
+                                          setState(() {
+                                            _selectedFolder = value;
+                                            _isLocalFolder = false;
+                                          });
+                                          if (_selectedAccountId != null) {
+                                            await ref.read(emailListProvider.notifier).loadFolder(
+                                              _selectedAccountId!,
+                                              folderLabel: _selectedFolder,
+                                            );
+                                          }
+                                        }
+                                      },
+                              ),
+                            ),
                           ),
-                        ),
 
-                      const SizedBox(width: 8),
-                      
-                      // Local Folders button (Table View only)
-                      Consumer(
-                        builder: (context, ref, child) {
-                          final viewMode = ref.watch(viewModeProvider);
-                          final isDesktop = MediaQuery.of(context).size.width >= 900;
-                          if (isDesktop && viewMode == ViewMode.table) {
-                            return TextButton.icon(
+                          const SizedBox(width: 8),
+                          
+                          // Local Folders button (Table View only)
+                          if (isGridView)
+                            TextButton.icon(
                               onPressed: () => _showLocalFoldersDialog(context),
                               icon: const Icon(Icons.folder, size: 18),
                               label: Text(
@@ -1137,11 +1149,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                               style: TextButton.styleFrom(
                                 foregroundColor: Theme.of(context).appBarTheme.foregroundColor,
                               ),
-                            );
-                          }
-                          return const SizedBox.shrink();
-                        },
-                      ),
+                            ),
 
                       const Spacer(),
 
@@ -1228,6 +1236,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                       ),
                     ],
                   ),
+                    );
+                  },
                 ),
               ],
             ),

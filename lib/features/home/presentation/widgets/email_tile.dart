@@ -991,54 +991,67 @@ class _EmailTileState extends ConsumerState<EmailTile> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Material(
-            color: isPersonal ? cs.surfaceDim : cs.surface,
+
+      Tooltip(
+        message: 'Tag message as Personal. Future messages from this sender will be automatically set.',
+        waitDuration: const Duration(milliseconds: 400),
+        child: Material(
+          color: isPersonal ? cs.surfaceDim : cs.surface,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
             borderRadius: BorderRadius.circular(8),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: () {
-                setState(() {
-                  _localState = isPersonal ? null : 'Personal';
-                });
-                if (widget.onLocalStateChanged != null) {
-                  widget.onLocalStateChanged!(_localState);
-                }
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Icon(
-                  isPersonal ? Icons.person : Icons.person_outline,
-                  size: 20,
-                  //color: isPersonal ? cs.onPrimary : cs.onSurface,
-                  color: cs.onSurface,
-                ),
+            onTap: () {
+              setState(() {
+                _localState = isPersonal ? null : 'Personal';
+              });
+              if (widget.onLocalStateChanged != null) {
+                widget.onLocalStateChanged!(_localState);
+              }
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Icon(
+                isPersonal
+                    ? Icons.person
+                    : Icons.person_outlined,
+                size: 20,
+                color: cs.onSurface,
               ),
             ),
           ),
-          Material(
-            color: isBusiness ? cs.surfaceDim : cs.surface,
+        ),
+      ),
+
+      Tooltip(
+        message: 'Tag message as Business. Future messages from this sender will be automatically set.',
+        waitDuration: const Duration(milliseconds: 400),
+        child: Material(
+          color: isBusiness ? cs.surfaceDim : cs.surface,
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
             borderRadius: BorderRadius.circular(8),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(8),
-              onTap: () {
-                setState(() {
-                  _localState = isBusiness ? null : 'Business';
-                });
-                if (widget.onLocalStateChanged != null) {
-                  widget.onLocalStateChanged!(_localState);
-                }
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                child: Icon(
-                  isBusiness ? Icons.business_center : Icons.business_center_outlined,
-                  size: 20,
-                  //color: isBusiness ? cs.onPrimary : cs.onSurface,
-                  color: cs.onSurface,
-                ),
+            onTap: () {
+              setState(() {
+                _localState = isBusiness ? null : 'Business';
+              });
+              if (widget.onLocalStateChanged != null) {
+                widget.onLocalStateChanged!(_localState);
+              }
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              child: Icon(
+                isBusiness
+                    ? Icons.business_center
+                    : Icons.business_center_outlined,
+                size: 20,
+                color: cs.onSurface,
               ),
             ),
           ),
+        ),
+      ),
+
         ],
       ),
     );

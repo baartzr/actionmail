@@ -50,18 +50,21 @@ class HomeAppBarStateSwitch extends StatelessWidget {
                 _buildAppBarStateButton(
                   context,
                   'All',
+                  'Show All messages',
                   selectedLocalState == null,
                   () => onStateChanged(null),
                 ),
                 _buildAppBarStateButton(
                   context,
                   'Personal',
+                  'Show messages tagged as Personal',
                   selectedLocalState == 'Personal',
                   () => onStateChanged('Personal'),
                 ),
                 _buildAppBarStateButton(
                   context,
                   'Business',
+                  'Show messages tagged as Business',
                   selectedLocalState == 'Business',
                   () => onStateChanged('Business'),
                 ),
@@ -91,6 +94,7 @@ class HomeAppBarStateSwitch extends StatelessWidget {
   Widget _buildAppBarStateButton(
     BuildContext context,
     String state,
+    String toolTip,
     bool selected,
     VoidCallback onTap,
   ) {
@@ -102,16 +106,21 @@ class HomeAppBarStateSwitch extends StatelessWidget {
 
     return Material(
       color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          child: Text(
-            state,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: textColor,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              fontSize: 12,
+      child: Tooltip(
+        message: toolTip, // <-- change this
+        waitDuration: const Duration(milliseconds: 500),
+        showDuration: const Duration(seconds: 2),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Text(
+              state,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: textColor,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                fontSize: 12,
+              ),
             ),
           ),
         ),

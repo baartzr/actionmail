@@ -14,6 +14,7 @@ import 'package:domail/features/home/domain/providers/email_list_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
+import 'package:domail/features/home/presentation/widgets/local_folder_tree.dart';
 
 /// Table-style email list with action focus
 /// 
@@ -319,83 +320,28 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
     );
   }
 
-  // ignore: unused_element
-  PreferredSizeWidget _buildAppBar(BuildContext context, ThemeData theme) {
-    return AppBar(
-      automaticallyImplyLeading: false,
-      elevation: 0,
-      backgroundColor: ActionMailTheme.darkTeal,
-      title: Row(
-        children: [
-          Text(
-            'ActionMail',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.w600,
-              color: const Color(0xFFB2DFDB), // Light teal for contrast on dark teal
-            ),
-          ),
-          const SizedBox(width: 16),
-          // Account dropdown
-          if (widget.availableAccounts != null && widget.availableAccounts!.isNotEmpty)
-            DropdownButton<String>(
-              value: widget.selectedAccountEmail,
-              items: widget.availableAccounts!.map((email) {
-                return DropdownMenuItem(
-                  value: email,
-                  child: Text(email),
-                );
-              }).toList(),
-              onChanged: widget.onAccountChanged,
-              underline: const SizedBox(),
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFFB2DFDB), // Light teal for contrast on dark teal
-              ),
-              iconEnabledColor: const Color(0xFFB2DFDB),
-            ),
-        ],
-      ),
-      actions: [
-        // Toggle local folder view button
-        if (widget.onToggleLocalFolderView != null)
-          IconButton(
-            icon: Icon(
-              widget.isLocalFolder ? Icons.folder : Icons.folder_outlined,
-              color: const Color(0xFFB2DFDB), // Light teal for contrast on dark teal
-            ),
-            onPressed: widget.onToggleLocalFolderView,
-            tooltip: widget.isLocalFolder 
-                ? 'Switch to Gmail folders' 
-                : 'Switch to local folders',
-          ),
-        // Folder dropdown
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: DropdownButton<String>(
-            value: widget.selectedFolder,
-            items: widget.isLocalFolder && widget.localFolders != null
-                ? widget.localFolders!.map((folder) {
-                    return DropdownMenuItem(
-                      value: folder,
-                      child: Text(folder),
-                    );
-                  }).toList()
-                : const [
-                    DropdownMenuItem(value: 'INBOX', child: Text('Inbox')),
-                    DropdownMenuItem(value: 'SENT', child: Text('Sent')),
-                    DropdownMenuItem(value: 'ARCHIVE', child: Text('Archive')),
-                    DropdownMenuItem(value: 'TRASH', child: Text('Trash')),
-                    DropdownMenuItem(value: 'SPAM', child: Text('Spam')),
-                  ],
-            onChanged: widget.onFolderChanged,
-            underline: const SizedBox(),
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: const Color(0xFFB2DFDB), // Light teal for contrast on dark teal
-            ),
-            iconEnabledColor: const Color(0xFFB2DFDB),
+
+  void _showLocalFolderTreeDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Select Local Folder'),
+        content: SizedBox(
+          width: 400,
+          height: 500,
+          child: LocalFolderTree(
+            selectedFolder: widget.selectedFolder,
+            onFolderSelected: (folderPath) {
+              Navigator.of(dialogContext).pop();
+              if (widget.onLocalFolderSelected != null) {
+                widget.onLocalFolderSelected!(folderPath);
+              } else if (widget.onFolderChanged != null) {
+                widget.onFolderChanged!(folderPath);
+              }
+            },
           ),
         ),
-        const SizedBox(width: 8),
-      ],
+      ),
     );
   }
 
@@ -1926,7 +1872,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Tooltip(
-                message: 'Personal',
+                message: 'Set message as Personal. Future messages from this sender will be automatically set.',
                 child: InkWell(
                   onTap: () {
                     // Match TileView behavior: tap same value to toggle off
@@ -1995,7 +1941,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
                 ),
               ),
               Tooltip(
-                message: 'Business',
+                message: 'Set message as Business. Future messages from this sender will be automatically set.',
                 child: InkWell(
                   onTap: () {
                     // Match TileView behavior: tap same value to toggle off
