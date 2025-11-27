@@ -108,8 +108,8 @@ class SmsSyncManager {
     );
 
     // Connect to WebSocket
+    // Note: catch-up will be triggered by _handleWebSocketConnected callback
     await webSocketService.connect();
-    unawaited(_catchUpWithRest(accountId, force: true));
   }
 
   /// Stop SMS sync for a specific account
@@ -206,7 +206,8 @@ class SmsSyncManager {
   /// Handle WebSocket connection established for a specific account
   void _handleWebSocketConnected(String accountId) {
     debugPrint('[SmsSyncManager] WebSocket connected for account $accountId');
-    unawaited(_catchUpWithRest(accountId));
+    // Force catch-up on initial connection to ensure we get any missed messages
+    unawaited(_catchUpWithRest(accountId, force: true));
   }
 
   /// Handle WebSocket disconnection for a specific account
@@ -346,24 +347,43 @@ class SmsSyncManager {
     if (!force &&
         state.lastRestCatchUp != null &&
         DateTime.now().difference(state.lastRestCatchUp!) < _AccountSyncState.restCatchUpMinInterval) {
+      debugPrint('[SmsSyncManager] REST catch-up skipped for account $accountId (too soon since last catch-up: ${DateTime.now().difference(state.lastRestCatchUp!)} < ${_AccountSyncState.restCatchUpMinInterval})');
       return;
     }
 
+    debugPrint('[SmsSyncManager] Starting REST catch-up for account $accountId (force=$force)');
     state.isRestCatchUpRunning = true;
     try {
-      final events = await _restService.fetchRecentSmsEvents(accountId);
+      // Use modified_after to only fetch messages modified since last catch-up (unless forced)
+      final modifiedAfter = force ? null : state.lastRestCatchUp;
+      if (modifiedAfter != null) {
+        debugPrint('[SmsSyncManager] Using modified_after: ${modifiedAfter.toIso8601String()}');
+      }
+      final events = await _restService.fetchRecentSmsEvents(
+        accountId,
+        modifiedAfter: modifiedAfter,
+      );
+      debugPrint('[SmsSyncManager] REST catch-up fetched ${events.length} SMS events for account $accountId');
       if (events.isEmpty) {
+        debugPrint('[SmsSyncManager] REST catch-up: no events to process for account $accountId');
         return;
       }
+      int savedCount = 0;
+      int skippedCount = 0;
       for (final smsEvent in events) {
-        if (!smsEvent.isValid) continue;
+        if (!smsEvent.isValid) {
+          skippedCount++;
+          continue;
+        }
         final message = SmsMessageConverter.toMessageIndex(
           smsEvent,
           accountId: accountId,
           accountEmail: state.accountEmail,
         );
         await _saveSmsMessage(message);
+        savedCount++;
       }
+      debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: saved $savedCount messages, skipped $skippedCount invalid events');
       state.lastRestCatchUp = DateTime.now();
     } catch (e, stackTrace) {
       debugPrint('[SmsSyncManager] REST catch-up error for account $accountId: $e');
