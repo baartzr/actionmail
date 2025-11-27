@@ -99,7 +99,13 @@ class PushbulletWebSocketService {
           final pushType = push?['type'];
           final notification = push?['notification'] as Map<String, dynamic>?;
           final notificationType = notification?['type'];
-          debugPrint('[PushbulletWS] Received push event: pushType=$pushType notificationType=$notificationType');
+          final smsData = push?['sms'] as Map<String, dynamic>?;
+          final direction = smsData?['direction'] as String?;
+          final phoneNumber = smsData?['address'] as String?;
+          debugPrint('[PushbulletWS] Received push event: pushType=$pushType notificationType=$notificationType direction=$direction phoneNumber=$phoneNumber');
+          if (smsData != null) {
+            debugPrint('[PushbulletWS] SMS data: ${smsData.keys.join(", ")}');
+          }
           onEvent?.call(data);
         } else if (data['type'] == 'tickle') {
           // Tickle events indicate something changed, but we get the actual data via push

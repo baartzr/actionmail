@@ -11,6 +11,7 @@ class PushbulletSmsEvent {
   final String? conversationId;
   final String? sourceUserId;
   final String? title;
+  final String? direction; // 'incoming' or 'outgoing'
 
   PushbulletSmsEvent({
     this.phoneNumber,
@@ -21,9 +22,12 @@ class PushbulletSmsEvent {
     this.conversationId,
     this.sourceUserId,
     this.title,
+    this.direction,
   });
 
   bool get isValid => phoneNumber != null && message != null;
+  
+  bool get isOutgoing => direction?.toLowerCase() == 'outgoing';
 }
 
 /// Parser for Pushbullet WebSocket events
@@ -105,6 +109,7 @@ class PushbulletMessageParser {
       conversationId: conversationId ?? phoneNumber,
       sourceUserId: sourceUserId,
       title: title,
+      direction: null, // Mirror events don't include direction
     );
   }
 
@@ -127,6 +132,7 @@ class PushbulletMessageParser {
     final address = first['address'] as String?;
     final addresses = first['addresses'];
     final conversationIdRaw = first['conversation_iden'] as String?;
+    final threadId = first['thread_id'] as String?;
 
     // Debug: log raw Pushbullet data
     debugPrint('[PushbulletParser] SmsChanged event raw data:');
@@ -134,13 +140,16 @@ class PushbulletMessageParser {
     debugPrint('[PushbulletParser]   address: "$address"');
     debugPrint('[PushbulletParser]   addresses: $addresses');
     debugPrint('[PushbulletParser]   conversation_iden: "$conversationIdRaw"');
+    debugPrint('[PushbulletParser]   thread_id: "$threadId"');
     debugPrint('[PushbulletParser]   notification keys: ${first.keys.toList()}');
 
+    // thread_id might contain the phone number or conversation identifier
+    // Try thread_id first, then conversation_iden, then address
     final phoneNumber = _chooseBestPhone(
       primary: address,
       addresses: addresses,
       fallback: title,
-      conversationId: conversationIdRaw,
+      conversationId: threadId ?? conversationIdRaw,
     );
     
     debugPrint('[PushbulletParser]   chosen phoneNumber: "$phoneNumber"');
@@ -149,8 +158,12 @@ class PushbulletMessageParser {
     final deviceId = first['source_device_iden'] as String? ??
         first['target_device_iden'] as String? ??
         push['source_device_iden'] as String?;
-    final conversationId = conversationIdRaw ?? phoneNumber;
+    // Use thread_id as conversation ID if available, otherwise fall back to conversation_iden or phoneNumber
+    final conversationId = threadId ?? conversationIdRaw ?? phoneNumber;
 
+    // Extract direction from notification if available
+    final direction = first['direction'] as String?;
+    
     return PushbulletSmsEvent(
       phoneNumber: phoneNumber,
       message: body,
@@ -160,6 +173,7 @@ class PushbulletMessageParser {
       conversationId: conversationId,
       sourceUserId: sourceUserId,
       title: title,
+      direction: direction,
     );
   }
 
@@ -325,9 +339,10 @@ class PushbulletMessageParser {
     }
 
     final direction = (message['direction'] as String?)?.toLowerCase();
-    if (direction == 'outgoing') {
-      // Skip messages we sent; catch-up is mainly for incoming messages.
-      return null;
+    // Include both incoming and outgoing messages
+    // Log direction for debugging
+    if (direction != null) {
+      debugPrint('[PushbulletParser] Message direction: $direction');
     }
 
     final timestamp = _timestampFromSeconds(message['timestamp'] as num?) ??
@@ -370,6 +385,7 @@ class PushbulletMessageParser {
       conversationId: conversationId ?? phoneNumber,
       sourceUserId: null,
       title: title,
+      direction: direction,
     );
   }
 }

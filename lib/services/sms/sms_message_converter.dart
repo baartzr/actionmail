@@ -27,15 +27,24 @@ class SmsMessageConverter {
     // Use phone number as thread ID (group messages by sender)
     final threadId = 'sms_thread_${_normalizePhoneNumber(phoneNumber)}';
     
-    // Use phone number as sender (from field) while keeping contact name (if available)
+    // For outgoing messages, swap from/to fields
     final contactName = smsEvent.title;
-    final from = contactName != null && contactName.trim().isNotEmpty
-        ? '$contactName <$phoneNumber>'
-        : phoneNumber;
+    final String from;
+    final String to;
     
-    // For SMS, "to" is typically the user's phone number
-    // We'll use a placeholder or extract from device info if available
-    final to = 'Me'; // Could be enhanced to get actual phone number
+    if (smsEvent.isOutgoing) {
+      // Outgoing: from is "Me", to is the recipient
+      from = 'Me';
+      to = contactName != null && contactName.trim().isNotEmpty
+          ? '$contactName <$phoneNumber>'
+          : phoneNumber;
+    } else {
+      // Incoming: from is the sender, to is "Me"
+      from = contactName != null && contactName.trim().isNotEmpty
+          ? '$contactName <$phoneNumber>'
+          : phoneNumber;
+      to = 'Me';
+    }
 
     // SMS message body becomes the subject (since SMS doesn't have subjects)
     final subject = smsEvent.message!;

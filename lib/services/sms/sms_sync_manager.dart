@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:domail/services/sms/sms_sync_service.dart';
 import 'package:domail/services/sms/pushbullet_websocket_service.dart';
@@ -148,10 +149,60 @@ class SmsSyncManager {
         return;
       }
 
+      // Log all push events to detect errors (even non-SMS ones)
+      // This helps us catch SMS send failures that come through as push events
+      final push = event['push'] as Map<String, dynamic>?;
+      if (push != null) {
+        final pushId = push['iden'] as String?;
+        final pushType = push['type'] as String?;
+        final active = push['active'] as bool?;
+        final error = push['error'] as Map<String, dynamic>?;
+        final data = push['data'] as Map<String, dynamic>?;
+        
+        // Log push events that might be related to SMS sending
+        if (data != null && data.containsKey('addresses')) {
+          debugPrint('[SmsSyncManager] 📱 SMS-related push event: iden=$pushId, type=$pushType, active=$active');
+          if (error != null) {
+            debugPrint('[SmsSyncManager] ⚠️ ERROR in SMS push event: $error');
+            debugPrint('[SmsSyncManager] Full push data: ${jsonEncode(push)}');
+          } else if (active == false) {
+            debugPrint('[SmsSyncManager] ⚠️ SMS push marked as inactive (may indicate failure)');
+            debugPrint('[SmsSyncManager] Push data: ${jsonEncode(data)}');
+          }
+        }
+        
+        // Log any error in any push event
+        if (error != null) {
+          debugPrint('[SmsSyncManager] ⚠️ ERROR in push event: $error');
+          debugPrint('[SmsSyncManager] Push type: $pushType, iden: $pushId');
+          debugPrint('[SmsSyncManager] Full push data: ${jsonEncode(push)}');
+        }
+      }
+
       // Check if this is an SMS event
+      debugPrint('[SmsSyncManager] Processing WebSocket event for account $accountId: ${PushbulletMessageParser.describeEvent(event)}');
       if (!PushbulletMessageParser.isSmsEvent(event)) {
         debugPrint('[SmsSyncManager] Ignoring non-SMS event: ${PushbulletMessageParser.describeEvent(event)}');
         return;
+      }
+      debugPrint('[SmsSyncManager] Event is SMS event, parsing...');
+
+      // Check if this is a sms_changed event with no notifications (just a change notification)
+      // In this case, we need to fetch the actual SMS data via REST API
+      if (push != null && push['type'] == 'sms_changed') {
+        final notifications = push['notifications'];
+        final hasNotifications = notifications is List && notifications.isNotEmpty;
+        debugPrint('[SmsSyncManager] sms_changed event detected: hasNotifications=$hasNotifications');
+        debugPrint('[SmsSyncManager] sms_changed event push keys: ${push.keys.toList()}');
+        if (!hasNotifications) {
+          debugPrint('[SmsSyncManager] sms_changed event has no notifications, triggering REST catch-up (force=true) to fetch SMS data');
+          // Force the catch-up to ignore the time limit and try fetching without modified_after
+          // This helps when the permanent object was just created
+          unawaited(_catchUpWithRest(accountId, force: true));
+          return;
+        } else {
+          debugPrint('[SmsSyncManager] sms_changed event has ${notifications.length} notification(s), parsing...');
+        }
       }
 
       // Parse SMS event
@@ -366,6 +417,8 @@ class SmsSyncManager {
       debugPrint('[SmsSyncManager] REST catch-up fetched ${events.length} SMS events for account $accountId');
       if (events.isEmpty) {
         debugPrint('[SmsSyncManager] REST catch-up: no events to process for account $accountId');
+        state.lastRestCatchUp = DateTime.now();
+        debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: no new messages found');
         return;
       }
       int savedCount = 0;
@@ -383,8 +436,8 @@ class SmsSyncManager {
         await _saveSmsMessage(message);
         savedCount++;
       }
-      debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: saved $savedCount messages, skipped $skippedCount invalid events');
       state.lastRestCatchUp = DateTime.now();
+      debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: saved $savedCount messages, skipped $skippedCount invalid events');
     } catch (e, stackTrace) {
       debugPrint('[SmsSyncManager] REST catch-up error for account $accountId: $e');
       debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
