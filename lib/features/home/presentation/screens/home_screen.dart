@@ -2080,7 +2080,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
 
     // Check if we should show table view
     if (isDesktop && viewMode == ViewMode.table) {
-      return emailListAsync.when(
+      final gridContent = emailListAsync.when(
         data: (emails) {
           // Apply filters using helper function
           final filtered = HomeEmailListFilter.filterEmails(
@@ -2431,6 +2431,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
         error: (error, stack) => Center(
           child: Text('Error: $error'),
         ),
+      );
+
+      return Column(
+        children: [
+          if (isLoadingLocal || isSyncing)
+            const LinearProgressIndicator(minHeight: 2)
+          else
+            const SizedBox(height: 2),
+          Expanded(child: gridContent),
+        ],
       );
     }
 

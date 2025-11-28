@@ -375,12 +375,7 @@ class FirebaseSyncService {
           'lastModified': FieldValue.serverTimestamp(),
         };
         
-        final statusDocExists = (await statusDoc.get()).exists;
-        if (!statusDocExists) {
-          await statusDoc.set(statusData, SetOptions(merge: true));
-        } else {
-          await statusDoc.update(statusData);
-        }
+        await _writeDoc(statusDoc, statusData);
         
         // Push action document
         final actionDocId = '${messageId}_action';
@@ -397,12 +392,7 @@ class FirebaseSyncService {
           }
           actionData['actionComplete'] = localMessage.actionComplete;
           
-          final actionDocExists = (await actionDoc.get()).exists;
-          if (!actionDocExists) {
-            await actionDoc.set(actionData, SetOptions(merge: true));
-          } else {
-            await actionDoc.update(actionData);
-          }
+          await _writeDoc(actionDoc, actionData);
         } else {
           // Action removed - delete fields in Firebase
           final actionData = <String, dynamic>{
@@ -412,10 +402,7 @@ class FirebaseSyncService {
             'lastModified': FieldValue.serverTimestamp(),
           };
           
-          final actionDocExists = (await actionDoc.get()).exists;
-          if (actionDocExists) {
-            await actionDoc.update(actionData);
-          }
+          await _writeDoc(actionDoc, actionData);
           // If document doesn't exist, no need to create it just to delete fields
           
           if (kDebugMode) {
@@ -655,12 +642,7 @@ class FirebaseSyncService {
             'localTagPersonal': localTagPersonal, // Can be null to clear the field
           };
           
-          final statusDocExists = (await statusDoc.get()).exists;
-          if (!statusDocExists) {
-            await statusDoc.set(statusData, SetOptions(merge: true));
-          } else {
-            await statusDoc.update(statusData);
-          }
+          await _writeDoc(statusDoc, statusData);
           
           if (kDebugMode) {
             _logFirebaseSync('[FIREBASE_PUSH_STATUS] messageId=$messageId, localTagPersonal=$localTagPersonal');
@@ -694,23 +676,7 @@ class FirebaseSyncService {
             actionData['actionComplete'] = actionComplete ?? false;
           }
           
-          final actionDocExists = (await actionDoc.get()).exists;
-          if (!actionDocExists) {
-            // For new documents, only include fields if action exists
-            final newActionData = <String, dynamic>{
-              'lastModified': FieldValue.serverTimestamp(),
-            };
-            if (hasAction) {
-              newActionData['actionInsightText'] = actionInsightText;
-              if (actionDate != null) {
-                newActionData['actionDate'] = actionDate.toIso8601String();
-              }
-              newActionData['actionComplete'] = actionComplete ?? false;
-            }
-            await actionDoc.set(newActionData, SetOptions(merge: true));
-          } else {
-            await actionDoc.update(actionData);
-          }
+          await _writeDoc(actionDoc, actionData);
           
           if (kDebugMode) {
             _logFirebaseSync('[FIREBASE_PUSH_ACTION] messageId=$messageId, actionInsightText=$actionInsightText, clearAction=$clearAction');
@@ -730,6 +696,18 @@ class FirebaseSyncService {
   Future<void> syncSenderPrefs(Map<String, String?> prefs) async {
     // No-op: sender preferences are derived locally from emailMeta changes
     return;
+  }
+
+  Future<void> _writeDoc(DocumentReference doc, Map<String, dynamic> data) async {
+    try {
+      await doc.update(data);
+    } on FirebaseException catch (e) {
+      if (e.code == 'not-found') {
+        await doc.set(data, SetOptions(merge: true));
+      } else {
+        rethrow;
+      }
+    }
   }
 
   /// Handle a status document update from Firebase

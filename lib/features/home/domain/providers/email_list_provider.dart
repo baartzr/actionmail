@@ -160,6 +160,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     if (folderLabel != null) {
       _folderLabel = folderLabel;
     }
+    _setSyncing(true);
     try {
       // ignore: avoid_print
       print('[sync] refresh account=$accountId folder=$_folderLabel');
@@ -303,25 +304,31 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
 
   void _setSyncing(bool value) {
     _syncIndicatorHideTimer?.cancel();
+
     if (value) {
       _lastSyncStartTime = DateTime.now();
-      _setSyncing(true);
+      _ref.read(emailSyncingProvider.notifier).state = true;
       return;
     }
+
     final startTime = _lastSyncStartTime;
     if (startTime == null) {
-            _setSyncing(false);
+      _ref.read(emailSyncingProvider.notifier).state = false;
       return;
     }
+
     final elapsed = DateTime.now().difference(startTime);
     if (elapsed >= _minSyncIndicatorDuration) {
-      _setSyncing(false);
+      _ref.read(emailSyncingProvider.notifier).state = false;
+      _lastSyncStartTime = null;
       return;
     }
+
     final remaining = _minSyncIndicatorDuration - elapsed;
     _syncIndicatorHideTimer = Timer(remaining, () {
       if (_lastSyncStartTime == startTime) {
-      _setSyncing(false);
+        _ref.read(emailSyncingProvider.notifier).state = false;
+        _lastSyncStartTime = null;
       }
     });
   }
@@ -476,15 +483,18 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   Future<void> _syncFolderAndUpdateCurrent() async {
     // ignore: avoid_print
     print('[sync] _syncFolderAndUpdateCurrent: starting, _currentAccountId=$_currentAccountId, _isInitialSyncing=$_isInitialSyncing');
+    _setSyncing(true);
     if (_currentAccountId == null) {
       // ignore: avoid_print
       print('[sync] _syncFolderAndUpdateCurrent: _currentAccountId is null, returning');
+      _setSyncing(false);
       return;
     }
     // Skip if initial sync is in progress
     if (_isInitialSyncing) {
       // ignore: avoid_print
       print('[sync] sync current skipped, initial sync in progress');
+      _setSyncing(false);
       return;
     }
     final accountId = _currentAccountId!;
@@ -538,7 +548,6 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         _ref.read(authFailureProvider.notifier).state = null;
       }
       
-      _setSyncing(true);
       await _syncService.processPendingOps();
       
       // Use incremental sync if history exists, otherwise fall back to full sync
