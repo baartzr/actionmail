@@ -586,7 +586,7 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                             style: TextStyle(color: theme.colorScheme.primary),
                           ),
                           style: TextButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                            //padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             minimumSize: Size.zero,
                             tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                             textStyle: theme.textTheme.labelSmall,
@@ -610,9 +610,9 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                           },
                           tooltip: _showActionLine ? 'Hide action' : 'Show action',
                         ),
-                        const SizedBox(width: 4),
+                        //const SizedBox(width: 4),
                         _buildCategoryIconSwitch(context),
-                        const SizedBox(width: 4),
+                        //const SizedBox(width: 4),
                         IconButton(
                           iconSize: 20,
                           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
@@ -625,7 +625,7 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                           onPressed: _handleStarToggle,
                           tooltip: AppConstants.emailStateStarred,
                         ),
-                        const SizedBox(width: 4),
+                        //const SizedBox(width: 4),
                         // Menu button (Move, Archive, Unsubscribe)
                         PopupMenuButton<String>(
                           icon: Icon(
@@ -746,7 +746,7 @@ class _EmailTileState extends ConsumerState<EmailTile> {
                             return items;
                           },
                         ),
-                        const SizedBox(width: 4),
+                        //const SizedBox(width: 4),
                         IconButton(
                           iconSize: 20,
                           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),

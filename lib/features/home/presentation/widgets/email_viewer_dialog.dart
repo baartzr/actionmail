@@ -26,7 +26,10 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
-import 'package:domail/services/sms/pushbullet_sms_sender.dart';
+// import 'package:domail/services/sms/pushbullet_sms_sender.dart'; // Removed - using companion app now
+import 'package:domail/services/sms/companion_sms_service.dart';
+import 'package:domail/services/sms/sms_sync_manager.dart';
+import 'package:domail/services/sms/mms_attachment_service.dart';
 import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
 import 'package:domail/services/whatsapp/whatsapp_sender.dart';
 
@@ -201,7 +204,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   
   // Pending sent messages (in-memory only, cleared on window close or when real message arrives)
   final List<_PendingSentMessage> _pendingSentMessages = [];
-  final PushbulletSmsSender _smsSender = PushbulletSmsSender();
+  // final PushbulletSmsSender _smsSender = PushbulletSmsSender(); // Removed - SMS sending via Pushbullet disabled
   final WhatsAppSender _whatsAppSender = WhatsAppSender();
   Timer? _conversationRefreshTimer;
   final ScrollController _conversationScrollController = ScrollController();
@@ -332,16 +335,30 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
 
       // For SMS messages, use locally stored content (subject field contains the message body)
       if (SmsMessageConverter.isSmsMessage(_currentMessage)) {
-        debugPrint('[EmailViewer] Loading SMS message from local content');
+        debugPrint('[EmailViewer] Loading SMS/MMS message from local content');
         final smsBody = _currentMessage.subject;
         final bodyHtml = _wrapPlainAsHtml(smsBody);
+        
+        // Load MMS attachments if present
+        final attachmentService = MmsAttachmentService();
+        final mmsAttachments = attachmentService.getAttachments(_currentMessage.id);
+        final attachments = mmsAttachments.map((mmsAtt) {
+          return AttachmentInfo(
+            filename: mmsAtt.filename,
+            mimeType: mmsAtt.contentType,
+            attachmentId: mmsAtt.partId,
+            size: mmsAtt.size,
+          );
+        }).toList();
+        
+        debugPrint('[EmailViewer] Found ${attachments.length} MMS attachments for message ${_currentMessage.id}');
         
         if (!mounted) return;
         setState(() {
           _htmlContent = bodyHtml;
-          _attachments = [];
+          _attachments = attachments;
           _isLoading = false;
-          _conversationAttachments[_currentMessage.id] = [];
+          _conversationAttachments[_currentMessage.id] = attachments;
           _allowInlineImages = true;
           _hasInlinePlaceholders = false;
         });
@@ -1657,6 +1674,43 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       _attachmentFileCache.remove(cacheKey);
     }
 
+    // Check if this is an MMS attachment (SMS message with attachments)
+    if (SmsMessageConverter.isSmsMessage(message) && message.hasAttachments) {
+      final attachmentService = MmsAttachmentService();
+      final mmsAttachments = attachmentService.getAttachments(message.id);
+      final mmsAttachment = mmsAttachments.firstWhere(
+        (att) => att.partId == attachment.attachmentId,
+        orElse: () => throw Exception('MMS attachment not found'),
+      );
+      
+      if (mmsAttachment.uri != null) {
+        // Read MMS attachment from content URI
+        final companionService = CompanionSmsService();
+        final bytes = await companionService.readMmsAttachment(mmsAttachment.uri!);
+        if (bytes == null) {
+          if (!mounted) return null;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Unable to read MMS attachment ${attachment.filename}')),
+          );
+          return null;
+        }
+        
+        // Save to temp file
+        final tempDir = await getTemporaryDirectory();
+        final downloadDir = Directory(path.join(tempDir.path, 'domail_attachments', message.id));
+        if (!await downloadDir.exists()) {
+          await downloadDir.create(recursive: true);
+        }
+        
+        final sanitizedName = _sanitizeFilename(attachment.filename);
+        final filePath = path.join(downloadDir.path, sanitizedName);
+        final file = File(filePath);
+        await file.writeAsBytes(bytes);
+        _attachmentFileCache[cacheKey] = file.path;
+        return file;
+      }
+    }
+
     if (widget.localFolderName != null) {
       final folderService = LocalFolderService();
       final localPath = await folderService.getAttachmentPath(
@@ -2055,7 +2109,7 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     });
   }
 
-  Future<void> _loadThreadMessages() async {
+  Future<void> _loadThreadMessages({bool keepPendingSms = false}) async {
     final threadId = _currentMessage.threadId;
     if (threadId.isEmpty) {
       if (!mounted) return;
@@ -2072,15 +2126,61 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       final messages = await repo.getMessagesByThread(widget.accountId, threadId);
       if (!mounted) return;
       
-      // Clear pending messages when new emails with same threadId arrive
       // Track previous message IDs to detect new messages
       final previousMessageIds = _threadMessages.map((m) => m.id).toSet();
       final newMessageIds = messages.map((m) => m.id).toSet();
       final hasNewMessages = newMessageIds.difference(previousMessageIds).isNotEmpty;
       
       if (hasNewMessages) {
-        // Remove all pending messages for this thread when any new message is received
-        _pendingSentMessages.removeWhere((pending) => pending.threadId == threadId);
+        if (keepPendingSms && _isSmsConversation()) {
+          // For SMS: Match pending messages with real messages and only remove matches
+          // Match by threadId, phone number, and message content (snippet)
+          final pendingSms = _pendingSentMessages.where((p) => 
+            p.threadId == threadId && p.isSms
+          ).toList();
+          
+          for (final pending in pendingSms) {
+            final pendingPhone = (pending.smsPhoneNumber ?? pending.to)
+                .replaceAll(RegExp(r'[^\d+]'), '').trim();
+            
+            // Try to find a matching real message
+            MessageIndex? matchingMessage;
+            try {
+              matchingMessage = messages.firstWhere(
+                (msg) {
+                  if (!_isOutgoing(msg)) return false;
+                  // Extract phone from "to" field (SMS format: phone@sms.gmail.com or just phone)
+                  final msgPhone = msg.to
+                      .replaceAll(RegExp(r'@.*'), '') // Remove @sms.gmail.com
+                      .replaceAll(RegExp(r'[^\d+]'), '')
+                      .trim();
+                  // Match by phone number and check if snippet contains pending body
+                  final msgSnippet = msg.snippet ?? '';
+                  final pendingBody = pending.body;
+                  return msgPhone == pendingPhone && 
+                         (msgSnippet.toLowerCase().contains(pendingBody.toLowerCase()) ||
+                          pendingBody.toLowerCase().contains(msgSnippet.toLowerCase()));
+                },
+              );
+            } catch (e) {
+              // No match found
+              matchingMessage = null;
+            }
+            
+            // If we found a match, remove the pending message
+            if (matchingMessage != null) {
+              _pendingSentMessages.remove(pending);
+            }
+          }
+          
+          // For non-SMS or if keepPendingSms is false, remove all pending messages
+          _pendingSentMessages.removeWhere((pending) => 
+            pending.threadId == threadId && !pending.isSms
+          );
+        } else {
+          // Remove all pending messages for this thread when any new message is received
+          _pendingSentMessages.removeWhere((pending) => pending.threadId == threadId);
+        }
       }
       
       setState(() {
@@ -2111,18 +2211,25 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
     }
   }
 
-  Future<void> _refreshConversation({bool showLoading = false}) async {
+  Future<void> _refreshConversation({bool showLoading = false, bool keepPendingSms = false}) async {
     if (!_isConversationMode) return;
     
-    // Skip Gmail sync for SMS conversations - they are managed by Pushbullet
+    // For SMS conversations, trigger a sync from companion app first
     if (_isSmsConversation()) {
-      // Just reload thread messages from local database
       if (showLoading && mounted) {
         setState(() {
           _isThreadLoading = true;
         });
       }
-      await _loadThreadMessages();
+      // Trigger a sync from companion app to get the latest messages (including sent ones)
+      try {
+        final smsSyncManager = SmsSyncManager();
+        await smsSyncManager.syncFromCompanionApp(widget.accountId);
+      } catch (e) {
+        debugPrint('[EmailViewer] Error syncing SMS: $e');
+      }
+      // Then reload thread messages from local database
+      await _loadThreadMessages(keepPendingSms: keepPendingSms);
       if (showLoading && mounted) {
         setState(() {
           _isThreadLoading = false;
@@ -2160,6 +2267,12 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
   }
 
   bool _isOutgoing(MessageIndex message) {
+    // For SMS messages, check folderLabel instead of from/to
+    if (SmsMessageConverter.isSmsMessage(message)) {
+      return message.folderLabel == 'SENT';
+    }
+    
+    // For email messages, check if sender matches account email
     final accountEmail = _accountEmail;
     if (accountEmail == null || accountEmail.isEmpty) {
       return false;
@@ -2281,6 +2394,17 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                       color: textColor,
                                       fontWeight: FontWeight.w600,
                                     ),
+                                  )
+                                else if (pending.isSent && pending.body.isNotEmpty)
+                                  // Show actual message body when sent (optimistic)
+                                  Text(
+                                    pending.body,
+                                    style: theme.textTheme.titleMedium?.copyWith(
+                                      color: textColor,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                    maxLines: 3,
+                                    overflow: TextOverflow.ellipsis,
                                   )
                                 else
                                   Text(
@@ -2561,27 +2685,58 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
       return;
     }
 
+    // Extract phone number (remove any email-like formatting)
+    final cleanPhone = phone.replaceAll(RegExp(r'[^\d+]'), '').trim();
+    if (cleanPhone.isEmpty) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Invalid phone number format'),
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _isSendingInlineReply = true;
       pending.isSent = false;
     });
 
     try {
-      await _smsSender.sendSms(
-        accountId: widget.accountId,
-        phoneNumber: phone,
-        message: text,
-      );
+      // Get threadId from current message (conversation thread)
+      final threadId = _currentMessage.threadId.isNotEmpty 
+          ? _currentMessage.threadId 
+          : null;
+      
+      final companionSmsService = CompanionSmsService();
+      final success = await companionSmsService.sendSms(cleanPhone, text, threadId: threadId);
+      
       if (!mounted) return;
-      setState(() {
-        pending.isSent = true;
-        _isSendingInlineReply = false;
-      });
-      await _refreshConversation(showLoading: false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('SMS sent via Pushbullet')),
-        );
+      
+      if (success) {
+        setState(() {
+          // Update pending message with actual text sent and mark as sent
+          pending.body = text;
+          pending.isSent = true;
+          _isSendingInlineReply = false;
+        });
+        // Refresh conversation to get any new messages, but keep pending SMS visible
+        await _refreshConversation(showLoading: false, keepPendingSms: true);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('SMS sent successfully')),
+          );
+        }
+      } else {
+        setState(() {
+          pending.isSent = false;
+          _isSendingInlineReply = false;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to send SMS. Please try again.')),
+          );
+        }
       }
     } catch (e) {
       if (!mounted) return;
@@ -2909,7 +3064,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                   ),
                                 ],
                               ] else ...[
-                                // Expanded view - show full body
+                                // Expanded view - show snippet (if different from subject) and full body
+                                if (showSnippet) ...[
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    snippetText,
+                                    style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
                                 ConstrainedBox(
                                   constraints: BoxConstraints(

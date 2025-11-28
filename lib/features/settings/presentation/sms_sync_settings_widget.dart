@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:domail/services/sms/sms_sync_service.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
+import 'package:domail/services/sms/companion_sms_service.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
+import 'dart:io';
 
 /// Widget for SMS sync settings
-/// Allows users to enable/disable SMS sync and configure Pushbullet access tokens per account
+/// Allows users to enable/disable SMS sync via the Companion app
 class SmsSyncSettingsWidget extends StatefulWidget {
   const SmsSyncSettingsWidget({super.key});
 
@@ -15,14 +16,13 @@ class SmsSyncSettingsWidget extends StatefulWidget {
 
 class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
   final SmsSyncService _smsSyncService = SmsSyncService();
+  final CompanionSmsService _companionService = CompanionSmsService();
   final GoogleAuthService _authService = GoogleAuthService();
-  final TextEditingController _tokenController = TextEditingController();
   bool _isLoading = false;
-  bool _isTokenVisible = false;
   bool? _syncEnabled;
+  bool? _companionAppAvailable;
   List<GoogleAccount> _accounts = [];
   String? _selectedAccountId;
-  bool _hasToken = false;
 
   @override
   void initState() {
@@ -32,32 +32,31 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
 
   @override
   void dispose() {
-    _tokenController.dispose();
     super.dispose();
   }
 
   Future<void> _loadState() async {
     setState(() => _isLoading = true);
     try {
-      final loadAccountsFuture = _authService.loadAccounts();
       final enabled = await _smsSyncService.isSyncEnabled();
-      final accounts = await loadAccountsFuture;
+      final available = Platform.isAndroid 
+          ? await _companionService.isCompanionAppAvailable()
+          : false;
+      final accounts = await _authService.loadAccounts();
+      final selectedAccountId = await _smsSyncService.getSelectedAccountId();
       
-      // Select first account if available
-      String? selectedId;
-      bool hasToken = false;
-      if (accounts.isNotEmpty) {
-        selectedId = accounts.first.id;
-        final token = await _smsSyncService.getToken(selectedId);
-        _tokenController.text = token ?? '';
-        hasToken = token != null && token.isNotEmpty;
+      // If no account is selected but sync is enabled, select the first account
+      String? accountId = selectedAccountId;
+      if (accountId == null && accounts.isNotEmpty && enabled) {
+        accountId = accounts.first.id;
+        await _smsSyncService.setSelectedAccountId(accountId);
       }
       
       setState(() {
-        _accounts = accounts;
-        _selectedAccountId = selectedId;
-        _hasToken = hasToken;
         _syncEnabled = enabled;
+        _companionAppAvailable = available;
+        _accounts = accounts;
+        _selectedAccountId = accountId;
         _isLoading = false;
       });
     } catch (e) {
@@ -74,6 +73,33 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
   }
 
   Future<void> _onSyncToggleChanged(bool value) async {
+    if (!Platform.isAndroid) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('SMS sync is only available on Android'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+      return;
+    }
+
+    // Check if companion app is available
+    final available = await _companionService.isCompanionAppAvailable();
+    if (value && !available) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('SMS Companion app is not installed or not accessible. Please install the SMS Companion app first.'),
+            backgroundColor: Colors.orange,
+            duration: Duration(seconds: 4),
+          ),
+        );
+      }
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       await _smsSyncService.setSyncEnabled(value);
@@ -81,9 +107,15 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
       // Start or stop SMS sync manager
       final smsManager = SmsSyncManager();
       if (value) {
-        await smsManager.start();
+        // Use selected account or first available
+        final accountId = _selectedAccountId ?? 
+            (_accounts.isNotEmpty ? _accounts.first.id : null);
+        if (accountId != null) {
+          await _smsSyncService.setSelectedAccountId(accountId);
+          smsManager.startCompanionSync(accountId);
+        }
       } else {
-        await smsManager.stop();
+        smsManager.stopCompanionSync();
       }
       
       setState(() {
@@ -112,152 +144,6 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
     }
   }
 
-  Future<void> _onAccountSelected(String? accountId) async {
-    if (accountId == null) {
-      setState(() {
-        _selectedAccountId = null;
-        _hasToken = false;
-        _tokenController.clear();
-      });
-      return;
-    }
-
-    // Load token for the selected account
-    final token = await _smsSyncService.getToken(accountId);
-    final hasToken = token != null && token.isNotEmpty;
-    
-    setState(() {
-      _selectedAccountId = accountId;
-      _hasToken = hasToken;
-      _tokenController.text = token ?? '';
-    });
-  }
-
-  Future<void> _saveToken() async {
-    if (_selectedAccountId == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please select an account first'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-      return;
-    }
-
-    final token = _tokenController.text.trim();
-    if (token.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please enter a valid access token'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-      }
-      return;
-    }
-
-    setState(() => _isLoading = true);
-    try {
-      await _smsSyncService.setToken(_selectedAccountId!, token);
-      
-      // If sync is enabled, start sync for this account
-      if (_syncEnabled == true) {
-        final smsManager = SmsSyncManager();
-        await smsManager.startForAccount(_selectedAccountId!);
-      }
-      
-      setState(() {
-        _isLoading = false;
-        _hasToken = true;
-      });
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Access token saved securely'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      setState(() => _isLoading = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error saving token: $e'),
-            backgroundColor: Theme.of(context).colorScheme.error,
-          ),
-        );
-      }
-    }
-  }
-
-  Future<void> _clearToken() async {
-    if (_selectedAccountId == null) {
-      return;
-    }
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Clear Access Token'),
-        content: const Text('Are you sure you want to clear the stored access token for this account?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            style: FilledButton.styleFrom(
-              backgroundColor: Theme.of(ctx).colorScheme.error,
-              foregroundColor: Theme.of(ctx).colorScheme.onError,
-            ),
-            child: const Text('Clear'),
-          ),
-        ],
-      ),
-    );
-
-    if (confirmed == true) {
-      setState(() => _isLoading = true);
-      try {
-        await _smsSyncService.clearToken(_selectedAccountId!);
-        
-        // Stop sync for this account
-        final smsManager = SmsSyncManager();
-        await smsManager.stopForAccount(_selectedAccountId!);
-        
-        _tokenController.clear();
-        setState(() {
-          _isLoading = false;
-          _hasToken = false;
-        });
-        
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Access token cleared'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        }
-      } catch (e) {
-        setState(() => _isLoading = false);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Error clearing token: $e'),
-              backgroundColor: Theme.of(context).colorScheme.error,
-            ),
-          );
-        }
-      }
-    }
-  }
 
 
   @override
@@ -306,7 +192,9 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                       ),
                       const SizedBox(height: 2),
                       Text(
-                        'Sync SMS messages from your phone via Pushbullet',
+                        Platform.isAndroid
+                            ? 'Sync SMS messages from your phone via SMS Companion app'
+                            : 'SMS sync is only available on Android',
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: theme.colorScheme.onSurfaceVariant,
                         ),
@@ -316,25 +204,25 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                 ),
                 Switch(
                   value: isEnabled,
-                  onChanged: _isLoading ? null : _onSyncToggleChanged,
+                  onChanged: _isLoading || !Platform.isAndroid ? null : _onSyncToggleChanged,
                 ),
               ],
             ),
             
-            // Account token configuration (shown when enabled)
-            if (isEnabled) ...[
+            // Account selection (shown when enabled)
+            if (isEnabled && Platform.isAndroid) ...[
               const SizedBox(height: 16),
               Divider(color: theme.colorScheme.outlineVariant),
               const SizedBox(height: 12),
               Text(
-                'Pushbullet Access Token',
+                'Gmail Account',
                 style: theme.textTheme.titleSmall?.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
-                'Get your access token from pushbullet.com/account → Access Tokens',
+                'Select which Gmail account SMS messages should be associated with',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
@@ -350,18 +238,11 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                     border: Border.all(color: theme.colorScheme.outlineVariant),
                   ),
                   child: Text(
-                    'Add an email account first to link Pushbullet SMS sync.',
+                    'Add a Gmail account first to enable SMS sync.',
                     style: theme.textTheme.bodySmall,
                   ),
                 )
-              else ...[
-                Text(
-                  'Select Account',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                const SizedBox(height: 8),
+              else
                 DropdownButtonFormField<String>(
                   initialValue: _selectedAccountId,
                   hint: const Text('Select account'),
@@ -391,7 +272,37 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                       .toList(),
                   isExpanded: true,
                   onChanged: _isLoading ? null : (accountId) async {
-                    await _onAccountSelected(accountId);
+                    if (accountId == null) return;
+                    setState(() => _isLoading = true);
+                    try {
+                      await _smsSyncService.setSelectedAccountId(accountId);
+                      final smsManager = SmsSyncManager();
+                      smsManager.stopCompanionSync();
+                      smsManager.startCompanionSync(accountId);
+                      setState(() {
+                        _selectedAccountId = accountId;
+                        _isLoading = false;
+                      });
+                      if (!mounted) return;
+                      final messenger = ScaffoldMessenger.of(context);
+                      messenger.showSnackBar(
+                        const SnackBar(
+                          content: Text('SMS sync account updated'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    } catch (e) {
+                      setState(() => _isLoading = false);
+                      if (!mounted) return;
+                      final messenger = ScaffoldMessenger.of(context);
+                      final theme = Theme.of(context);
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text('Error updating account: $e'),
+                          backgroundColor: theme.colorScheme.error,
+                        ),
+                      );
+                    }
                   },
                   decoration: InputDecoration(
                     hintText: 'Select account',
@@ -402,72 +313,67 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                     fillColor: theme.colorScheme.surface,
                   ),
                 ),
-                if (_selectedAccountId != null) ...[
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: _tokenController,
-                    obscureText: !_isTokenVisible,
-                    enabled: !_isLoading,
-                    decoration: InputDecoration(
-                      hintText: 'Enter your Pushbullet access token',
-                      suffixIcon: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: Icon(
-                              _isTokenVisible ? Icons.visibility_off : Icons.visibility,
-                              size: 20,
-                            ),
-                            onPressed: () {
-                              setState(() => _isTokenVisible = !_isTokenVisible);
-                            },
-                            tooltip: _isTokenVisible ? 'Hide token' : 'Show token',
-                          ),
-                          if (_hasToken)
-                            IconButton(
-                              icon: const Icon(Icons.copy, size: 20),
-                              onPressed: () {
-                                Clipboard.setData(ClipboardData(text: _tokenController.text));
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(
-                                    content: Text('Token copied to clipboard'),
-                                    duration: Duration(seconds: 1),
-                                  ),
-                                );
-                              },
-                              tooltip: 'Copy token',
-                            ),
-                        ],
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      filled: true,
-                      fillColor: theme.colorScheme.surface,
-                    ),
+            ],
+            
+            // Status information
+            if (Platform.isAndroid) ...[
+              const SizedBox(height: 12),
+              if (_companionAppAvailable == false)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: theme.colorScheme.errorContainer,
+                    border: Border.all(color: theme.colorScheme.error),
                   ),
-                  const SizedBox(height: 12),
-                  Row(
+                  child: Row(
                     children: [
-                      FilledButton.icon(
-                        onPressed: _isLoading ? null : _saveToken,
-                        icon: const Icon(Icons.save, size: 18),
-                        label: const Text('Save Token', style: TextStyle(fontSize: 14)),
+                      Icon(
+                        Icons.warning_amber_rounded,
+                        size: 20,
+                        color: theme.colorScheme.onErrorContainer,
                       ),
                       const SizedBox(width: 8),
-                      if (_hasToken)
-                        OutlinedButton.icon(
-                          onPressed: _isLoading ? null : _clearToken,
-                          icon: const Icon(Icons.delete_outline, size: 18),
-                          label: const Text('Clear', style: TextStyle(fontSize: 14)),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: theme.colorScheme.error,
+                      Expanded(
+                        child: Text(
+                          'SMS Companion app is not installed or not accessible. Please install the SMS Companion app first.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onErrorContainer,
                           ),
                         ),
+                      ),
                     ],
                   ),
-                ],
-              ],
+                )
+              else if (_companionAppAvailable == true)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(8),
+                    color: theme.colorScheme.primaryContainer,
+                    border: Border.all(color: theme.colorScheme.primary),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.check_circle_outline,
+                        size: 20,
+                        color: theme.colorScheme.onPrimaryContainer,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'SMS Companion app is installed and ready',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           ],
         ),

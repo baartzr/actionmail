@@ -15,7 +15,8 @@ import 'package:domail/features/home/presentation/widgets/message_compose_type.d
 import 'package:domail/features/home/presentation/widgets/contact_autocomplete_field.dart';
 import 'package:domail/features/home/presentation/widgets/contact_picker_dialog.dart';
 import 'package:domail/features/home/presentation/widgets/contacts_management_dialog.dart';
-import 'package:domail/services/sms/pushbullet_sms_sender.dart';
+// import 'package:domail/services/sms/pushbullet_sms_sender.dart'; // Removed - using companion app now
+import 'package:domail/services/sms/companion_sms_service.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/services/whatsapp/whatsapp_message_converter.dart';
@@ -114,7 +115,7 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
   String? _originalPlainText;
   final List<GmailAttachmentData> _forwardedAttachments = [];
   static final DateFormat _previewDateFormat = DateFormat('EEE, MMM d, yyyy h:mm a');
-  final PushbulletSmsSender _smsSender = PushbulletSmsSender();
+  // final PushbulletSmsSender _smsSender = PushbulletSmsSender(); // Removed - SMS sending via Pushbullet disabled
   ComposeMessageType _messageType = ComposeMessageType.email;
   
   // Listeners for text field changes
@@ -354,18 +355,36 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
 
   Future<void> _sendSms() async {
     if (!_formKey.currentState!.validate()) return;
-    final phone = _preparePhoneForSms(_toController.text);
-    final body = _bodyController.text.trim();
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid phone number')),
-      );
+    
+    // Extract phone number from "to" field
+    final toText = _toController.text.trim();
+    if (toText.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter a phone number')),
+        );
+      }
       return;
     }
+    
+    // Extract phone number (remove any email-like formatting)
+    final phone = toText.replaceAll(RegExp(r'[^\d+]'), '').trim();
+    if (phone.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter a valid phone number')),
+        );
+      }
+      return;
+    }
+    
+    final body = _bodyController.text.trim();
     if (body.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Message body is required for SMS')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Message body is required for SMS')),
+        );
+      }
       return;
     }
 
@@ -374,16 +393,22 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     });
 
     try {
-      await _smsSender.sendSms(
-        accountId: widget.accountId,
-        phoneNumber: phone,
-        message: body,
-      );
+      final companionSmsService = CompanionSmsService();
+      final success = await companionSmsService.sendSms(phone, body);
+      
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('SMS sent via Pushbullet')),
-      );
-      Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('SMS sent successfully')),
+        );
+        Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
+      } else {
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to send SMS. Please try again.')),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isSending = false);
@@ -971,17 +996,6 @@ $body
     return null;
   }
 
-  String _preparePhoneForSms(String input) {
-    var digits = input.trim().replaceAll(RegExp(r'[^0-9+]'), '');
-    if (digits.isEmpty) return '';
-    if (digits.startsWith('00')) {
-      digits = digits.substring(2);
-    }
-    if (!digits.startsWith('+')) {
-      digits = '+$digits';
-    }
-    return digits;
-  }
 
   String _preparePhoneForWhatsApp(String input) {
     var trimmed = input.trim();

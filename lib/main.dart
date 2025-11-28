@@ -105,7 +105,6 @@ void main() async {
       final smsStart = DateTime.now();
       final smsManager = SmsSyncManager();
       await smsManager.start();
-      await smsManager.catchUpMissedMessages(force: true);
       final smsMs = DateTime.now().difference(smsStart).inMilliseconds;
       if (kDebugMode) {
         debugPrint('[Main] SMS Sync Manager initialization attempted in ${smsMs}ms');

@@ -68,6 +68,20 @@ class FirebaseSyncService {
       // Try to get Firestore instance - this might throw if initialization failed
       try {
         _firestore = FirebaseFirestore.instance;
+        
+        // Configure Firestore settings to enable offline persistence and reduce connection attempts
+        // This helps reduce warnings when offline
+        // Settings can only be set once, so wrap in try-catch
+        try {
+          _firestore!.settings = const Settings(
+            persistenceEnabled: true, // Enable offline persistence
+            cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED, // Allow unlimited cache
+          );
+        } catch (e) {
+          // Settings may have already been set - this is fine
+          _logFirebaseSync('Settings already configured or error setting: $e');
+        }
+        
         _logFirebaseSync('Initialized successfully, _firestore: ${_firestore != null}');
         _logFirebaseSync('Firebase app name: ${apps.first.name}');
         _logFirebaseSync('Firebase project ID: ${apps.first.options.projectId}');
@@ -76,7 +90,10 @@ class FirebaseSyncService {
         _logFirebaseSync('ERROR: Failed to get Firestore instance: $firestoreError');
         _logFirebaseSync('Firebase apps exist but Firestore cannot be accessed');
         _logFirebaseSync('This may indicate a network or permissions issue');
-        return false;
+        _logFirebaseSync('Firestore will work in offline mode when network is unavailable');
+        // Don't return false - allow Firestore to work offline
+        _firestore = FirebaseFirestore.instance;
+        return _firestore != null;
       }
     } catch (e, stackTrace) {
       _logFirebaseSync('Initialization error (Firebase may not be configured): $e');
@@ -511,6 +528,45 @@ class FirebaseSyncService {
     await _emailMetaSubscription?.cancel();
     _emailMetaSubscription = null;
     debugPrint('[FirebaseSync] Stopped listening');
+  }
+
+  /// Pause Firestore when app goes to background (disables network to prevent reconnection attempts)
+  Future<void> pauseWhenBackgrounded() async {
+    if (_firestore != null && _syncEnabled) {
+      _logFirebaseSync('Pausing Firestore (app backgrounded) - disabling network');
+      try {
+        // Cancel listeners first
+        await _emailMetaSubscription?.cancel();
+        _emailMetaSubscription = null;
+        
+        // Disable network to prevent Firestore from trying to reconnect
+        // This stops the gRPC layer from attempting DNS resolution and connection
+        await _firestore!.disableNetwork();
+        _logFirebaseSync('Firestore network disabled');
+      } catch (e) {
+        _logFirebaseSync('Error pausing Firestore: $e');
+      }
+    }
+  }
+
+  /// Resume Firestore when app comes to foreground (enables network and restarts listeners)
+  Future<void> resumeWhenForegrounded() async {
+    if (_firestore != null && _syncEnabled) {
+      _logFirebaseSync('Resuming Firestore (app foregrounded) - enabling network');
+      try {
+        // Enable network - Firestore will automatically retry when network is ready
+        await _firestore!.enableNetwork();
+        _logFirebaseSync('Firestore network enabled');
+        
+        // Then restart listeners if user is initialized
+        if (_userId != null && _emailMetaCollection != null) {
+          await _startListening();
+          _logFirebaseSync('Firestore listeners restarted');
+        }
+      } catch (e) {
+        _logFirebaseSync('Error resuming Firestore: $e');
+      }
+    }
   }
 
   /// Initialize user sync if enabled

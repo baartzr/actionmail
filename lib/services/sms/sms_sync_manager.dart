@@ -1,12 +1,10 @@
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:domail/services/sms/sms_sync_service.dart';
-import 'package:domail/services/sms/pushbullet_websocket_service.dart';
-import 'package:domail/services/sms/pushbullet_message_parser.dart';
-import 'package:domail/services/sms/pushbullet_rest_service.dart';
+import 'package:domail/services/sms/companion_sms_service.dart';
 import 'package:domail/services/sms/sms_message_converter.dart';
 import 'package:domail/data/repositories/message_repository.dart';
+import 'package:domail/data/db/app_database.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
 
@@ -14,21 +12,15 @@ import 'package:domail/services/auth/google_auth_service.dart';
 class _AccountSyncState {
   final String accountId;
   final String accountEmail;
-  final PushbulletWebSocketService webSocketService;
-  Timer? checkStateTimer;
-  bool isRestCatchUpRunning = false;
-  DateTime? lastRestCatchUp;
-  static const Duration restCatchUpMinInterval = Duration(minutes: 2);
 
   _AccountSyncState({
     required this.accountId,
     required this.accountEmail,
-    required this.webSocketService,
   });
 }
 
 /// Main manager for SMS sync functionality
-/// Orchestrates multiple WebSocket connections (one per account with token)
+/// Syncs SMS messages from the SMS Companion app via ContentProvider
 class SmsSyncManager {
   static final SmsSyncManager _instance = SmsSyncManager._internal();
   factory SmsSyncManager() => _instance;
@@ -37,15 +29,15 @@ class SmsSyncManager {
   final SmsSyncService _syncService = SmsSyncService();
   final MessageRepository _messageRepository = MessageRepository();
   final GoogleAuthService _googleAuthService = GoogleAuthService();
-  final PushbulletRestService _restService = PushbulletRestService();
+  final CompanionSmsService _companionService = CompanionSmsService();
   
   final Map<String, _AccountSyncState> _accountStates = {};
-  Timer? _checkAllAccountsTimer;
+  Timer? _companionSyncTimer;
 
   /// Callback when a new SMS message is received and saved
   void Function(MessageIndex message)? onSmsReceived;
 
-  /// Start SMS sync for all accounts with tokens
+  /// Start SMS sync for all accounts
   Future<void> start() async {
     final isEnabled = await _syncService.isSyncEnabled();
     if (!isEnabled) {
@@ -53,21 +45,31 @@ class SmsSyncManager {
       return;
     }
 
-    final accountsWithTokens = await _syncService.getAccountsWithTokens();
-    if (accountsWithTokens.isEmpty) {
-      debugPrint('[SmsSyncManager] No accounts with tokens found');
+    // Check if companion app is available
+    final isAvailable = await _companionService.isCompanionAppAvailable();
+    if (!isAvailable) {
+      debugPrint('[SmsSyncManager] SMS Companion app is not available');
       return;
     }
 
-    debugPrint('[SmsSyncManager] Starting SMS sync for ${accountsWithTokens.length} account(s)...');
-
-    // Start sync for each account
-    for (final accountId in accountsWithTokens) {
-      await _startForAccount(accountId);
+    // Get selected account ID
+    final selectedAccountId = await _syncService.getSelectedAccountId();
+    if (selectedAccountId == null) {
+      debugPrint('[SmsSyncManager] No account selected for SMS sync');
+      return;
     }
 
-    // Start periodic state checking for all accounts
-    _startStateChecking();
+    // Verify account still exists
+    final account = await _googleAuthService.getAccountById(selectedAccountId);
+    if (account == null) {
+      debugPrint('[SmsSyncManager] Selected account $selectedAccountId no longer exists');
+      return;
+    }
+
+    debugPrint('[SmsSyncManager] Starting SMS sync for account ${account.email} ($selectedAccountId)...');
+
+    // Start sync for selected account
+    await _startForAccount(selectedAccountId);
   }
 
   /// Start SMS sync for a specific account
@@ -75,12 +77,6 @@ class SmsSyncManager {
     // Skip if already running for this account
     if (_accountStates.containsKey(accountId)) {
       debugPrint('[SmsSyncManager] Already running for account $accountId');
-      return;
-    }
-
-    final token = await _syncService.getToken(accountId);
-    if (token == null || token.isEmpty) {
-      debugPrint('[SmsSyncManager] No access token available for account $accountId');
       return;
     }
 
@@ -92,25 +88,14 @@ class SmsSyncManager {
 
     debugPrint('[SmsSyncManager] Starting SMS sync for account ${account.email} ($accountId)...');
 
-    // Create and configure WebSocket service for this account
-    final webSocketService = PushbulletWebSocketService(
-      accessToken: token,
-      onEvent: (event) => _handleWebSocketEvent(accountId, event),
-      onError: (error) => _handleWebSocketError(accountId, error),
-      onConnected: () => _handleWebSocketConnected(accountId),
-      onDisconnected: () => _handleWebSocketDisconnected(accountId),
-    );
-
     // Store account state
     _accountStates[accountId] = _AccountSyncState(
       accountId: accountId,
       accountEmail: account.email,
-      webSocketService: webSocketService,
     );
 
-    // Connect to WebSocket
-    // Note: catch-up will be triggered by _handleWebSocketConnected callback
-    await webSocketService.connect();
+    // Start periodic sync from companion app
+    startCompanionSync(accountId);
   }
 
   /// Stop SMS sync for a specific account
@@ -121,330 +106,25 @@ class SmsSyncManager {
     }
 
     debugPrint('[SmsSyncManager] Stopping SMS sync for account ${state.accountEmail} ($accountId)...');
-
-    state.checkStateTimer?.cancel();
-    await state.webSocketService.disconnect();
+    
+    // Stop companion sync if this was the last account
+    if (_accountStates.isEmpty) {
+      stopCompanionSync();
+    }
   }
 
   /// Stop SMS sync for all accounts
   Future<void> stop() async {
     debugPrint('[SmsSyncManager] Stopping SMS sync for all accounts...');
 
-    _checkAllAccountsTimer?.cancel();
-    _checkAllAccountsTimer = null;
+    stopCompanionSync();
 
-    // Stop all account syncs
-    final accountIds = _accountStates.keys.toList();
-    for (final accountId in accountIds) {
-      await _stopForAccount(accountId);
-    }
-  }
-
-  /// Handle WebSocket events for a specific account
-  void _handleWebSocketEvent(String accountId, Map<String, dynamic> event) {
-    try {
-      final state = _accountStates[accountId];
-      if (state == null) {
-        debugPrint('[SmsSyncManager] Received event for unknown account $accountId');
-        return;
-      }
-
-      // Log all push events to detect errors (even non-SMS ones)
-      // This helps us catch SMS send failures that come through as push events
-      final push = event['push'] as Map<String, dynamic>?;
-      if (push != null) {
-        final pushId = push['iden'] as String?;
-        final pushType = push['type'] as String?;
-        final active = push['active'] as bool?;
-        final error = push['error'] as Map<String, dynamic>?;
-        final data = push['data'] as Map<String, dynamic>?;
-        
-        // Log push events that might be related to SMS sending
-        if (data != null && data.containsKey('addresses')) {
-          debugPrint('[SmsSyncManager] 📱 SMS-related push event: iden=$pushId, type=$pushType, active=$active');
-          if (error != null) {
-            debugPrint('[SmsSyncManager] ⚠️ ERROR in SMS push event: $error');
-            debugPrint('[SmsSyncManager] Full push data: ${jsonEncode(push)}');
-          } else if (active == false) {
-            debugPrint('[SmsSyncManager] ⚠️ SMS push marked as inactive (may indicate failure)');
-            debugPrint('[SmsSyncManager] Push data: ${jsonEncode(data)}');
-          }
-        }
-        
-        // Log any error in any push event
-        if (error != null) {
-          debugPrint('[SmsSyncManager] ⚠️ ERROR in push event: $error');
-          debugPrint('[SmsSyncManager] Push type: $pushType, iden: $pushId');
-          debugPrint('[SmsSyncManager] Full push data: ${jsonEncode(push)}');
-        }
-      }
-
-      // Check if this is an SMS event
-      debugPrint('[SmsSyncManager] Processing WebSocket event for account $accountId: ${PushbulletMessageParser.describeEvent(event)}');
-      if (!PushbulletMessageParser.isSmsEvent(event)) {
-        debugPrint('[SmsSyncManager] Ignoring non-SMS event: ${PushbulletMessageParser.describeEvent(event)}');
-        return;
-      }
-      debugPrint('[SmsSyncManager] Event is SMS event, parsing...');
-
-      // Check if this is a sms_changed event with no notifications (just a change notification)
-      // In this case, we need to fetch the actual SMS data via REST API
-      if (push != null && push['type'] == 'sms_changed') {
-        final notifications = push['notifications'];
-        final hasNotifications = notifications is List && notifications.isNotEmpty;
-        debugPrint('[SmsSyncManager] sms_changed event detected: hasNotifications=$hasNotifications');
-        debugPrint('[SmsSyncManager] sms_changed event push keys: ${push.keys.toList()}');
-        if (!hasNotifications) {
-          debugPrint('[SmsSyncManager] sms_changed event has no notifications, triggering REST catch-up (force=true) to fetch SMS data');
-          // Force the catch-up to ignore the time limit and try fetching without modified_after
-          // This helps when the permanent object was just created
-          unawaited(_catchUpWithRest(accountId, force: true));
-          return;
-        } else {
-          debugPrint('[SmsSyncManager] sms_changed event has ${notifications.length} notification(s), parsing...');
-        }
-      }
-
-      // Parse SMS event
-      final smsEvent = PushbulletMessageParser.parseSmsEvent(event);
-      if (smsEvent == null || !smsEvent.isValid) {
-        debugPrint('[SmsSyncManager] Invalid SMS event payload: ${PushbulletMessageParser.describeEvent(event)}');
-        return;
-      }
-
-      debugPrint('[SmsSyncManager] Received SMS from ${smsEvent.phoneNumber} (account: ${state.accountEmail})');
-
-      if (smsEvent.deviceId != null && smsEvent.deviceId!.isNotEmpty) {
-        unawaited(_syncService.setDeviceId(accountId, smsEvent.deviceId!));
-      }
-
-      // Convert to MessageIndex
-      final message = SmsMessageConverter.toMessageIndex(
-        smsEvent,
-        accountId: accountId,
-        accountEmail: state.accountEmail,
-      );
-
-      // Save to repository
-      _saveSmsMessage(message);
-    } catch (e, stackTrace) {
-      debugPrint('[SmsSyncManager] Error handling WebSocket event for account $accountId: $e');
-      debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
-    }
-  }
-
-  /// Save SMS message to repository
-  Future<void> _saveSmsMessage(MessageIndex message) async {
-    try {
-      // Check if message already exists (avoid duplicates)
-      final existing = await _messageRepository.getById(message.id);
-      if (existing != null) {
-        debugPrint('[SmsSyncManager] Message ${message.id} already exists, skipping');
-        return;
-      }
-
-      // Save message
-      await _messageRepository.upsertMessages([message]);
-      debugPrint('[SmsSyncManager] Saved SMS message: ${message.id} (account: ${message.accountEmail})');
-
-      // Notify callback
-      onSmsReceived?.call(message);
-    } catch (e) {
-      debugPrint('[SmsSyncManager] Error saving SMS message: $e');
-    }
-  }
-
-  /// Handle WebSocket connection established for a specific account
-  void _handleWebSocketConnected(String accountId) {
-    debugPrint('[SmsSyncManager] WebSocket connected for account $accountId');
-    // Force catch-up on initial connection to ensure we get any missed messages
-    unawaited(_catchUpWithRest(accountId, force: true));
-  }
-
-  /// Handle WebSocket disconnection for a specific account
-  void _handleWebSocketDisconnected(String accountId) {
-    debugPrint('[SmsSyncManager] WebSocket disconnected for account $accountId');
-    
-    // Check if sync should still be running for this account
-    final state = _accountStates[accountId];
-    if (state != null) {
-      unawaited(_checkAccountSyncState(accountId));
-    }
-  }
-
-  /// Handle WebSocket errors for a specific account
-  void _handleWebSocketError(String accountId, String error) {
-    debugPrint('[SmsSyncManager] WebSocket error for account $accountId: $error');
-    
-    // If it's an authentication error, stop trying for this account
-    if (error.contains('401') || error.contains('unauthorized') || error.contains('invalid')) {
-      debugPrint('[SmsSyncManager] Authentication error for account $accountId, stopping sync');
-      unawaited(_stopForAccount(accountId));
-    }
-  }
-
-  /// Start periodic state checking for all accounts
-  void _startStateChecking() {
-    // Check state every 30 seconds to ensure sync is still enabled
-    _checkAllAccountsTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      _checkAllAccountsState();
-    });
-  }
-
-  /// Check sync state for all accounts
-  Future<void> _checkAllAccountsState() async {
-    final isEnabled = await _syncService.isSyncEnabled();
-    if (!isEnabled) {
-      debugPrint('[SmsSyncManager] Sync disabled, stopping all accounts...');
-      await stop();
-      return;
-    }
-
-    // Get current accounts with tokens
-    final accountsWithTokens = await _syncService.getAccountsWithTokens();
-    final currentAccountIds = _accountStates.keys.toSet();
-    final tokenAccountIds = accountsWithTokens.toSet();
-
-    // Stop sync for accounts that no longer have tokens
-    for (final accountId in currentAccountIds) {
-      if (!tokenAccountIds.contains(accountId)) {
-        debugPrint('[SmsSyncManager] Token removed for account $accountId, stopping sync...');
-        await _stopForAccount(accountId);
-      }
-    }
-
-    // Start sync for new accounts with tokens
-    for (final accountId in tokenAccountIds) {
-      if (!currentAccountIds.contains(accountId)) {
-        debugPrint('[SmsSyncManager] New token found for account $accountId, starting sync...');
-        await _startForAccount(accountId);
-      } else {
-        // Check individual account state
-        await _checkAccountSyncState(accountId);
-      }
-    }
-  }
-
-  /// Check if sync should still be running for a specific account
-  Future<void> _checkAccountSyncState(String accountId) async {
-    final state = _accountStates[accountId];
-    if (state == null) return;
-
-    final isEnabled = await _syncService.isSyncEnabled();
-    if (!isEnabled) {
-      await _stopForAccount(accountId);
-      return;
-    }
-
-    final token = await _syncService.getToken(accountId);
-    if (token == null || token.isEmpty) {
-      debugPrint('[SmsSyncManager] Token missing for account $accountId, stopping...');
-      await _stopForAccount(accountId);
-      return;
-    }
-
-    final account = await _googleAuthService.getAccountById(accountId);
-    if (account == null) {
-      debugPrint('[SmsSyncManager] Account $accountId no longer available, stopping...');
-      await _stopForAccount(accountId);
-      return;
-    }
-
-    // If WebSocket is not connected and we should be, try to reconnect
-    if (!state.webSocketService.isConnected && !state.webSocketService.isConnecting) {
-      debugPrint('[SmsSyncManager] WebSocket not connected for account $accountId, attempting reconnect...');
-      await state.webSocketService.connect();
-    }
+    // Clear all account states
+    _accountStates.clear();
   }
 
   /// Check if SMS sync is currently running for any account
   bool get isRunning => _accountStates.isNotEmpty;
-
-  /// Check if WebSocket is connected for any account
-  bool get isConnected {
-    for (final state in _accountStates.values) {
-      if (state.webSocketService.isConnected) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /// Public entry point for forcing a REST catch-up (e.g., on app resume).
-  /// Catches up for all accounts
-  Future<void> catchUpMissedMessages({bool force = false}) async {
-    if (_accountStates.isEmpty) {
-      debugPrint('[SmsSyncManager] catchUpMissedMessages skipped (no accounts running)');
-      return;
-    }
-
-    for (final accountId in _accountStates.keys) {
-      unawaited(_catchUpWithRest(accountId, force: force));
-    }
-  }
-
-  Future<void> _catchUpWithRest(String accountId, {bool force = false}) async {
-    final state = _accountStates[accountId];
-    if (state == null) {
-      debugPrint('[SmsSyncManager] REST catch-up skipped for account $accountId (not running)');
-      return;
-    }
-
-    if (state.isRestCatchUpRunning) {
-      debugPrint('[SmsSyncManager] REST catch-up already running for account $accountId');
-      return;
-    }
-
-    if (!force &&
-        state.lastRestCatchUp != null &&
-        DateTime.now().difference(state.lastRestCatchUp!) < _AccountSyncState.restCatchUpMinInterval) {
-      debugPrint('[SmsSyncManager] REST catch-up skipped for account $accountId (too soon since last catch-up: ${DateTime.now().difference(state.lastRestCatchUp!)} < ${_AccountSyncState.restCatchUpMinInterval})');
-      return;
-    }
-
-    debugPrint('[SmsSyncManager] Starting REST catch-up for account $accountId (force=$force)');
-    state.isRestCatchUpRunning = true;
-    try {
-      // Use modified_after to only fetch messages modified since last catch-up (unless forced)
-      final modifiedAfter = force ? null : state.lastRestCatchUp;
-      if (modifiedAfter != null) {
-        debugPrint('[SmsSyncManager] Using modified_after: ${modifiedAfter.toIso8601String()}');
-      }
-      final events = await _restService.fetchRecentSmsEvents(
-        accountId,
-        modifiedAfter: modifiedAfter,
-      );
-      debugPrint('[SmsSyncManager] REST catch-up fetched ${events.length} SMS events for account $accountId');
-      if (events.isEmpty) {
-        debugPrint('[SmsSyncManager] REST catch-up: no events to process for account $accountId');
-        state.lastRestCatchUp = DateTime.now();
-        debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: no new messages found');
-        return;
-      }
-      int savedCount = 0;
-      int skippedCount = 0;
-      for (final smsEvent in events) {
-        if (!smsEvent.isValid) {
-          skippedCount++;
-          continue;
-        }
-        final message = SmsMessageConverter.toMessageIndex(
-          smsEvent,
-          accountId: accountId,
-          accountEmail: state.accountEmail,
-        );
-        await _saveSmsMessage(message);
-        savedCount++;
-      }
-      state.lastRestCatchUp = DateTime.now();
-      debugPrint('[SmsSyncManager] REST catch-up completed for account $accountId: saved $savedCount messages, skipped $skippedCount invalid events');
-    } catch (e, stackTrace) {
-      debugPrint('[SmsSyncManager] REST catch-up error for account $accountId: $e');
-      debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
-    } finally {
-      state.isRestCatchUpRunning = false;
-    }
-  }
 
   /// Start sync for a specific account (public method for external use)
   Future<void> startForAccount(String accountId) async {
@@ -454,17 +134,268 @@ class SmsSyncManager {
       return;
     }
 
-    final hasToken = await _syncService.hasToken(accountId);
-    if (!hasToken) {
-      debugPrint('[SmsSyncManager] No token for account $accountId, cannot start sync');
-      return;
-    }
-
     await _startForAccount(accountId);
   }
 
   /// Stop sync for a specific account (public method for external use)
   Future<void> stopForAccount(String accountId) async {
     await _stopForAccount(accountId);
+  }
+
+  /// Sync SMS messages from the Companion app
+  /// This reads directly from the companion app's ContentProvider
+  Future<void> syncFromCompanionApp(String accountId) async {
+    try {
+      final isAvailable = await _companionService.isCompanionAppAvailable();
+      if (!isAvailable) {
+        debugPrint('[SmsSyncManager] Companion app not available, skipping sync');
+        return;
+      }
+
+      final account = await _googleAuthService.getAccountById(accountId);
+      if (account == null) {
+        debugPrint('[SmsSyncManager] Account $accountId not found');
+        return;
+      }
+
+      debugPrint('[SmsSyncManager] Syncing SMS from Companion app for account ${account.email}...');
+      
+      // Fetch all messages from companion app
+      final messages = await _companionService.fetchAllMessages(
+        accountId: accountId,
+        accountEmail: account.email,
+      );
+
+      debugPrint('[SmsSyncManager] Companion app returned ${messages.length} messages');
+      
+      // Debug: Log all messages received from companion
+      for (int i = 0; i < messages.length; i++) {
+        final msg = messages[i];
+        debugPrint('[SmsSyncManager] [$i] Message from companion:');
+        debugPrint('    ID: ${msg.id}');
+        debugPrint('    From: ${msg.from}');
+        debugPrint('    To: ${msg.to}');
+        debugPrint('    Folder: ${msg.folderLabel}');
+        debugPrint('    Timestamp: ${msg.internalDate.millisecondsSinceEpoch}');
+        debugPrint('    ThreadId: ${msg.threadId}');
+        debugPrint('    Subject: ${msg.subject.substring(0, msg.subject.length > 50 ? 50 : msg.subject.length)}');
+      }
+
+      // Save messages to repository and track IDs for deletion
+      int savedCount = 0;
+      int skippedCount = 0;
+      final fetchedMessageIds = <String>[];
+      
+      // First pass: Check for existing messages and collect new ones
+      final newMessages = <MessageIndex>[];
+      for (int i = 0; i < messages.length; i++) {
+        final message = messages[i];
+        debugPrint('[SmsSyncManager] Processing message: ${message.id} (${message.folderLabel})');
+        
+        // Check if message already exists by ID
+        final existingById = await _messageRepository.getById(message.id);
+        if (existingById != null) {
+          debugPrint('[SmsSyncManager]   -> Skipped: Already exists in Domail DB by ID');
+          skippedCount++;
+          // Still delete from companion DB even if duplicate (already in Domail)
+          fetchedMessageIds.add(message.id);
+          continue;
+        }
+        
+        // For SMS messages, check for duplicates:
+        // 1. Against existing messages in DB
+        // 2. Against other messages in the current batch (to catch Android storing same message twice)
+        if (SmsMessageConverter.isSmsMessage(message)) {
+          final normalizedPhone = _normalizePhoneForDedup(message);
+          final messageTimestamp = message.internalDate.millisecondsSinceEpoch;
+          final messageBody = message.subject.toLowerCase().trim();
+          debugPrint('[SmsSyncManager]   -> Normalized phone: $normalizedPhone, timestamp: $messageTimestamp, body: ${messageBody.substring(0, messageBody.length > 30 ? 30 : messageBody.length)}');
+          
+          // Check against existing messages in DB (with time window of ±2 seconds)
+          final allMessages = await _messageRepository.getAll(accountId);
+          final duplicateInDb = allMessages.where((existing) {
+            if (!SmsMessageConverter.isSmsMessage(existing)) return false;
+            final existingNormalizedPhone = _normalizePhoneForDedup(existing);
+            final existingTimestamp = existing.internalDate.millisecondsSinceEpoch;
+            final existingBody = existing.subject.toLowerCase().trim();
+            final timeDiff = (existingTimestamp - messageTimestamp).abs();
+            return existingNormalizedPhone == normalizedPhone &&
+                   existing.folderLabel == message.folderLabel &&
+                   timeDiff <= 2000 && // Within 2 seconds
+                   existingBody == messageBody; // Same message body
+          }).firstOrNull;
+          
+          if (duplicateInDb != null) {
+            debugPrint('[SmsSyncManager]   -> Skipped: Duplicate found in DB by phone/body/direction (existing ID: ${duplicateInDb.id}, time diff: ${(duplicateInDb.internalDate.millisecondsSinceEpoch - messageTimestamp).abs()}ms)');
+            skippedCount++;
+            fetchedMessageIds.add(message.id);
+            continue;
+          }
+          
+          // Check against other messages in current batch (with time window of ±2 seconds)
+          final duplicateInBatch = newMessages.where((existing) {
+            if (!SmsMessageConverter.isSmsMessage(existing)) return false;
+            final existingNormalizedPhone = _normalizePhoneForDedup(existing);
+            final existingTimestamp = existing.internalDate.millisecondsSinceEpoch;
+            final existingBody = existing.subject.toLowerCase().trim();
+            final timeDiff = (existingTimestamp - messageTimestamp).abs();
+            return existingNormalizedPhone == normalizedPhone &&
+                   existing.folderLabel == message.folderLabel &&
+                   timeDiff <= 2000 && // Within 2 seconds
+                   existingBody == messageBody; // Same message body
+          }).firstOrNull;
+          
+          if (duplicateInBatch != null) {
+            debugPrint('[SmsSyncManager]   -> Skipped: Duplicate found in current batch by phone/body/direction (existing ID: ${duplicateInBatch.id}, time diff: ${(duplicateInBatch.internalDate.millisecondsSinceEpoch - messageTimestamp).abs()}ms)');
+            skippedCount++;
+            fetchedMessageIds.add(message.id);
+            continue;
+          }
+        }
+        
+        debugPrint('[SmsSyncManager]   -> Adding as new message');
+        newMessages.add(message);
+        fetchedMessageIds.add(message.id);
+      }
+      
+      // Note: All messages now come from Android's system SMS database, which provides
+      // the correct threadId for both sent and received messages. No threadId matching/updating needed.
+      
+      // Save all new messages
+      if (newMessages.isNotEmpty) {
+        await _messageRepository.upsertMessages(newMessages);
+        savedCount = newMessages.length;
+        
+        // Notify callback for new messages
+        for (final message in newMessages) {
+          onSmsReceived?.call(message);
+        }
+      }
+
+      // Delete fetched messages from companion DB after successful save
+      if (fetchedMessageIds.isNotEmpty) {
+        final deletedCount = await _companionService.deleteMessages(fetchedMessageIds);
+        debugPrint('[SmsSyncManager] Deleted $deletedCount messages from companion DB');
+      }
+
+      debugPrint('[SmsSyncManager] Companion sync completed: saved $savedCount messages, skipped $skippedCount duplicates');
+      
+      // Debug: Log what was saved
+      if (newMessages.isNotEmpty) {
+        debugPrint('[SmsSyncManager] Saved ${newMessages.length} new messages:');
+        for (final msg in newMessages) {
+          debugPrint('    - ${msg.id} (${msg.folderLabel}): ${msg.from} -> ${msg.to}');
+        }
+      }
+    } catch (e, stackTrace) {
+      debugPrint('[SmsSyncManager] Companion sync error: $e');
+      debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+    }
+  }
+
+  /// Start periodic sync from Companion app (runs every 15 seconds)
+  void startCompanionSync(String accountId) {
+    _companionSyncTimer?.cancel();
+    _companionSyncTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      unawaited(syncFromCompanionApp(accountId));
+    });
+    
+    // Do initial sync immediately
+    unawaited(syncFromCompanionApp(accountId));
+  }
+
+  /// Stop periodic sync from Companion app
+  void stopCompanionSync() {
+    _companionSyncTimer?.cancel();
+    _companionSyncTimer = null;
+  }
+  
+  /// Normalize phone number for deduplication
+  /// Extracts phone number from message and normalizes it
+  String _normalizePhoneForDedup(MessageIndex message) {
+    // Extract phone number from from/to fields (SMS format: phone@sms.gmail.com or just phone)
+    final phone = message.folderLabel == 'SENT' 
+        ? message.to.replaceAll(RegExp(r'@.*'), '').trim()
+        : message.from.replaceAll(RegExp(r'@.*'), '').trim();
+    
+    // Normalize using same logic as companion app
+    var normalized = phone
+        .replaceAll(RegExp(r'[\s\-\(\)\.]'), '')
+        .replaceAll(RegExp(r'^\+'), '');
+    
+    // Convert Australian mobile format: 04... to 614...
+    if (normalized.startsWith('04') && normalized.length == 10) {
+      normalized = '61${normalized.substring(1)}';
+    }
+    
+    return normalized.toLowerCase();
+  }
+  
+  /// Clean up duplicate SMS messages in Domail's database
+  /// Removes duplicates based on normalized phone number, timestamp, and direction
+  /// Keeps the message with the normalized phone number (or the first one if both are non-normalized)
+  Future<void> cleanupDuplicateSms(String accountId) async {
+    try {
+      debugPrint('[SmsSyncManager] Starting SMS duplicate cleanup for account: $accountId');
+      final allMessages = await _messageRepository.getAll(accountId);
+      final smsMessages = allMessages.where(SmsMessageConverter.isSmsMessage).toList();
+      
+      if (smsMessages.isEmpty) {
+        debugPrint('[SmsSyncManager] No SMS messages to clean up');
+        return;
+      }
+      
+      // Group messages by normalized phone, timestamp, and direction
+      final groups = <String, List<MessageIndex>>{};
+      for (final message in smsMessages) {
+        final normalizedPhone = _normalizePhoneForDedup(message);
+        final key = '${normalizedPhone}_${message.internalDate.millisecondsSinceEpoch}_${message.folderLabel}';
+        groups.putIfAbsent(key, () => []).add(message);
+      }
+      
+      // Find duplicates and mark for deletion
+      final idsToDelete = <String>[];
+      for (final group in groups.values) {
+        if (group.length > 1) {
+          // Multiple messages with same normalized phone/timestamp/direction
+          // Keep the one with normalized phone number (or first one if all are non-normalized)
+          group.sort((a, b) {
+            final aPhone = _normalizePhoneForDedup(a);
+            final bPhone = _normalizePhoneForDedup(b);
+            // Prefer normalized format (starts with 61, no leading 0, no +)
+            final aNormalized = !aPhone.startsWith('0') && !aPhone.startsWith('+') && aPhone.startsWith('61');
+            final bNormalized = !bPhone.startsWith('0') && !bPhone.startsWith('+') && bPhone.startsWith('61');
+            if (aNormalized && !bNormalized) return -1;
+            if (!aNormalized && bNormalized) return 1;
+            return 0; // Keep original order if both normalized or both not
+          });
+          
+          // Keep first, delete rest
+          for (int i = 1; i < group.length; i++) {
+            idsToDelete.add(group[i].id);
+            debugPrint('[SmsSyncManager] Marking duplicate for deletion: ${group[i].id} (phone: ${group[i].folderLabel == 'SENT' ? group[i].to : group[i].from})');
+          }
+        }
+      }
+      
+      if (idsToDelete.isNotEmpty) {
+        // Delete duplicates - need to access database directly
+        // Import AppDatabase to access database
+        final appDb = AppDatabase();
+        final db = await appDb.database;
+        final placeholders = List.filled(idsToDelete.length, '?').join(',');
+        await db.delete(
+          'messages',
+          where: 'id IN ($placeholders)',
+          whereArgs: idsToDelete,
+        );
+        debugPrint('[SmsSyncManager] Cleaned up ${idsToDelete.length} duplicate SMS messages');
+      } else {
+        debugPrint('[SmsSyncManager] No duplicate SMS messages found');
+      }
+    } catch (e, stackTrace) {
+      debugPrint('[SmsSyncManager] Error cleaning up duplicate SMS: $e');
+      debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+    }
   }
 }

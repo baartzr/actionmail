@@ -3,6 +3,7 @@ package com.seagreen.domail
 import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
 import android.net.Uri
 import android.os.Build
 import android.util.Log
@@ -14,6 +15,7 @@ import io.flutter.plugin.common.EventChannel
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.seagreen.domail/bringToFront"
     private val APP_LINK_CHANNEL = "com.seagreen.domail/appLink"
+    private val COMPANION_SMS_CHANNEL = "com.domail.domail/companion_sms"
     private var appLinkEventSink: EventChannel.EventSink? = null
     private var pendingAppLink: String? = null
 
@@ -84,6 +86,178 @@ class MainActivity : FlutterActivity() {
         
         // Check initial intent when engine is configured
         handleIntent(intent, false)
+        
+        // Method channel for SMS Companion ContentProvider queries
+        val companionSmsChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, COMPANION_SMS_CHANNEL)
+        companionSmsChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "queryContentProvider" -> {
+                    try {
+                        val uriString = call.argument<String>("uri") ?: ""
+                        val limit = call.argument<Int>("limit")
+                        val messages = querySmsContentProvider(uriString, limit)
+                        result.success(messages)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error querying ContentProvider", e)
+                        result.error("QUERY_ERROR", e.message, null)
+                    }
+                }
+                "deleteMessage" -> {
+                    try {
+                        val id = call.argument<String>("id") ?: ""
+                        val deleted = deleteSmsMessage(id)
+                        result.success(deleted)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error deleting message", e)
+                        result.error("DELETE_ERROR", e.message, null)
+                    }
+                }
+                "sendSms" -> {
+                    try {
+                        val phoneNumber = call.argument<String>("phoneNumber") ?: ""
+                        val message = call.argument<String>("message")
+                        val threadId = call.argument<String>("threadId")
+                        val attachmentUris = call.argument<List<String>>("attachmentUris")
+                        val sent = if (attachmentUris != null && attachmentUris.isNotEmpty()) {
+                            sendMmsMessage(phoneNumber, message, threadId, attachmentUris)
+                        } else {
+                            sendSmsMessage(phoneNumber, message ?: "", threadId)
+                        }
+                        result.success(sent)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error sending SMS/MMS", e)
+                        result.error("SEND_ERROR", e.message, null)
+                    }
+                }
+                "readMmsAttachment" -> {
+                    try {
+                        val uriString = call.argument<String>("uri") ?: ""
+                        val bytes = readMmsAttachment(uriString)
+                        result.success(bytes)
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error reading MMS attachment", e)
+                        result.error("READ_ERROR", e.message, null)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+    
+    private fun querySmsContentProvider(uriString: String, limit: Int?): List<Map<String, Any>> {
+        val messages = mutableListOf<Map<String, Any>>()
+        var cursor: Cursor? = null
+        
+        try {
+            val uri = Uri.parse(uriString)
+            val projection = arrayOf(
+                "id", "phoneNumber", "message", "timestamp",
+                "direction", "threadId", "read", "sent"
+            )
+            
+            val selection: String? = null
+            val selectionArgs: Array<String>? = null
+            val sortOrder = "timestamp DESC"
+            
+            cursor = contentResolver.query(uri, projection, selection, selectionArgs, sortOrder)
+            
+            if (cursor != null) {
+                val idIndex = cursor.getColumnIndex("id")
+                val phoneNumberIndex = cursor.getColumnIndex("phoneNumber")
+                val messageIndex = cursor.getColumnIndex("message")
+                val timestampIndex = cursor.getColumnIndex("timestamp")
+                val directionIndex = cursor.getColumnIndex("direction")
+                val threadIdIndex = cursor.getColumnIndex("threadId")
+                val readIndex = cursor.getColumnIndex("read")
+                val sentIndex = cursor.getColumnIndex("sent")
+                
+                while (cursor.moveToNext()) {
+                    val message = mutableMapOf<String, Any>()
+                    if (idIndex >= 0) message["id"] = cursor.getString(idIndex) ?: ""
+                    if (phoneNumberIndex >= 0) message["phoneNumber"] = cursor.getString(phoneNumberIndex) ?: ""
+                    if (messageIndex >= 0) message["message"] = cursor.getString(messageIndex) ?: ""
+                    if (timestampIndex >= 0) message["timestamp"] = cursor.getLong(timestampIndex)
+                    if (directionIndex >= 0) message["direction"] = cursor.getString(directionIndex) ?: "INCOMING"
+                    if (threadIdIndex >= 0) message["threadId"] = cursor.getString(threadIdIndex) ?: ""
+                    if (readIndex >= 0) message["read"] = cursor.getInt(readIndex)
+                    if (sentIndex >= 0) message["sent"] = cursor.getInt(sentIndex)
+                    
+                    messages.add(message)
+                    
+                    // Apply limit manually if needed (since LIMIT in sortOrder might not work)
+                    if (limit != null && messages.size >= limit) break
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error querying SMS ContentProvider", e)
+        } finally {
+            cursor?.close()
+        }
+        
+        return messages
+    }
+    
+    private fun deleteSmsMessage(id: String): Boolean {
+        try {
+            val uri = Uri.parse("content://com.domail.smscompanion.provider/messages")
+            val deleted = contentResolver.delete(uri, "id = ?", arrayOf(id))
+            Log.d("MainActivity", "Deleted message with id: $id, result: $deleted")
+            return deleted > 0
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error deleting SMS message", e)
+            return false
+        }
+    }
+    
+    private fun sendMmsMessage(phoneNumber: String, message: String?, threadId: String?, attachmentUris: List<String>): Boolean {
+        try {
+            val uris = attachmentUris.mapNotNull { Uri.parse(it) }
+            val uri = Uri.parse("content://com.domail.smscompanion.provider/messages")
+            val values = android.content.ContentValues().apply {
+                put("action", "send")
+                put("phoneNumber", phoneNumber)
+                if (message != null) put("message", message)
+                if (threadId != null) put("threadId", threadId)
+                put("attachmentUris", uris.joinToString(",") { it.toString() })
+            }
+            val result = contentResolver.insert(uri, values)
+            return result != null
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error sending MMS message", e)
+            return false
+        }
+    }
+    
+    private fun readMmsAttachment(uriString: String): ByteArray? {
+        return try {
+            val uri = Uri.parse(uriString)
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                inputStream.readBytes()
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error reading MMS attachment from $uriString", e)
+            null
+        }
+    }
+    
+    private fun sendSmsMessage(phoneNumber: String, message: String, threadId: String?): Boolean {
+        try {
+            val uri = Uri.parse("content://com.domail.smscompanion.provider/messages")
+            val values = android.content.ContentValues().apply {
+                put("action", "send")
+                put("phoneNumber", phoneNumber)
+                put("message", message)
+                if (threadId != null) {
+                    put("threadId", threadId)
+                }
+            }
+            val resultUri = contentResolver.insert(uri, values)
+            Log.d("MainActivity", "Sent SMS to $phoneNumber, threadId: $threadId, result: $resultUri")
+            return resultUri != null
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error sending SMS message", e)
+            return false
+        }
     }
     
     override fun onNewIntent(intent: Intent) {

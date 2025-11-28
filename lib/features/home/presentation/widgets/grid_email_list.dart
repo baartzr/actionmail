@@ -139,7 +139,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
   static const double _defaultSenderWidth = 200.0;
   static const double _defaultSubjectWidth = 300.0; // Subject column default width
   static const double _defaultActionDetailsWidth = 250.0;
-  static const double _defaultStatusWidth = 172.0; // Will be overridden by IntrinsicColumnWidth, but used for calculations
+  static const double _defaultStatusWidth = 150.0; // Will be overridden by IntrinsicColumnWidth, but used for calculations
 
   // Get current selection - use external if provided, otherwise use internal
   Set<String> get _currentSelectedIds {
@@ -1210,6 +1210,7 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () {
                 final isCtrlPressed = HardwareKeyboard.instance.isControlPressed;
                 setState(() {
@@ -1229,28 +1230,38 @@ class _GridEmailListState extends ConsumerState<GridEmailList> {
                   widget.onSelectedIdsChanged?.call(Set<String>.from(_selectedEmailIds));
                 });
               },
-              child: Container(
-                width: 18,
-                height: 18,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: isSelected
-                        ? theme.colorScheme.primary
-                        : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.2),
-                    width: isSelected ? 0 : 2.0, // Border width when unselected
+              child: Center(
+                child: Container(
+                  // Minimum 48x48 tap target for accessibility
+                  constraints: const BoxConstraints(
+                    minWidth: 48,
+                    minHeight: 48,
                   ),
-                  color: isSelected
-                      ? theme.colorScheme.primary.withValues(alpha: 0.15)
-                      : Colors.transparent,
+                  alignment: Alignment.center,
+                  child: Container(
+                    width: 18,
+                    height: 18,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: isSelected
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.2),
+                        width: isSelected ? 0 : 2.0, // Border width when unselected
+                      ),
+                      color: isSelected
+                          ? theme.colorScheme.primary.withValues(alpha: 0.15)
+                          : Colors.transparent,
+                    ),
+                    child: isSelected
+                        ? Icon(
+                            Icons.check,
+                            size: 12,
+                            color: theme.colorScheme.primary,
+                          )
+                        : null,
+                  ),
                 ),
-                child: isSelected
-                    ? Icon(
-                        Icons.check,
-                        size: 12,
-                        color: theme.colorScheme.primary,
-                      )
-                    : null,
               ),
             ),
           ),

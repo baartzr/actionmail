@@ -52,5 +52,9 @@
         </intent>
         <!-- Query for OAuth apps (Android 11+) -->
         <package android:name="com.google.android.gms"/>
+        <!-- Query for SMS Companion app ContentProvider (Android 11+) -->
+        <package android:name="com.domail.smscompanion"/>
+        <!-- Query for ContentProvider by authority -->
+        <provider android:authorities="com.domail.smscompanion.provider"/>
     </queries>
 </manifest>

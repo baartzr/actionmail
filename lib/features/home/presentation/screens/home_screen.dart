@@ -113,9 +113,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (state == AppLifecycleState.resumed) {
-      unawaited(_smsSyncManager.catchUpMissedMessages());
+    
+    // Pause/resume Firestore to reduce connection attempts when app is backgrounded
+    final firebaseSync = FirebaseSyncService();
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // App going to background - pause Firestore listeners
+      firebaseSync.pauseWhenBackgrounded();
+    } else if (state == AppLifecycleState.resumed) {
+      // App coming to foreground - resume Firestore listeners
+      firebaseSync.resumeWhenForegrounded();
+      // Companion app sync runs automatically every 15 seconds
     }
+    
     // When app resumes, check if re-auth completed successfully
     // Only check if we're actually expecting a re-auth (oauth_reauth_account_id exists)
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
@@ -1138,10 +1147,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                             ),
                           ),
 
-                          const SizedBox(width: 8),
-                          
-                          // Local Folders button (Table View only)
-                          if (isGridView)
+                          if (isGridView) ...[
+                            const SizedBox(width: 8),
+                            // Local Folders button (Table View only)
                             TextButton.icon(
                               onPressed: () => _showLocalFoldersDialog(context),
                               icon: const Icon(Icons.folder, size: 18),
@@ -1156,77 +1164,84 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
                                 foregroundColor: Theme.of(context).appBarTheme.foregroundColor,
                               ),
                             ),
+                          ],
 
-                      const Spacer(),
+                          const Spacer(),
 
-                    // Bulk actions (table view only, when emails are selected)
-                      Consumer(
+                          // Bulk actions (table view only, when emails are selected)
+                          Consumer(
                             builder: (context, ref, child) {
                               final viewMode = ref.watch(viewModeProvider);
                               if (viewMode == ViewMode.table && _tableSelectedCount > 0) {
-                                return Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                HomeBulkActionsAppBar(
-                                  selectedEmailIds: _tableSelectedEmailIds,
-                                  selectedCount: _tableSelectedCount,
-                                  selectedFolder: _selectedFolder,
-                                  isLocalFolder: _isLocalFolder,
-                                  onApplyPersonal: (emails) => _applyBulkPersonalBusiness(emails, 'Personal', ref),
-                                  onApplyBusiness: (emails) => _applyBulkPersonalBusiness(emails, 'Business', ref),
-                                  onApplyStar: (emails) => _applyBulkStar(emails, ref),
-                                  onApplyMove: (emails) => _applyBulkMove(emails, ref),
-                                  onApplyArchive: (emails) => _applyBulkArchive(emails, ref),
-                                  onApplyTrash: (emails) => _applyBulkTrash(emails, ref),
-                                ),
-                                    const SizedBox(width: 8),
-                                  ],
-                          );
-                        }
-                        return const SizedBox.shrink();
-                      },
-                    ),
-                    // View mode toggle (desktop only)
-                    Builder(
-                      builder: (context) {
-                        final isDesktop = MediaQuery.of(context).size.width >= 900;
-                        if (isDesktop) {
-                          return Consumer(
-                            builder: (context, ref, child) {
-                              final viewMode = ref.watch(viewModeProvider);
-                              return IconButton(
-                                icon: Icon(
-                                  viewMode == ViewMode.table ? Icons.view_list : Icons.table_chart,
-                                  size: 18,
-                                  color: Theme.of(context).appBarTheme.foregroundColor,
-                                ),
-                                onPressed: () {
-                                  final newMode = viewMode == ViewMode.table 
-                                      ? ViewMode.tile 
-                                      : ViewMode.table;
-                                  ref.read(viewModeProvider.notifier).setViewMode(newMode);
-                                },
-                                tooltip: viewMode == ViewMode.table 
-                                    ? 'Switch to Tile View' 
-                                    : 'Switch to Table View',
-                              );
+                                return Flexible(
+                                  fit: FlexFit.loose,
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.horizontal,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        HomeBulkActionsAppBar(
+                                          selectedEmailIds: _tableSelectedEmailIds,
+                                          selectedCount: _tableSelectedCount,
+                                          selectedFolder: _selectedFolder,
+                                          isLocalFolder: _isLocalFolder,
+                                          onApplyPersonal: (emails) => _applyBulkPersonalBusiness(emails, 'Personal', ref),
+                                          onApplyBusiness: (emails) => _applyBulkPersonalBusiness(emails, 'Business', ref),
+                                          onApplyStar: (emails) => _applyBulkStar(emails, ref),
+                                          onApplyMove: (emails) => _applyBulkMove(emails, ref),
+                                          onApplyArchive: (emails) => _applyBulkArchive(emails, ref),
+                                          onApplyTrash: (emails) => _applyBulkTrash(emails, ref),
+                                        ),
+                                        const SizedBox(width: 8),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }
+                              return const SizedBox.shrink();
                             },
-                          );
-                        }
-                        return const SizedBox.shrink();
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                      // PERSONAL/BUSINESS SWITCH
-                      HomeAppBarStateSwitch(
-                        selectedLocalState: _selectedLocalState,
-                        onStateChanged: (state) {
-                          setState(() {
-                            _selectedLocalState = state;
-                          });
-                        },
-                      ),
-                    const SizedBox(width: 8),
+                          ),
+                          // View mode toggle (desktop only)
+                          Builder(
+                            builder: (context) {
+                              final isDesktop = MediaQuery.of(context).size.width >= 900;
+                              if (isDesktop) {
+                                return Consumer(
+                                  builder: (context, ref, child) {
+                                    final viewMode = ref.watch(viewModeProvider);
+                                    return IconButton(
+                                      icon: Icon(
+                                        viewMode == ViewMode.table ? Icons.view_list : Icons.table_chart,
+                                        size: 18,
+                                        color: Theme.of(context).appBarTheme.foregroundColor,
+                                      ),
+                                      onPressed: () {
+                                        final newMode = viewMode == ViewMode.table 
+                                            ? ViewMode.tile 
+                                            : ViewMode.table;
+                                        ref.read(viewModeProvider.notifier).setViewMode(newMode);
+                                      },
+                                      tooltip: viewMode == ViewMode.table 
+                                          ? 'Switch to Tile View' 
+                                          : 'Switch to Table View',
+                                    );
+                                  },
+                                );
+                              }
+                              return const SizedBox.shrink();
+                            },
+                          ),
+                          const SizedBox(width: 8),
+                          // PERSONAL/BUSINESS SWITCH
+                          HomeAppBarStateSwitch(
+                            selectedLocalState: _selectedLocalState,
+                            onStateChanged: (state) {
+                              setState(() {
+                                _selectedLocalState = state;
+                              });
+                            },
+                          ),
+                          const SizedBox(width: 8),
 
                       // MENU BUTTON
                       HomeMenuButton(
@@ -2787,6 +2802,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     _unreadCountRefreshTimer?.cancel();
     _unreadCountRefreshTimer = Timer.periodic(const Duration(minutes: 15), (_) {
       _refreshAccountUnreadCounts();
+      // Companion app sync runs automatically every 15 seconds
       unawaited(
         ref.read(contactServiceProvider).updateContacts().catchError(
               (e) => debugPrint('[HomeScreen] Contact refresh error: $e'),
