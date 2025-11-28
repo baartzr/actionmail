@@ -45,6 +45,9 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
   DateTime? _lastKnownDate; // Track last known date for overdue status updates
   static const List<String> _allFolders = ['INBOX', 'SENT', 'SPAM', 'TRASH', 'ARCHIVE'];
   static String? _lastFirebaseAccountId; // Track which account Firebase was initialized for
+  static const Duration _minSyncIndicatorDuration = Duration(seconds: 1);
+  DateTime? _lastSyncStartTime;
+  Timer? _syncIndicatorHideTimer;
 
   EmailListNotifier(this._ref, this._syncService) : super(const AsyncValue.loading()) {
     _lastKnownDate = DateTime.now();
@@ -217,7 +220,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         final syncStart = DateTime.now();
         // ignore: avoid_print
         print('[sync] incremental tick account=$_currentAccountId');
-        _ref.read(emailSyncingProvider.notifier).state = true;
+      _setSyncing(true);
         
         // Check token validity before syncing - if invalid, trigger auth failure
         // Note: For background sync, we don't show network error popup - only for manual refresh
@@ -232,7 +235,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
             // ignore: avoid_print
             print('[sync] incremental tick: network error detected, silently skipping (background sync)');
             // Don't show popup for background sync - just skip silently
-            _ref.read(emailSyncingProvider.notifier).state = false;
+          _setSyncing(false);
             return;
           }
           // Auth error (no refresh token or refresh failed) - trigger auth failure
@@ -240,7 +243,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           // ignore: avoid_print
           print('[sync] incremental tick: account needs re-authentication account=$_currentAccountId');
           _ref.read(authFailureProvider.notifier).state = _currentAccountId;
-          _ref.read(emailSyncingProvider.notifier).state = false;
+          _setSyncing(false);
           return;
         }
         
@@ -273,13 +276,13 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           print('[sync] incremental sync skipped - viewing local folder');
         }
         // Turn off loading indicator
-        _ref.read(emailSyncingProvider.notifier).state = false;
+        _setSyncing(false);
         // Run Phase 1 and Phase 2 tagging in background
         if (newInboxMessages.isNotEmpty) {
           unawaited(_runBackgroundTagging(_currentAccountId!, newInboxMessages));
         }
       } catch (_) {
-        _ref.read(emailSyncingProvider.notifier).state = false;
+      _setSyncing(false);
       }
     });
   }
@@ -298,9 +301,35 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     }
   }
 
+  void _setSyncing(bool value) {
+    _syncIndicatorHideTimer?.cancel();
+    if (value) {
+      _lastSyncStartTime = DateTime.now();
+      _setSyncing(true);
+      return;
+    }
+    final startTime = _lastSyncStartTime;
+    if (startTime == null) {
+            _setSyncing(false);
+      return;
+    }
+    final elapsed = DateTime.now().difference(startTime);
+    if (elapsed >= _minSyncIndicatorDuration) {
+      _setSyncing(false);
+      return;
+    }
+    final remaining = _minSyncIndicatorDuration - elapsed;
+    _syncIndicatorHideTimer = Timer(remaining, () {
+      if (_lastSyncStartTime == startTime) {
+      _setSyncing(false);
+      }
+    });
+  }
+
   @override
   void dispose() {
     _timer?.cancel();
+    _syncIndicatorHideTimer?.cancel();
     super.dispose();
   }
 
@@ -309,7 +338,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
     try {
       // ignore: avoid_print
       print('[sync] syncInboxOnStartup account=$accountId');
-      _ref.read(emailSyncingProvider.notifier).state = true;
+      _setSyncing(true);
       
       // Check if account needs re-authentication before syncing
       final auth = GoogleAuthService();
@@ -331,14 +360,14 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           // ignore: avoid_print
           print('[sync] syncInboxOnStartup: network error detected, setting networkErrorProvider');
           _ref.read(networkErrorProvider.notifier).state = true;
-          _ref.read(emailSyncingProvider.notifier).state = false;
+          _setSyncing(false);
           return;
         }
         // Auth error - trigger auth failure
         // ignore: avoid_print
         print('[sync] syncInboxOnStartup: account needs re-authentication account=$accountId, setting authFailureProvider');
         _ref.read(authFailureProvider.notifier).state = accountId;
-        _ref.read(emailSyncingProvider.notifier).state = false;
+        _setSyncing(false);
         return;
       }
       
@@ -427,7 +456,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       _lastKnownDate = DateTime.now();
       
       // Turn off loading indicator
-      _ref.read(emailSyncingProvider.notifier).state = false;
+      _setSyncing(false);
       
       // Start the 2-minute incremental sync timer after sync completes
       _startIncremental();
@@ -440,7 +469,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       // Log error to help diagnose email loading issues
       debugPrint('[sync] ERROR in syncInboxOnStartup: $e');
       debugPrint('[sync] Stack trace: $stackTrace');
-      _ref.read(emailSyncingProvider.notifier).state = false;
+      _setSyncing(false);
     }
   }
 
@@ -488,7 +517,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           _ref.read(networkErrorProvider.notifier).state = true;
           // ignore: avoid_print
           print('[sync] sync current: networkErrorProvider set to true');
-          _ref.read(emailSyncingProvider.notifier).state = false;
+        _setSyncing(false);
           return;
         }
         // Auth error (no refresh token or refresh failed) - trigger auth failure
@@ -498,7 +527,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         _ref.read(authFailureProvider.notifier).state = accountId;
         // ignore: avoid_print
         print('[sync] sync current: authFailureProvider set to $accountId, current value=${_ref.read(authFailureProvider)}');
-        _ref.read(emailSyncingProvider.notifier).state = false;
+        _setSyncing(false);
         return;
       }
       // ignore: avoid_print
@@ -509,7 +538,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
         _ref.read(authFailureProvider.notifier).state = null;
       }
       
-      _ref.read(emailSyncingProvider.notifier).state = true;
+      _setSyncing(true);
       await _syncService.processPendingOps();
       
       // Use incremental sync if history exists, otherwise fall back to full sync
@@ -538,7 +567,7 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
           // ignore: avoid_print
           print('[sync] sync current: incrementalSync failed with network error, setting networkErrorProvider');
           _ref.read(networkErrorProvider.notifier).state = true;
-          _ref.read(emailSyncingProvider.notifier).state = false;
+          _setSyncing(false);
           return;
         }
       } else {
@@ -564,14 +593,14 @@ class EmailListNotifier extends StateNotifier<AsyncValue<List<MessageIndex>>> {
       }
       
       // Turn off loading indicator
-      _ref.read(emailSyncingProvider.notifier).state = false;
+        _setSyncing(false);
       
       // Run Phase 1 and Phase 2 tagging in background for INBOX only
       if (currentFolder == 'INBOX' && newMessages.isNotEmpty) {
         unawaited(_runBackgroundTagging(accountId, newMessages));
       }
     } catch (_) {
-      _ref.read(emailSyncingProvider.notifier).state = false;
+      _setSyncing(false);
     }
   }
 

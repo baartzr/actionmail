@@ -2912,11 +2912,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
             
             // Don't show snippet if:
             // 1. It's empty
-            // 2. It exactly matches the subject
+            // 2. It exactly matches the subject (case-insensitive)
             // 3. It's a truncated prefix of the subject (subject starts with snippet content)
+            final snippetEqualsSubject = snippetLower == subjectLower;
+            final snippetIsPrefixOfSubject = snippetWithoutEllipsis.isNotEmpty && 
+                subjectLower.startsWith(snippetWithoutEllipsis);
             final showSnippet = snippetTrimmed.isNotEmpty &&
-                snippetLower != subjectLower &&
-                !(snippetWithoutEllipsis.isNotEmpty && subjectLower.startsWith(snippetWithoutEllipsis));
+                !snippetEqualsSubject &&
+                !snippetIsPrefixOfSubject;
             // For SMS messages, check if there's a contact name structure
             final isSms = SmsMessageConverter.isSmsMessage(message);
             final hasSmsContactName = isSms && message.from.contains('<') && message.from.contains('>');
@@ -2926,15 +2929,14 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
               debugPrint('[EmailViewer] SMS display - hasContactName: $hasSmsContactName');
             }
             // Debug logging for Subject/Snippet duplication check
-            final snippetWithoutEllipsisDebug = snippetTrimmed.toLowerCase().endsWith('...')
-                ? snippetTrimmed.toLowerCase().substring(0, snippetTrimmed.toLowerCase().length - 3).trim()
-                : snippetTrimmed.toLowerCase();
-            final subjectStartsWithSnippet = subjectLower.startsWith(snippetWithoutEllipsisDebug);
             debugPrint('[EmailViewer] Conversation mode - messageId: ${message.id}');
             debugPrint('[EmailViewer] Subject: "$subjectText" (length: ${subjectText.length})');
             debugPrint('[EmailViewer] Snippet: "$snippetText" (length: ${snippetText.length})');
-            debugPrint('[EmailViewer] Snippet without ellipsis: "$snippetWithoutEllipsisDebug"');
-            debugPrint('[EmailViewer] Subject starts with snippet: $subjectStartsWithSnippet');
+            debugPrint('[EmailViewer] Subject (trimmed/lower): "$subjectLower"');
+            debugPrint('[EmailViewer] Snippet (trimmed/lower): "$snippetLower"');
+            debugPrint('[EmailViewer] Snippet without ellipsis: "$snippetWithoutEllipsis"');
+            debugPrint('[EmailViewer] snippetEqualsSubject: $snippetEqualsSubject');
+            debugPrint('[EmailViewer] subjectStartsWithSnippet: ${subjectLower.startsWith(snippetWithoutEllipsis)}');
             debugPrint('[EmailViewer] showSnippet: $showSnippet (will ${showSnippet ? 'SHOW' : 'HIDE'} snippet)');
             debugPrint('[EmailViewer] isExpanded: ${_expandedMessageIds.contains(message.id)}');
             final attachments = _conversationAttachments[message.id];
@@ -3054,47 +3056,49 @@ class _EmailViewerDialogState extends ConsumerState<EmailViewerDialog> {
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
-                              if (!isExpanded) ...[
-                                // Normal collapsed view - show snippet only if different from subject
-                                if (showSnippet) ...[
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    snippetText,
-                                    style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-                                  ),
-                                ],
-                              ] else ...[
-                                // Expanded view - show snippet (if different from subject) and full body
-                                if (showSnippet) ...[
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    snippetText,
-                                    style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-                                  ),
-                                ],
+                              if (showSnippet) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  snippetText,
+                                  style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                ),
+                              ],
+                              // Expanded view: show full body content
+                              if (isExpanded) ...[
                                 const SizedBox(height: 12),
-                                ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    maxHeight: 400, // Twice normal height (approximately)
-                                  ),
-                                  child: SingleChildScrollView(
-                                    child: isLoadingBody
-                                        ? Padding(
-                                            padding: const EdgeInsets.all(16.0),
-                                            child: Center(
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                color: textColor,
-                                              ),
-                                            ),
-                                          )
-                                        : bodyHtml != null
-                                            ? _buildExpandedBodyContent(bodyHtml, textColor, theme)
-                                            : Text(
-                                                'No content available',
-                                                style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
-                                              ),
-                                  ),
+                                Builder(
+                                  builder: (context) {
+                                    final shouldHideBodyForSms = isSms &&
+                                        bodyHtml != null &&
+                                        _htmlToPlainText(bodyHtml).trim().toLowerCase() ==
+                                            subjectText.trim().toLowerCase();
+                                    if (shouldHideBodyForSms) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        maxHeight: 400, // Twice normal height (approximately)
+                                      ),
+                                      child: SingleChildScrollView(
+                                        child: isLoadingBody
+                                            ? Padding(
+                                                padding: const EdgeInsets.all(16.0),
+                                                child: Center(
+                                                  child: CircularProgressIndicator(
+                                                    strokeWidth: 2,
+                                                    color: textColor,
+                                                  ),
+                                                ),
+                                              )
+                                            : bodyHtml != null
+                                                ? _buildExpandedBodyContent(bodyHtml, textColor, theme)
+                                                : Text(
+                                                    'No content available',
+                                                    style: theme.textTheme.bodyMedium?.copyWith(color: textColor),
+                                                  ),
+                                      ),
+                                    );
+                                  },
                                 ),
                               ],
                               if ((attachments != null && attachments.isNotEmpty) || isLoadingAttachments) ...[

@@ -273,6 +273,8 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                   isExpanded: true,
                   onChanged: _isLoading ? null : (accountId) async {
                     if (accountId == null) return;
+                    final messenger = ScaffoldMessenger.of(context);
+                    final theme = Theme.of(context);
                     setState(() => _isLoading = true);
                     try {
                       await _smsSyncService.setSelectedAccountId(accountId);
@@ -284,7 +286,6 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                         _isLoading = false;
                       });
                       if (!mounted) return;
-                      final messenger = ScaffoldMessenger.of(context);
                       messenger.showSnackBar(
                         const SnackBar(
                           content: Text('SMS sync account updated'),
@@ -294,8 +295,6 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                     } catch (e) {
                       setState(() => _isLoading = false);
                       if (!mounted) return;
-                      final messenger = ScaffoldMessenger.of(context);
-                      final theme = Theme.of(context);
                       messenger.showSnackBar(
                         SnackBar(
                           content: Text('Error updating account: $e'),

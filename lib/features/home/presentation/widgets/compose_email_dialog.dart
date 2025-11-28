@@ -379,10 +379,11 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
     }
     
     final body = _bodyController.text.trim();
-    if (body.isEmpty) {
+    // For MMS, body can be empty if there are attachments
+    if (body.isEmpty && _attachments.isEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Message body is required for SMS')),
+          const SnackBar(content: Text('Message body or attachment is required')),
         );
       }
       return;
@@ -394,13 +395,51 @@ class _ComposeEmailDialogState extends State<ComposeEmailDialog> {
 
     try {
       final companionSmsService = CompanionSmsService();
-      final success = await companionSmsService.sendSms(phone, body);
+      bool success;
+      
+      // If there are attachments, send as MMS
+      if (_attachments.isNotEmpty) {
+        // Convert PlatformFile attachments to file URIs
+        final attachmentUris = <String>[];
+        for (final attachment in _attachments) {
+          if (attachment.path != null) {
+            // Use file:// URI for local files
+            attachmentUris.add('file://${attachment.path}');
+          } else if (attachment.bytes != null) {
+            // For in-memory files, save to temp directory first
+            final tempDir = await getTemporaryDirectory();
+            final tempFile = File(path.join(tempDir.path, attachment.name));
+            await tempFile.writeAsBytes(attachment.bytes!);
+            attachmentUris.add('file://${tempFile.path}');
+          }
+        }
+        
+        if (attachmentUris.isEmpty) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Failed to prepare attachments')),
+            );
+          }
+          setState(() => _isSending = false);
+          return;
+        }
+        
+        success = await companionSmsService.sendMms(
+          phone,
+          body.isEmpty ? null : body,
+          attachmentUris: attachmentUris,
+        );
+      } else {
+        // No attachments, send as SMS
+        success = await companionSmsService.sendSms(phone, body);
+      }
       
       if (!mounted) return;
       
       if (success) {
+        final messageType = _attachments.isNotEmpty ? 'MMS' : 'SMS';
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('SMS sent successfully')),
+          SnackBar(content: Text('$messageType sent successfully')),
         );
         Navigator.of(context).pop(const ComposeDialogResult(ComposeDialogResultType.sent));
       } else {
