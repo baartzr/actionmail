@@ -32,6 +32,7 @@ class FirebaseSyncService {
   static const String _prefsKeySyncEnabled = 'firebase_sync_enabled';
   // ignore: unused_field
   static const String _prefsKeyUserId = 'firebase_user_id';
+  static String _prefsKeyLastSyncTimestamp(String userId) => 'firebase_last_sync_$userId';
   
   FirebaseFirestore? _firestore;
   CollectionReference? _userCollection;
@@ -44,6 +45,9 @@ class FirebaseSyncService {
   Timer? _initRetryTimer;
   int _initRetryCount = 0;
   static const int _maxInitRetries = 5;
+  static const Object _paramNotProvided = Object();
+  DateTime? _lastCursorLoadTime; // Track when we last did incremental cursor load to prevent duplicate processing
+  final Set<String> _cursorProcessedMessageIds = {}; // Track messageIds processed by cursor to prevent duplicate listener updates
   
   // Callback to notify UI when updates are applied from Firebase
   void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText, bool? actionComplete, {bool preserveExisting})? onUpdateApplied;
@@ -227,20 +231,49 @@ class FirebaseSyncService {
   }
 
   /// Load initial values from Firebase and reconcile with local changes
+  /// Uses incremental cursor: only processes documents modified since last sync
   /// Uses timestamp comparison: if local.lastUpdated > firebase.lastModified, push local → Firebase
   /// Otherwise, pull Firebase → local
   /// NOTE: This must be called from the main thread context
   Future<void> _loadInitialValues() async {
-    if (_emailMetaCollection == null) return;
+    if (_emailMetaCollection == null || _userId == null) return;
     
     try {
-      // Load all documents from Firebase - ensure .get() is called on platform thread
-      final snapshot = await _runOnMainThread(() => _emailMetaCollection!.get());
+      // Get last sync timestamp from SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      final lastSyncTimestampMs = prefs.getInt(_prefsKeyLastSyncTimestamp(_userId!));
+      final lastSyncTimestamp = lastSyncTimestampMs != null 
+          ? DateTime.fromMillisecondsSinceEpoch(lastSyncTimestampMs)
+          : null;
+      
+      if (kDebugMode) {
+        _logFirebaseSync('[LOAD_INITIAL] Starting incremental load, lastSync=${lastSyncTimestamp?.toIso8601String() ?? "never"}');
+      }
+      
+      // Clear processed messageIds set for this cursor load
+      _cursorProcessedMessageIds.clear();
+      
+      // Query documents - if we have a timestamp, filter by lastModified
+      // Note: This requires a Firestore index on lastModified, but will work without it (just slower)
+      Query query = _emailMetaCollection!;
+      if (lastSyncTimestamp != null) {
+        // Query documents modified since last sync
+        query = query.where('lastModified', isGreaterThan: Timestamp.fromDate(lastSyncTimestamp));
+      }
+      
+      // Load documents from Firebase - ensure .get() is called on platform thread
+      final snapshot = await _runOnMainThread(() => query.get());
+      
+      if (kDebugMode) {
+        _logFirebaseSync('[LOAD_INITIAL] Found ${snapshot.docs.length} document(s) to process');
+      }
       
       // Reconcile each document (non-blocking, but ensure Firebase operations on main thread)
       // Use scheduleMicrotask to ensure immediate execution on main thread
       scheduleMicrotask(() async {
         final repo = MessageRepository();
+        int processedCount = 0;
+        int skippedCount = 0;
         
         // Group documents by messageId and type
         final statusDocs = <String, DocumentSnapshot>{};
@@ -269,6 +302,164 @@ class FirebaseSyncService {
         
         // Get all unique messageIds
         final allMessageIds = <String>{...statusDocs.keys, ...actionDocs.keys};
+        
+        // Track all messageIds we're processing in this cursor load
+        _cursorProcessedMessageIds.addAll(allMessageIds);
+        
+        for (final messageId in allMessageIds) {
+          final localMessage = await repo.getById(messageId);
+          final localTimestamp = localMessage != null 
+              ? await _getLocalLastUpdated(messageId)
+              : null;
+          
+          // Process status document
+          final statusDoc = statusDocs[messageId];
+          if (statusDoc != null) {
+            final statusData = statusDoc.data() as Map<String, dynamic>?;
+            if (statusData != null) {
+              final firebaseTimestamp = _extractTimestamp(statusData['lastModified']);
+              
+              // Skip if this document is older than last sync (shouldn't happen with query, but safety check)
+              if (lastSyncTimestamp != null && firebaseTimestamp != null) {
+                final docTimestamp = DateTime.fromMillisecondsSinceEpoch(firebaseTimestamp);
+                if (docTimestamp.isBefore(lastSyncTimestamp) || docTimestamp.isAtSameMomentAs(lastSyncTimestamp)) {
+                  skippedCount++;
+                  continue;
+                }
+              }
+              
+              if (localTimestamp != null && firebaseTimestamp != null) {
+                if (localTimestamp > firebaseTimestamp) {
+                  // Local is newer - push local → Firebase (but only if we have local message)
+                  if (localMessage != null) {
+                    await _pushLocalToFirebase(messageId, localMessage);
+                    processedCount++;
+                    continue; // Skip pulling this document
+                  }
+                }
+              }
+              
+              // Pull Firebase → local (or apply if no local timestamp)
+              await _handleStatusUpdate(messageId, statusData);
+              processedCount++;
+            }
+          }
+          
+          // Process action document
+          final actionDoc = actionDocs[messageId];
+          if (actionDoc != null) {
+            final actionData = actionDoc.data() as Map<String, dynamic>?;
+            if (actionData != null) {
+              final firebaseTimestamp = _extractTimestamp(actionData['lastModified']);
+              
+              // Skip if this document is older than last sync (shouldn't happen with query, but safety check)
+              if (lastSyncTimestamp != null && firebaseTimestamp != null) {
+                final docTimestamp = DateTime.fromMillisecondsSinceEpoch(firebaseTimestamp);
+                if (docTimestamp.isBefore(lastSyncTimestamp) || docTimestamp.isAtSameMomentAs(lastSyncTimestamp)) {
+                  skippedCount++;
+                  continue;
+                }
+              }
+              
+              if (localTimestamp != null && firebaseTimestamp != null) {
+                if (localTimestamp > firebaseTimestamp) {
+                  // Local is newer - push local → Firebase (but only if we have local message)
+                  if (localMessage != null) {
+                    await _pushLocalToFirebase(messageId, localMessage);
+                    processedCount++;
+                    continue; // Skip pulling this document
+                  }
+                }
+              }
+              
+              // Pull Firebase → local (or apply if no local timestamp)
+              await _handleActionUpdate(messageId, actionData);
+              processedCount++;
+            }
+          }
+          
+          // If local has data but Firebase doesn't have either document, push local → Firebase
+          if (localMessage != null && statusDoc == null && actionDoc == null) {
+            await _pushLocalToFirebase(messageId, localMessage);
+            processedCount++;
+          }
+        }
+        
+        // Update last sync timestamp to now
+        final now = DateTime.now();
+        await prefs.setInt(_prefsKeyLastSyncTimestamp(_userId!), now.millisecondsSinceEpoch);
+        
+        // Track cursor load time to prevent duplicate processing in listener
+        _lastCursorLoadTime = now;
+        
+        // Clear processed messageIds after a delay to allow listener to skip stale cache updates
+        // This prevents the set from growing indefinitely
+        Future.delayed(const Duration(seconds: 5), () {
+          _cursorProcessedMessageIds.clear();
+          if (kDebugMode) {
+            _logFirebaseSync('[LOAD_INITIAL] Cleared cursor processed messageIds set');
+          }
+        });
+        
+        if (kDebugMode) {
+          _logFirebaseSync('[LOAD_INITIAL] Completed: processed $processedCount, skipped $skippedCount, updated cursor to ${now.toIso8601String()}');
+        }
+        debugPrint('[FirebaseSync] Completed reconciliation of Firebase and local values');
+      });
+    } catch (e) {
+      _logFirebaseSync('Error loading initial values: $e');
+      // If query fails (e.g., missing index), fall back to full scan
+      if (kDebugMode) {
+        _logFirebaseSync('[LOAD_INITIAL] Query failed, falling back to full scan');
+      }
+      await _loadInitialValuesFullScan();
+    }
+  }
+  
+  /// Fallback: Load all documents (used if incremental query fails)
+  Future<void> _loadInitialValuesFullScan() async {
+    if (_emailMetaCollection == null || _userId == null) return;
+    
+    try {
+      // Load all documents from Firebase - ensure .get() is called on platform thread
+      final snapshot = await _runOnMainThread(() => _emailMetaCollection!.get());
+      
+      // Reconcile each document (non-blocking, but ensure Firebase operations on main thread)
+      // Use scheduleMicrotask to ensure immediate execution on main thread
+      scheduleMicrotask(() async {
+        final repo = MessageRepository();
+        final prefs = await SharedPreferences.getInstance();
+        
+        // Group documents by messageId and type
+        final statusDocs = <String, DocumentSnapshot>{};
+        final actionDocs = <String, DocumentSnapshot>{};
+        int legacyDocCount = 0;
+        
+        for (final doc in snapshot.docs) {
+          final docId = doc.id;
+          
+          if (docId.endsWith('_status')) {
+            final messageId = docId.substring(0, docId.length - '_status'.length);
+            statusDocs[messageId] = doc;
+          } else if (docId.endsWith('_action')) {
+            final messageId = docId.substring(0, docId.length - '_action'.length);
+            actionDocs[messageId] = doc;
+          } else {
+            // Legacy document format - skip for now
+            legacyDocCount++;
+          }
+        }
+        
+        // Log summary of legacy documents instead of one per document
+        if (kDebugMode && legacyDocCount > 0) {
+          _logFirebaseSync('[LOAD_INITIAL_FULL] Skipped $legacyDocCount legacy document(s)');
+        }
+        
+        // Get all unique messageIds
+        final allMessageIds = <String>{...statusDocs.keys, ...actionDocs.keys};
+        
+        // Track all messageIds we're processing in this cursor load
+        _cursorProcessedMessageIds.addAll(allMessageIds);
         
         for (final messageId in allMessageIds) {
           final localMessage = await repo.getById(messageId);
@@ -326,10 +517,25 @@ class FirebaseSyncService {
           }
         }
         
-        debugPrint('[FirebaseSync] Completed reconciliation of Firebase and local values');
+        // Update last sync timestamp to now
+        final now = DateTime.now();
+        await prefs.setInt(_prefsKeyLastSyncTimestamp(_userId!), now.millisecondsSinceEpoch);
+        
+        // Track cursor load time to prevent duplicate processing in listener
+        _lastCursorLoadTime = now;
+        
+        // Clear processed messageIds after a delay to allow listener to skip stale cache updates
+        Future.delayed(const Duration(seconds: 5), () {
+          _cursorProcessedMessageIds.clear();
+          if (kDebugMode) {
+            _logFirebaseSync('[LOAD_INITIAL_FULL] Cleared cursor processed messageIds set');
+          }
+        });
+        
+        debugPrint('[FirebaseSync] Completed reconciliation of Firebase and local values (full scan)');
       });
     } catch (e) {
-      _logFirebaseSync('Error loading initial values: $e');
+      _logFirebaseSync('Error loading initial values (full scan): $e');
     }
   }
   
@@ -371,9 +577,14 @@ class FirebaseSyncService {
         final statusDocId = '${messageId}_status';
         final statusDoc = _emailMetaCollection!.doc(statusDocId);
         final statusData = <String, dynamic>{
-          'localTagPersonal': localMessage.localTagPersonal,
           'lastModified': FieldValue.serverTimestamp(),
         };
+        final localTag = localMessage.localTagPersonal;
+        if (localTag == null || localTag.isEmpty) {
+          statusData['localTagPersonal'] = FieldValue.delete();
+        } else {
+          statusData['localTagPersonal'] = localTag;
+        }
         
         await _writeDoc(statusDoc, statusData);
         
@@ -480,6 +691,28 @@ class FirebaseSyncService {
                   continue;
                 }
                 
+                // Skip cache updates that happened right after a cursor load to prevent duplicate processing
+                // This prevents flicker when resuming from background, especially for deletions
+                if (docChange.doc.metadata.isFromCache) {
+                  // Check if this messageId was just processed by cursor (most precise check)
+                  if (_cursorProcessedMessageIds.contains(messageId)) {
+                    if (kDebugMode) {
+                      _logFirebaseSync('[LISTENER] SKIP_CACHE_CURSOR_PROCESSED docId=$docId, messageId=$messageId (already processed by cursor)');
+                    }
+                    continue;
+                  }
+                  // Fallback: also skip cache updates within 2 seconds of cursor load (time-based check)
+                  if (_lastCursorLoadTime != null) {
+                    final timeSinceCursorLoad = DateTime.now().difference(_lastCursorLoadTime!);
+                    if (timeSinceCursorLoad.inSeconds < 2) {
+                      if (kDebugMode) {
+                        _logFirebaseSync('[LISTENER] SKIP_CACHE_AFTER_CURSOR docId=$docId, messageId=$messageId (cursor load ${timeSinceCursorLoad.inMilliseconds}ms ago)');
+                      }
+                      continue;
+                    }
+                  }
+                }
+                
                 if (kDebugMode) {
                   _logFirebaseSync('[LISTENER] Processing docId=$docId, messageId=$messageId, isAction=$isActionDoc, isStatus=$isStatusDoc');
                 }
@@ -545,8 +778,15 @@ class FirebaseSyncService {
         await _firestore!.enableNetwork();
         _logFirebaseSync('Firestore network enabled');
         
-        // Then restart listeners if user is initialized
+        // Then catch up on missed changes and restart listeners if user is initialized
         if (_userId != null && _emailMetaCollection != null) {
+          // First, run incremental cursor load to catch up on changes missed while backgrounded
+          // This prevents flicker by processing updates before the listener starts
+          unawaited(_loadInitialValues());
+          
+          // Small delay to let cursor load start, then restart listener
+          // The listener will skip cache updates that were just processed by cursor
+          await Future.delayed(const Duration(milliseconds: 100));
           await _startListening();
           _logFirebaseSync('Firestore listeners restarted');
         }
@@ -572,7 +812,7 @@ class FirebaseSyncService {
   /// Uses separate documents: {messageId}_action and {messageId}_status
   /// Only updates the documents for which parameters are provided
   Future<void> syncEmailMeta(String messageId, {
-    String? localTagPersonal,
+    Object? localTagPersonal = _paramNotProvided,
     DateTime? actionDate,
     String? actionInsightText,
     bool? actionComplete,
@@ -626,21 +866,27 @@ class FirebaseSyncService {
         // - Update status if localTagPersonal is provided (even if null) OR if no action params
         //   (meaning caller is doing status-only update)
         final hasActionParams = actionInsightText != null || clearAction || actionDate != null || actionComplete != null;
+        final hasLocalTagParam = localTagPersonal != _paramNotProvided;
+        final String? localTagValue = hasLocalTagParam ? localTagPersonal as String? : null;
         
         // Update status document if:
         // 1. localTagPersonal is not null (explicit value), OR
         // 2. No action params are provided (caller is doing status-only update, even if null)
         // This handles: status updates (with or without null), but skips if only action is being updated
         // Note: If both are provided, we update both (caller wants to update both)
-        final shouldUpdateStatus = localTagPersonal != null || !hasActionParams;
+        final shouldUpdateStatus = hasLocalTagParam;
         
         if (shouldUpdateStatus) {
           final statusDocId = '${messageId}_status';
           final statusDoc = targetCollection.doc(statusDocId);
           final statusData = <String, dynamic>{
             'lastModified': FieldValue.serverTimestamp(),
-            'localTagPersonal': localTagPersonal, // Can be null to clear the field
           };
+          if (localTagValue == null || localTagValue.isEmpty) {
+            statusData['localTagPersonal'] = FieldValue.delete();
+          } else {
+            statusData['localTagPersonal'] = localTagValue;
+          }
           
           await _writeDoc(statusDoc, statusData);
           
@@ -699,15 +945,38 @@ class FirebaseSyncService {
   }
 
   Future<void> _writeDoc(DocumentReference doc, Map<String, dynamic> data) async {
-    try {
-      await doc.update(data);
-    } on FirebaseException catch (e) {
-      if (e.code == 'not-found') {
-        await doc.set(data, SetOptions(merge: true));
+    final Map<String, dynamic> setData = {};
+    final Map<String, dynamic> deleteData = {};
+
+    data.forEach((key, value) {
+      if (_isFieldValueDelete(value)) {
+        deleteData[key] = value;
       } else {
-        rethrow;
+        setData[key] = value;
+      }
+    });
+
+    if (setData.isNotEmpty) {
+      await doc.set(setData, SetOptions(merge: true));
+    }
+
+    if (deleteData.isNotEmpty) {
+      try {
+        await doc.update(deleteData);
+      } on FirebaseException catch (e) {
+        if (e.code != 'not-found') {
+          rethrow;
+        }
+        // Nothing to delete if doc doesn't exist
       }
     }
+  }
+
+  bool _isFieldValueDelete(dynamic value) {
+    if (value is FieldValue) {
+      return value == FieldValue.delete();
+    }
+    return false;
   }
 
   /// Handle a status document update from Firebase
@@ -904,7 +1173,7 @@ class FirebaseSyncService {
             finalActionDate,
             finalActionText,
             finalActionComplete,
-            preserveExisting: true, // Preserve status fields when updating action
+            preserveExisting: false, // Remote action is source of truth; allow clears to propagate
           );
         }
       }
