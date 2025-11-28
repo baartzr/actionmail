@@ -3,6 +3,7 @@ import 'package:domail/services/sms/sms_sync_service.dart';
 import 'package:domail/services/sms/sms_sync_manager.dart';
 import 'package:domail/services/sms/companion_sms_service.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
 import 'dart:io';
 
 /// Widget for SMS sync settings
@@ -18,8 +19,10 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
   final SmsSyncService _smsSyncService = SmsSyncService();
   final CompanionSmsService _companionService = CompanionSmsService();
   final GoogleAuthService _authService = GoogleAuthService();
+  final FirebaseSyncService _firebaseSync = FirebaseSyncService();
   bool _isLoading = false;
   bool? _syncEnabled;
+  bool? _smsSyncToDesktopEnabled;
   bool? _companionAppAvailable;
   List<GoogleAccount> _accounts = [];
   String? _selectedAccountId;
@@ -39,6 +42,7 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
     setState(() => _isLoading = true);
     try {
       final enabled = await _smsSyncService.isSyncEnabled();
+      final smsSyncToDesktop = await _firebaseSync.isSmsSyncToDesktopEnabled();
       final available = Platform.isAndroid 
           ? await _companionService.isCompanionAppAvailable()
           : false;
@@ -54,6 +58,7 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
       
       setState(() {
         _syncEnabled = enabled;
+        _smsSyncToDesktopEnabled = smsSyncToDesktop;
         _companionAppAvailable = available;
         _accounts = accounts;
         _selectedAccountId = accountId;
@@ -65,6 +70,35 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error loading SMS sync settings: $e'),
+            backgroundColor: Theme.of(context).colorScheme.error,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _onSmsSyncToDesktopToggleChanged(bool value) async {
+    setState(() => _isLoading = true);
+    try {
+      await _firebaseSync.setSmsSyncToDesktopEnabled(value);
+      setState(() {
+        _smsSyncToDesktopEnabled = value;
+        _isLoading = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(value ? 'SMS sync to desktop enabled' : 'SMS sync to desktop disabled'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() => _isLoading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error updating SMS sync to desktop setting: $e'),
             backgroundColor: Theme.of(context).colorScheme.error,
           ),
         );
@@ -312,6 +346,56 @@ class _SmsSyncSettingsWidgetState extends State<SmsSyncSettingsWidget> {
                     fillColor: theme.colorScheme.surface,
                   ),
                 ),
+              
+              // SMS Sync to Desktop toggle (only shown when SMS sync and Firebase sync are enabled)
+              FutureBuilder<bool>(
+                future: _firebaseSync.isSyncEnabled(),
+                builder: (context, snapshot) {
+                  final firebaseSyncEnabled = snapshot.data ?? false;
+                  final smsSyncToDesktop = _smsSyncToDesktopEnabled ?? false;
+                  
+                  if (!firebaseSyncEnabled) {
+                    return const SizedBox.shrink();
+                  }
+                  
+                  return Column(
+                    children: [
+                      const SizedBox(height: 16),
+                      Divider(color: theme.colorScheme.outlineVariant),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'Sync to Desktop',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'Sync SMS messages to desktop via Firebase',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: theme.colorScheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Switch(
+                            value: smsSyncToDesktop,
+                            onChanged: _isLoading ? null : _onSmsSyncToDesktopToggleChanged,
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
             ],
             
             // Status information

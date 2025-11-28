@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/services/sync/firebase_init.dart';
@@ -30,6 +31,7 @@ class FirebaseSyncService {
   FirebaseSyncService._internal();
   
   static const String _prefsKeySyncEnabled = 'firebase_sync_enabled';
+  static const String _prefsKeySmsSyncToDesktop = 'firebase_sms_sync_to_desktop';
   // ignore: unused_field
   static const String _prefsKeyUserId = 'firebase_user_id';
   static String _prefsKeyLastSyncTimestamp(String userId) => 'firebase_last_sync_$userId';
@@ -38,9 +40,14 @@ class FirebaseSyncService {
   CollectionReference? _userCollection;
   DocumentReference? _userDoc;
   CollectionReference? _emailMetaCollection; // Subcollection for email metadata
+  CollectionReference? _smsMessagesCollection; // Subcollection for SMS messages
   String? _userId;
   bool _syncEnabled = false;
   StreamSubscription<QuerySnapshot>? _emailMetaSubscription; // Real-time listener subscription
+  StreamSubscription<QuerySnapshot>? _smsMessagesSubscription; // Real-time listener for SMS messages
+  
+  /// Callback when a new SMS message is received from Firebase and saved locally
+  void Function(MessageIndex message)? onSmsReceived;
   // Retry state for delayed initialization when Firebase isn't ready yet
   Timer? _initRetryTimer;
   int _initRetryCount = 0;
@@ -48,6 +55,7 @@ class FirebaseSyncService {
   static const Object _paramNotProvided = Object();
   DateTime? _lastCursorLoadTime; // Track when we last did incremental cursor load to prevent duplicate processing
   final Set<String> _cursorProcessedMessageIds = {}; // Track messageIds processed by cursor to prevent duplicate listener updates
+  String? _cachedDeviceId; // Cache device ID to avoid repeated lookups
   
   // Callback to notify UI when updates are applied from Firebase
   void Function(String messageId, String? localTag, DateTime? actionDate, String? actionText, bool? actionComplete, {bool preserveExisting})? onUpdateApplied;
@@ -108,10 +116,80 @@ class FirebaseSyncService {
     }
   }
 
+  /// Get unique device ID for sourceDevice tracking
+  /// Caches the result to avoid repeated lookups
+  Future<String> _getDeviceId() async {
+    if (_cachedDeviceId != null) {
+      return _cachedDeviceId!;
+    }
+    
+    try {
+      final deviceInfo = DeviceInfoPlugin();
+      String deviceId;
+      
+      if (Platform.isAndroid) {
+        final androidInfo = await deviceInfo.androidInfo;
+        deviceId = androidInfo.id; // Android ID (persistent, resets on factory reset)
+      } else if (Platform.isIOS) {
+        final iosInfo = await deviceInfo.iosInfo;
+        deviceId = iosInfo.identifierForVendor ?? 'ios-unknown';
+      } else if (Platform.isWindows) {
+        // For Windows, use a combination of machine GUID and user
+        final windowsInfo = await deviceInfo.windowsInfo;
+        deviceId = windowsInfo.computerName;
+      } else if (Platform.isMacOS) {
+        final macInfo = await deviceInfo.macOsInfo;
+        deviceId = macInfo.computerName;
+      } else if (Platform.isLinux) {
+        final linuxInfo = await deviceInfo.linuxInfo;
+        deviceId = linuxInfo.machineId ?? 'linux-unknown';
+      } else {
+        deviceId = 'unknown-platform';
+      }
+      
+      _cachedDeviceId = deviceId;
+      return deviceId;
+    } catch (e) {
+      _logFirebaseSync('Error getting device ID: $e');
+      // Fallback to a generated ID stored in SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      final fallbackKey = 'firebase_device_id_fallback';
+      String? fallbackId = prefs.getString(fallbackKey);
+      if (fallbackId == null) {
+        fallbackId = 'device-${DateTime.now().millisecondsSinceEpoch}';
+        await prefs.setString(fallbackKey, fallbackId);
+      }
+      _cachedDeviceId = fallbackId;
+      return fallbackId;
+    }
+  }
+
   /// Check if sync is enabled
   Future<bool> isSyncEnabled() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_prefsKeySyncEnabled) ?? false;
+  }
+
+  /// Check if SMS sync to desktop is enabled
+  Future<bool> isSmsSyncToDesktopEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_prefsKeySmsSyncToDesktop) ?? false;
+  }
+
+  /// Enable or disable SMS sync to desktop
+  Future<void> setSmsSyncToDesktopEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefsKeySmsSyncToDesktop, enabled);
+    debugPrint('[FirebaseSync] SMS sync to desktop ${enabled ? "enabled" : "disabled"}');
+    
+    // If user is already initialized and Firebase sync is enabled, restart SMS listener
+    if (_userId != null && _syncEnabled && _smsMessagesCollection != null) {
+      if (enabled) {
+        await _startSmsListening();
+      } else {
+        await _stopSmsListening();
+      }
+    }
   }
 
   /// Enable or disable sync
@@ -193,10 +271,12 @@ class FirebaseSyncService {
           _userCollection = _firestore!.collection('users');
           _userDoc = _userCollection!.doc(userId);
           _emailMetaCollection = _userDoc!.collection('emailMeta'); // Subcollection for each email
-          _logFirebaseSync('Collections set up, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}');
+          _smsMessagesCollection = _userDoc!.collection('smsMessages'); // Subcollection for SMS messages
+          _logFirebaseSync('Collections set up, _userDoc: ${_userDoc != null}, _emailMetaCollection: ${_emailMetaCollection != null}, _smsMessagesCollection: ${_smsMessagesCollection != null}');
 
           // Start listening (must be on platform thread)
           await _startListening();
+          await _startSmsListening();
           _logFirebaseSync('Started listening');
           
           // Load initial values in background (must also be on platform thread)
@@ -207,6 +287,16 @@ class FirebaseSyncService {
     } else {
       _logFirebaseSync('Cannot initialize user: _firestore is ${_firestore != null ? "set" : "null"}, enabled is $enabled');
     }
+  }
+
+  /// Check if a document was written by this device (to prevent feedback loops)
+  /// Returns true if sourceDevice field matches current device ID
+  Future<bool> _isFromCurrentDevice(Map<String, dynamic>? data) async {
+    if (data == null) return false;
+    final sourceDevice = data['sourceDevice'] as String?;
+    if (sourceDevice == null) return false;
+    final currentDeviceId = await _getDeviceId();
+    return sourceDevice == currentDeviceId;
   }
 
   /// Helper to ensure Firebase operations run on the platform thread
@@ -747,6 +837,7 @@ class FirebaseSyncService {
   Future<void> _stopSync() async {
     await _emailMetaSubscription?.cancel();
     _emailMetaSubscription = null;
+    await _stopSmsListening();
     debugPrint('[FirebaseSync] Stopped listening');
   }
 
@@ -758,6 +849,8 @@ class FirebaseSyncService {
         // Cancel listeners first
         await _emailMetaSubscription?.cancel();
         _emailMetaSubscription = null;
+        await _smsMessagesSubscription?.cancel();
+        _smsMessagesSubscription = null;
         
         // Disable network to prevent Firestore from trying to reconnect
         // This stops the gRPC layer from attempting DNS resolution and connection
@@ -784,10 +877,11 @@ class FirebaseSyncService {
           // This prevents flicker by processing updates before the listener starts
           unawaited(_loadInitialValues());
           
-          // Small delay to let cursor load start, then restart listener
+          // Small delay to let cursor load start, then restart listeners
           // The listener will skip cache updates that were just processed by cursor
           await Future.delayed(const Duration(milliseconds: 100));
           await _startListening();
+          await _startSmsListening();
           _logFirebaseSync('Firestore listeners restarted');
         }
       } catch (e) {
@@ -1189,6 +1283,379 @@ class FirebaseSyncService {
   @Deprecated('Sender preferences are no longer synced. They are derived from emailMeta.')
   // ignore: unused_element
   Future<void> _handleSenderPrefsUpdate(Map<Object?, Object?> data) async {}
+
+  // ========== SMS Sync Methods ==========
+
+  /// Sync SMS message to Firebase
+  /// Only syncs SMS messages (identified by id starting with 'sms_')
+  /// Includes sourceDevice to prevent feedback loops
+  Future<void> syncSmsMessage(MessageIndex smsMessage) async {
+    if (kDebugMode) {
+      _logFirebaseSync('[FIREBASE_SYNC_SMS] >>> syncSmsMessage CALLED: messageId=${smsMessage.id}, from=${smsMessage.from}, timestamp=${smsMessage.internalDate.toIso8601String()}');
+    }
+    try {
+      if (!_syncEnabled) {
+        _syncEnabled = await isSyncEnabled();
+        if (!_syncEnabled) {
+          if (kDebugMode) {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] Skipping: Firebase sync not enabled');
+          }
+          return;
+        }
+      }
+
+      // Check if SMS sync to desktop is enabled
+      final smsSyncToDesktop = await isSmsSyncToDesktopEnabled();
+      if (!smsSyncToDesktop) {
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC_SMS] Skipping: SMS sync to desktop not enabled');
+        }
+        return;
+      }
+
+      // Only sync SMS messages
+      if (!smsMessage.id.startsWith('sms_')) {
+        if (kDebugMode) {
+          _logFirebaseSync('[FIREBASE_SYNC_SMS] Skipping: Not an SMS message (id=${smsMessage.id})');
+        }
+        return;
+      }
+
+      if (_firestore == null) {
+        final initialized = await initialize();
+        if (!initialized) {
+          if (kDebugMode) {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] Skipping: Firebase not initialized');
+          }
+          return;
+        }
+      }
+
+      // Auto-initialize user if not already initialized
+      if (_userId == null || _smsMessagesCollection == null) {
+        // Try to get account email from the SMS message
+        final accountEmail = smsMessage.accountEmail;
+        if (accountEmail != null && accountEmail.isNotEmpty) {
+          if (kDebugMode) {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] User not initialized, initializing with accountEmail=$accountEmail');
+          }
+          await initializeUser(accountEmail);
+          // Wait a bit for initialization to complete
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+        
+        // Check again after initialization attempt
+        if (_userId == null || _smsMessagesCollection == null) {
+          if (kDebugMode) {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] Skipping: User still not initialized after attempt (userId=$_userId, collection=${_smsMessagesCollection != null})');
+          }
+          return;
+        }
+      }
+
+      await _runOnMainThread(() async {
+        final deviceId = await _getDeviceId();
+        final docRef = _smsMessagesCollection!.doc(smsMessage.id);
+        
+        final data = <String, dynamic>{
+          'id': smsMessage.id,
+          'threadId': smsMessage.threadId,
+          'accountId': smsMessage.accountId,
+          'accountEmail': smsMessage.accountEmail,
+          'internalDate': smsMessage.internalDate.toIso8601String(),
+          'from': smsMessage.from,
+          'to': smsMessage.to,
+          'subject': smsMessage.subject,
+          'snippet': smsMessage.snippet,
+          'hasAttachments': smsMessage.hasAttachments,
+          'isRead': smsMessage.isRead,
+          'isStarred': smsMessage.isStarred,
+          'folderLabel': smsMessage.folderLabel,
+          'localTagPersonal': smsMessage.localTagPersonal ?? FieldValue.delete(),
+          'actionDate': smsMessage.actionDate?.toIso8601String() ?? FieldValue.delete(),
+          'actionInsightText': smsMessage.actionInsightText ?? FieldValue.delete(),
+          'actionComplete': smsMessage.actionComplete ? true : FieldValue.delete(),
+          'hasAction': smsMessage.hasAction ? true : FieldValue.delete(),
+          'sourceDevice': deviceId, // Track which device wrote this
+          'lastModified': FieldValue.serverTimestamp(),
+        };
+
+        try {
+          // Split data into set and delete operations
+          final Map<String, dynamic> setData = {};
+          final Map<String, dynamic> deleteData = {};
+
+          data.forEach((key, value) {
+            if (_isFieldValueDelete(value)) {
+              deleteData[key] = value;
+            } else {
+              setData[key] = value;
+            }
+          });
+
+          if (kDebugMode) {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] Writing SMS: messageId=${smsMessage.id}, setFields=${setData.keys.join(", ")}, deleteFields=${deleteData.keys.join(", ")}');
+          }
+
+          // Write set data first (creates document if needed)
+          if (setData.isNotEmpty) {
+            await docRef.set(setData, SetOptions(merge: true));
+            if (kDebugMode) {
+              _logFirebaseSync('[FIREBASE_SYNC_SMS] Set operation completed for ${smsMessage.id}');
+            }
+          }
+
+          // Then handle deletes (only if document exists)
+          if (deleteData.isNotEmpty) {
+            try {
+              await docRef.update(deleteData);
+              if (kDebugMode) {
+                _logFirebaseSync('[FIREBASE_SYNC_SMS] Update (delete) operation completed for ${smsMessage.id}');
+              }
+            } on FirebaseException catch (e) {
+              if (e.code != 'not-found') {
+                rethrow;
+              }
+              // Document doesn't exist yet - that's fine, deletes aren't needed
+              if (kDebugMode) {
+                _logFirebaseSync('[FIREBASE_SYNC_SMS] Document ${smsMessage.id} doesn\'t exist yet, skipping delete operations');
+              }
+            }
+          }
+          
+          // Verify the write succeeded
+          final docSnapshot = await docRef.get();
+          if (docSnapshot.exists) {
+            if (kDebugMode) {
+              _logFirebaseSync('[FIREBASE_SYNC_SMS] ✓ Verified SMS written to Firebase: messageId=${smsMessage.id}, phone=${smsMessage.from}, deviceId=$deviceId, collection=${_smsMessagesCollection!.path}');
+            }
+          } else {
+            _logFirebaseSync('[FIREBASE_SYNC_SMS] ✗ ERROR: Document ${smsMessage.id} does not exist after write!');
+          }
+        } catch (writeError, stackTrace) {
+          _logFirebaseSync('[FIREBASE_SYNC_SMS] ✗ Error writing SMS to Firebase: messageId=${smsMessage.id}, error=$writeError');
+          _logFirebaseSync('[FIREBASE_SYNC_SMS] Stack trace: $stackTrace');
+          rethrow;
+        }
+      });
+    } catch (e, stackTrace) {
+      _logFirebaseSync('Error syncing SMS message ${smsMessage.id}: $e');
+      _logFirebaseSync('Stack trace: $stackTrace');
+      rethrow;
+    }
+  }
+
+  /// Start listening to SMS messages from Firebase
+  Future<void> _startSmsListening() async {
+    if (_smsMessagesCollection == null || !_syncEnabled) {
+      if (kDebugMode) {
+        _logFirebaseSync('[SMS_LISTENER] Not starting: collection=${_smsMessagesCollection != null}, syncEnabled=$_syncEnabled');
+      }
+      return;
+    }
+
+    // Check if SMS sync to desktop is enabled
+    final smsSyncToDesktop = await isSmsSyncToDesktopEnabled();
+    if (!smsSyncToDesktop) {
+      if (kDebugMode) {
+        _logFirebaseSync('[SMS_LISTENER] Not starting: SMS sync to desktop is disabled');
+      }
+      return;
+    }
+
+    try {
+      // Cancel any existing subscription
+      await _smsMessagesSubscription?.cancel();
+      
+      if (kDebugMode) {
+        _logFirebaseSync('[SMS_LISTENER] Starting SMS messages listener');
+      }
+      
+      // The .snapshots() call creates a platform channel that must be created on the platform thread
+      final binding = WidgetsBinding.instance;
+      final completer = Completer<void>();
+      binding.addPostFrameCallback((_) {
+        // Create the listener on the platform thread
+        _smsMessagesSubscription = _smsMessagesCollection!.snapshots().listen(
+          (snapshot) {
+            // Process on main thread - use scheduleMicrotask for async operations
+            scheduleMicrotask(() async {
+              if (kDebugMode) {
+                _logFirebaseSync('[SMS_LISTENER] Received snapshot with ${snapshot.docChanges.length} changes');
+              }
+              
+              for (final docChange in snapshot.docChanges) {
+                final docId = docChange.doc.id;
+                final dataNullable = docChange.doc.data() as Map<String, dynamic>?;
+                
+                if (dataNullable == null) continue;
+                
+                // At this point, data is guaranteed to be non-null
+                final data = dataNullable;
+                
+                // Skip pending writes (our own writes)
+                if (docChange.doc.metadata.hasPendingWrites) {
+                  if (kDebugMode) {
+                    _logFirebaseSync('[SMS_LISTENER] SKIP_PENDING_WRITE docId=$docId (local pending write)');
+                  }
+                  continue;
+                }
+                
+                // Skip if this SMS was written by this device (prevent feedback loop)
+                final isFromCurrentDevice = await _isFromCurrentDevice(data);
+                if (isFromCurrentDevice) {
+                  if (kDebugMode) {
+                    _logFirebaseSync('[SMS_LISTENER] SKIP_SOURCE_DEVICE docId=$docId (from current device)');
+                  }
+                  continue;
+                }
+                
+                // Process the SMS update
+                try {
+                  await _handleSmsUpdate(docId, data);
+                } catch (e) {
+                  _logFirebaseSync('Error processing SMS update for $docId: $e');
+                }
+              }
+            });
+          },
+          onError: (error) {
+            _logFirebaseSync('Error in SMS messages listener: $error');
+          },
+        );
+        debugPrint('[FirebaseSync] Started real-time listener for SMS messages');
+        if (kDebugMode) {
+          _logFirebaseSync('[SMS_LISTENER] Listener created successfully for collection: ${_smsMessagesCollection!.path}');
+        }
+        completer.complete();
+      });
+      await completer.future;
+    } catch (e) {
+      _logFirebaseSync('Error starting SMS listener: $e');
+    }
+  }
+
+  /// Handle an SMS message update from Firebase
+  Future<void> _handleSmsUpdate(String messageId, Map<String, dynamic> data) async {
+    try {
+      final repo = MessageRepository();
+      
+      // Check if message already exists locally
+      final existing = await repo.getById(messageId);
+      
+      // Parse SMS data from Firebase
+      final internalDateStr = data['internalDate'] as String?;
+      if (internalDateStr == null) {
+        _logFirebaseSync('Error handling SMS update for $messageId: missing internalDate');
+        return;
+      }
+      final internalDate = DateTime.parse(internalDateStr);
+      final from = data['from'] as String? ?? '';
+      final to = data['to'] as String? ?? '';
+      final subject = data['subject'] as String? ?? '';
+      final snippet = data['snippet'] as String?;
+      final hasAttachments = (data['hasAttachments'] as bool?) ?? false;
+      final isRead = (data['isRead'] as bool?) ?? false;
+      final isStarred = (data['isStarred'] as bool?) ?? false;
+      final folderLabel = data['folderLabel'] as String? ?? 'INBOX';
+      final localTagPersonal = data['localTagPersonal'] as String?;
+      
+      // Parse action fields
+      DateTime? actionDate;
+      if (data.containsKey('actionDate') && data['actionDate'] != null) {
+        try {
+          actionDate = DateTime.parse(data['actionDate'] as String);
+        } catch (_) {}
+      }
+      
+      final actionInsightText = data['actionInsightText'] as String?;
+      final actionComplete = (data['actionComplete'] as bool?) ?? false;
+      final hasAction = (data['hasAction'] as bool?) ?? false;
+      
+      // Create MessageIndex from Firebase data
+      final accountId = data['accountId'] as String;
+      if (kDebugMode) {
+        _logFirebaseSync('[SMS_LISTENER] Processing SMS: messageId=$messageId, accountId=$accountId, folderLabel=$folderLabel');
+      }
+      
+      final smsMessage = MessageIndex(
+        id: messageId,
+        threadId: data['threadId'] as String,
+        accountId: accountId,
+        accountEmail: data['accountEmail'] as String?,
+        internalDate: internalDate,
+        from: from,
+        to: to,
+        subject: subject,
+        snippet: snippet,
+        hasAttachments: hasAttachments,
+        gmailCategories: [],
+        gmailSmartLabels: [],
+        localTagPersonal: localTagPersonal,
+        subsLocal: false,
+        shoppingLocal: false,
+        unsubscribedLocal: false,
+        actionDate: actionDate,
+        actionInsightText: actionInsightText,
+        actionComplete: actionComplete,
+        hasAction: hasAction,
+        isRead: isRead,
+        isStarred: isStarred,
+        isImportant: false,
+        folderLabel: folderLabel,
+      );
+      
+      // Upsert the message (will update if exists, insert if new)
+      await repo.upsertMessages([smsMessage]);
+      
+      // Verify it was saved
+      final saved = await repo.getById(messageId);
+      if (kDebugMode) {
+        _logFirebaseSync('[SMS_LISTENER] Processed SMS messageId=$messageId, from=$from, isNew=${existing == null}, saved=${saved != null}, accountId=$accountId, folderLabel=$folderLabel');
+        if (saved == null) {
+          _logFirebaseSync('[SMS_LISTENER] ⚠️ WARNING: SMS message $messageId was not saved to database!');
+        }
+      }
+      
+      // Notify callback if message was newly saved
+      if (saved != null && existing == null) {
+        onSmsReceived?.call(saved);
+      }
+    } catch (e) {
+      _logFirebaseSync('Error handling SMS update for $messageId: $e');
+    }
+  }
+
+  /// Stop SMS listener
+  Future<void> _stopSmsListening() async {
+    await _smsMessagesSubscription?.cancel();
+    _smsMessagesSubscription = null;
+    debugPrint('[FirebaseSync] Stopped SMS listening');
+  }
+
+  /// Debug method: List all SMS messages in Firebase
+  /// This helps verify that SMS messages are actually being written
+  Future<void> debugListSmsMessages() async {
+    if (_smsMessagesCollection == null) {
+      _logFirebaseSync('[DEBUG_SMS] SMS collection is null');
+      return;
+    }
+
+    try {
+      final snapshot = await _smsMessagesCollection!.limit(10).get();
+      _logFirebaseSync('[DEBUG_SMS] Found ${snapshot.docs.length} SMS messages in Firebase:');
+      for (final doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>?;
+        if (data != null) {
+          _logFirebaseSync('[DEBUG_SMS]   - ${doc.id}: from=${data['from']}, subject=${data['subject']}, timestamp=${data['internalDate']}');
+        } else {
+          _logFirebaseSync('[DEBUG_SMS]   - ${doc.id}: (no data)');
+        }
+      }
+    } catch (e) {
+      _logFirebaseSync('[DEBUG_SMS] Error listing SMS messages: $e');
+    }
+  }
 
 }
 

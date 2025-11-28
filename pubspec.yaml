@@ -51,6 +51,7 @@ dependencies:
   uuid: ^4.2.1
   crypto: ^3.0.3
   package_info_plus: ^8.1.1
+  device_info_plus: ^10.1.0
   
   # WebView for email viewing
   flutter_inappwebview: ^6.1.5

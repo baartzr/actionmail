@@ -93,6 +93,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.addObserver(this);
     _smsSyncManager.onSmsReceived = _handleSmsReceived;
     _whatsAppSyncManager.onWhatsAppReceived = _handleWhatsAppReceived;
+    // Set callback for SMS messages received from Firebase (desktop sync)
+    FirebaseSyncService().onSmsReceived = _handleSmsReceived;
     unawaited(
       ref.read(contactServiceProvider).updateContacts().catchError(
             (e) => debugPrint('[HomeScreen] Initial contact refresh error: $e'),
@@ -105,6 +107,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> with WidgetsBindingObse
     WidgetsBinding.instance.removeObserver(this);
     _smsSyncManager.onSmsReceived = null;
     _whatsAppSyncManager.onWhatsAppReceived = null;
+    // Clear callback for SMS messages received from Firebase
+    FirebaseSyncService().onSmsReceived = null;
     _unreadCountRefreshTimer?.cancel();
     _searchController.dispose();
     super.dispose();

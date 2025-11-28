@@ -541,6 +541,82 @@ class _AccountsSettingsDialogState extends ConsumerState<AccountsSettingsDialog>
                     ),
                   ),
                   const SizedBox(height: 12),
+                  // SMS Sync to Desktop toggle (available on all platforms)
+                  Consumer(
+                    builder: (context, ref, child) {
+                      return FutureBuilder<bool>(
+                        future: FirebaseSyncService().isSyncEnabled(),
+                        builder: (context, syncSnapshot) {
+                          final firebaseSyncEnabled = syncSnapshot.data ?? false;
+                          if (!firebaseSyncEnabled) {
+                            return const SizedBox.shrink();
+                          }
+                          
+                          return FutureBuilder<bool>(
+                            future: FirebaseSyncService().isSmsSyncToDesktopEnabled(),
+                            builder: (context, smsSnapshot) {
+                              final isEnabled = smsSnapshot.data ?? false;
+                              return Card(
+                                elevation: 0,
+                                color: theme.colorScheme.surfaceContainerHighest,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(12.0),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              'SMS Sync to Desktop',
+                                              style: theme.textTheme.titleMedium,
+                                            ),
+                                            const SizedBox(height: 2),
+                                            Text(
+                                              'Receive SMS messages from mobile devices via Firebase',
+                                              style: theme.textTheme.bodySmall?.copyWith(
+                                                color: theme.colorScheme.onSurfaceVariant,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      Switch(
+                                        value: isEnabled,
+                                        onChanged: (value) async {
+                                          final messenger = ScaffoldMessenger.of(context);
+                                          final syncService = FirebaseSyncService();
+                                          await syncService.setSmsSyncToDesktopEnabled(value);
+                                          if (value) {
+                                            // Restart SMS listener if Firebase sync is enabled
+                                            final accounts = await GoogleAuthService().loadAccounts();
+                                            if (accounts.isNotEmpty) {
+                                              await syncService.initializeUser(accounts.first.email);
+                                            }
+                                          }
+                                          if (!context.mounted) return;
+                                          setState(() {});
+                                          messenger.showSnackBar(
+                                            SnackBar(
+                                              content: Text(value ? 'SMS sync to desktop enabled' : 'SMS sync to desktop disabled'),
+                                              duration: const Duration(seconds: 2),
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 12),
                   const SmsSyncSettingsWidget(),
                   const SizedBox(height: 12),
                   Card(

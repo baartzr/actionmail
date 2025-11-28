@@ -7,6 +7,8 @@ import 'package:domail/data/repositories/message_repository.dart';
 import 'package:domail/data/db/app_database.dart';
 import 'package:domail/data/models/message_index.dart';
 import 'package:domail/services/auth/google_auth_service.dart';
+import 'package:domail/services/sync/firebase_sync_service.dart';
+import 'package:domail/services/sync/firebase_init.dart';
 
 /// Account-specific sync state
 class _AccountSyncState {
@@ -33,6 +35,7 @@ class SmsSyncManager {
   
   final Map<String, _AccountSyncState> _accountStates = {};
   Timer? _companionSyncTimer;
+  bool _isSyncing = false; // Guard to prevent concurrent syncs
 
   /// Callback when a new SMS message is received and saved
   void Function(MessageIndex message)? onSmsReceived;
@@ -53,20 +56,49 @@ class SmsSyncManager {
     }
 
     // Get selected account ID
-    final selectedAccountId = await _syncService.getSelectedAccountId();
+    var selectedAccountId = await _syncService.getSelectedAccountId();
     if (selectedAccountId == null) {
       debugPrint('[SmsSyncManager] No account selected for SMS sync');
       return;
     }
 
-    // Verify account still exists
-    final account = await _googleAuthService.getAccountById(selectedAccountId);
+    // Verify account still exists - if not, try to migrate from old timestamp-based ID to email-based ID
+    var account = await _googleAuthService.getAccountById(selectedAccountId);
     if (account == null) {
-      debugPrint('[SmsSyncManager] Selected account $selectedAccountId no longer exists');
-      return;
+      debugPrint('[SmsSyncManager] Selected account $selectedAccountId not found, attempting migration...');
+      // Try to find account by email (since accountId is now email-based)
+      // The stored ID might be the old timestamp, so try to find by email
+      final allAccounts = await _googleAuthService.loadAccounts();
+      if (allAccounts.isNotEmpty) {
+        // Use the first account (or could use currently selected account)
+        account = allAccounts.first;
+        selectedAccountId = account.id; // Update to new email-based ID
+        await _syncService.setSelectedAccountId(selectedAccountId);
+        debugPrint('[SmsSyncManager] Migrated account ID to ${account.email} ($selectedAccountId)');
+      } else {
+        debugPrint('[SmsSyncManager] No accounts available for SMS sync');
+        return;
+      }
     }
 
     debugPrint('[SmsSyncManager] Starting SMS sync for account ${account.email} ($selectedAccountId)...');
+
+    // Initialize Firebase user if SMS sync to desktop is enabled
+    final firebaseSync = FirebaseSyncService();
+    final smsSyncToDesktop = await firebaseSync.isSmsSyncToDesktopEnabled();
+    if (smsSyncToDesktop) {
+      try {
+        await FirebaseInit.instance.whenReady;
+        final syncInitialized = await firebaseSync.initialize();
+        final syncEnabled = await firebaseSync.isSyncEnabled();
+        if (syncInitialized && syncEnabled) {
+          await firebaseSync.initializeUser(account.email);
+          debugPrint('[SmsSyncManager] Firebase user initialized for SMS sync: ${account.email}');
+        }
+      } catch (e) {
+        debugPrint('[SmsSyncManager] Error initializing Firebase user: $e');
+      }
+    }
 
     // Start sync for selected account
     await _startForAccount(selectedAccountId);
@@ -80,10 +112,27 @@ class SmsSyncManager {
       return;
     }
 
-    final account = await _googleAuthService.getAccountById(accountId);
+    // Verify account exists - if not, try to migrate from old timestamp-based ID to email-based ID
+    var account = await _googleAuthService.getAccountById(accountId);
     if (account == null) {
-      debugPrint('[SmsSyncManager] Account $accountId is no longer available');
-      return;
+      debugPrint('[SmsSyncManager] Account $accountId not found, attempting migration...');
+      // Try to find account by email (since accountId is now email-based)
+      final allAccounts = await _googleAuthService.loadAccounts();
+      if (allAccounts.isNotEmpty) {
+        // Use the first account (or could use currently selected account)
+        account = allAccounts.first;
+        final newAccountId = account.id; // New email-based ID
+        // Update stored account ID if this was the selected one
+        final storedAccountId = await _syncService.getSelectedAccountId();
+        if (storedAccountId == accountId) {
+          await _syncService.setSelectedAccountId(newAccountId);
+        }
+        accountId = newAccountId; // Update to use new ID
+        debugPrint('[SmsSyncManager] Migrated account ID to ${account.email} ($accountId)');
+      } else {
+        debugPrint('[SmsSyncManager] Account $accountId is no longer available and no accounts found');
+        return;
+      }
     }
 
     debugPrint('[SmsSyncManager] Starting SMS sync for account ${account.email} ($accountId)...');
@@ -145,6 +194,13 @@ class SmsSyncManager {
   /// Sync SMS messages from the Companion app
   /// This reads directly from the companion app's ContentProvider
   Future<void> syncFromCompanionApp(String accountId) async {
+    // Prevent concurrent syncs
+    if (_isSyncing) {
+      debugPrint('[SmsSyncManager] ⚠️ Sync already in progress, skipping duplicate call');
+      return;
+    }
+    
+    _isSyncing = true;
     try {
       final isAvailable = await _companionService.isCompanionAppAvailable();
       if (!isAvailable) {
@@ -266,6 +322,36 @@ class SmsSyncManager {
         await _messageRepository.upsertMessages(newMessages);
         savedCount = newMessages.length;
         
+        // Sync to Firebase (only for SMS messages, and only if SMS sync to desktop is enabled)
+        try {
+          final firebaseSync = FirebaseSyncService();
+          final syncEnabled = await firebaseSync.isSyncEnabled();
+          final smsSyncToDesktopEnabled = await firebaseSync.isSmsSyncToDesktopEnabled();
+          
+          debugPrint('[SmsSyncManager] Firebase sync check: syncEnabled=$syncEnabled, smsSyncToDesktopEnabled=$smsSyncToDesktopEnabled');
+          
+          if (syncEnabled && smsSyncToDesktopEnabled) {
+            final smsMessages = newMessages.where((m) => SmsMessageConverter.isSmsMessage(m)).toList();
+            debugPrint('[SmsSyncManager] Syncing ${smsMessages.length} SMS message(s) to Firebase');
+            debugPrint('[SmsSyncManager] Message IDs to sync: ${smsMessages.map((m) => m.id).join(", ")}');
+            for (final message in smsMessages) {
+              try {
+                debugPrint('[SmsSyncManager] >>> About to call syncSmsMessage for ${message.id}');
+                await firebaseSync.syncSmsMessage(message);
+                debugPrint('[SmsSyncManager] Successfully synced SMS to Firebase: ${message.id}');
+              } catch (e, stackTrace) {
+                debugPrint('[SmsSyncManager] Error syncing SMS ${message.id} to Firebase: $e');
+                debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+              }
+            }
+          } else {
+            debugPrint('[SmsSyncManager] Skipping Firebase sync: syncEnabled=$syncEnabled, smsSyncToDesktopEnabled=$smsSyncToDesktopEnabled');
+          }
+        } catch (e, stackTrace) {
+          debugPrint('[SmsSyncManager] Error in Firebase sync block: $e');
+          debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+        }
+        
         // Notify callback for new messages
         for (final message in newMessages) {
           onSmsReceived?.call(message);
@@ -290,6 +376,8 @@ class SmsSyncManager {
     } catch (e, stackTrace) {
       debugPrint('[SmsSyncManager] Companion sync error: $e');
       debugPrint('[SmsSyncManager] Stack trace: $stackTrace');
+    } finally {
+      _isSyncing = false;
     }
   }
 

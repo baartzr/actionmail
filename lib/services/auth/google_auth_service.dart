@@ -43,16 +43,22 @@ class GoogleAuthService {
     await prefs.setString(_prefsKeyAccounts, jsonEncode(accounts.map((e) => e.toJson()).toList()));
   }
 
-  /// Upsert an account by email; if email exists, update tokens on existing entry and keep its id
+  /// Upsert an account by email; if email exists, update tokens and ID (ID is now email-based)
   Future<GoogleAccount> upsertAccount(GoogleAccount account) async {
     final list = await loadAccounts();
     final idx = list.indexWhere((a) => a.email.toLowerCase() == account.email.toLowerCase());
     if (idx != -1) {
       final existing = list[idx];
-      final updated = existing.copyWith(
+      // Create new account with updated ID (email) and tokens
+      final updated = GoogleAccount(
+        id: account.id, // Update ID to email (for cross-device sync compatibility)
+        email: account.email,
+        displayName: existing.displayName, // Preserve existing display name
+        photoUrl: existing.photoUrl, // Preserve existing photo
         accessToken: account.accessToken,
         refreshToken: account.refreshToken ?? existing.refreshToken,
         tokenExpiryMs: account.tokenExpiryMs ?? existing.tokenExpiryMs,
+        idToken: account.idToken.isNotEmpty ? account.idToken : existing.idToken,
       );
       list[idx] = updated;
       await saveAccounts(list);
@@ -178,7 +184,7 @@ class GoogleAuthService {
           }
         }
         final account = GoogleAccount(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          id: email, // Use email as accountId for cross-device sync compatibility
           email: email,
           displayName: displayName,
           photoUrl: photoUrl,
@@ -385,7 +391,7 @@ class GoogleAuthService {
           }
           
           final account = GoogleAccount(
-            id: DateTime.now().millisecondsSinceEpoch.toString(),
+            id: email, // Use email as accountId for cross-device sync compatibility
             email: email,
             displayName: displayName,
             photoUrl: photoUrl,
@@ -450,7 +456,7 @@ class GoogleAuthService {
           }
         }
         final account = GoogleAccount(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
+          id: email, // Use email as accountId for cross-device sync compatibility
           email: email,
           displayName: displayName,
           photoUrl: photoUrl,
@@ -908,7 +914,7 @@ class GoogleAuthService {
     }
     
     return GoogleAccount(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: email, // Use email as accountId for cross-device sync compatibility
       email: email,
       displayName: displayName,
       photoUrl: photoUrl,
